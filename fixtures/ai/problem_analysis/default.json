@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "objectives": [{ "id": "OBJ-1", "text": "Clarify and address the reported business process problem" }],
+  "painPoints": [],
+  "scopeSummary": "A proposed business process scope for review. This is deterministic test data.",
+  "proposedProcesses": [
+    { "ref": "p1", "parentRef": null, "level": 1, "code": "PROCESS", "name": "Business process transformation", "module": "", "rationale": "Placeholder proposal for deterministic workflow tests; confirm scope with the consultant." },
+    { "ref": "p2", "parentRef": "p1", "level": 2, "code": "PROCESS-01", "name": "Current process assessment", "module": "", "rationale": "Review the reported problem before confirming process boundaries." }
+  ],
+  "clarifyingQuestions": ["Which business process boundaries should this project cover?"],
+  "inputTruncated": false
+}

@@ -1,0 +1,53 @@
+[
+  {
+    "scenario": "manufacturing-o2c",
+    "fictional": true,
+    "fault": "problem_analysis:timeout:once",
+    "project": {
+      "name": "Synthetic — Northstar Components O2C",
+      "clientName": "Northstar Components (fictional)",
+      "problemStatement": "Northstar Components is a fictional manufacturer with two plants. Sales orders arrive by email and are re-keyed into spreadsheets. Planners cannot see stock across plants, so promised delivery dates change after confirmation. Finance manually reconciles dispatch records with invoices. We want a shared order-to-cash process, reliable inventory visibility, and traceable order, delivery and billing handoffs.",
+      "targetProduct": "S4HANA_CLOUD_PUBLIC",
+      "startingLandscape": "NON_SAP",
+      "modules": ["SD", "MM", "FI"],
+      "orgUnits": [
+        { "type": "COMPANY_CODE", "code": "NS01", "name": "Northstar Components Europe" },
+        { "type": "PLANT", "code": "LY01", "name": "Lyon assembly plant" },
+        { "type": "PLANT", "code": "PN01", "name": "Pune assembly plant" }
+      ]
+    }
+  },
+  {
+    "scenario": "retail-procure-to-pay",
+    "fictional": true,
+    "fault": "problem_analysis:invalid:once",
+    "project": {
+      "name": "Synthetic — Cedar Retail Procurement",
+      "clientName": "Cedar Retail Group (fictional)",
+      "problemStatement": "Cedar Retail Group is a fictional retailer operating twelve stores. Buyers raise purchase requests in separate systems and suppliers receive inconsistent purchase orders. Stores record goods receipts late, while finance processes invoices without a consistent three-way match. We want standard purchasing approvals, accurate goods receipts and visibility of blocked invoices across stores and the central warehouse.",
+      "targetProduct": "S4HANA_CLOUD_PRIVATE",
+      "startingLandscape": "EXISTING_SAP",
+      "modules": ["MM", "FI"],
+      "orgUnits": [
+        { "type": "COMPANY_CODE", "code": "CR01", "name": "Cedar Retail Trading" },
+        { "type": "PLANT", "code": "WH01", "name": "Central distribution warehouse" }
+      ]
+    }
+  },
+  {
+    "scenario": "distribution-mixed-landscape",
+    "fictional": true,
+    "project": {
+      "name": "Synthetic — Meridian Distribution",
+      "clientName": "Meridian Distribution (fictional)",
+      "problemStatement": "Meridian Distribution is a fictional wholesaler serving European and Asian customers. Its SAP sales system and external warehouse software exchange nightly files. Returns are tracked in email, credit notes are delayed and customer-service teams cannot explain stock differences. We want traceable returns, timely stock updates and consistent financial reconciliation. Regional labels such as Île-de-France and 東京 must remain readable.",
+      "targetProduct": "S4HANA_ON_PREMISE",
+      "startingLandscape": "MIXED",
+      "modules": ["SD", "MM", "FI"],
+      "orgUnits": [
+        { "type": "SALES_ORG", "code": "EU01", "name": "European wholesale sales" },
+        { "type": "REGION", "code": "AP01", "name": "東京 region" }
+      ]
+    }
+  }
+]

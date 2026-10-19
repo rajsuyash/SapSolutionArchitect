@@ -1,0 +1,4 @@
+kind,code,title,module,targetProducts,summary
+TCODE,VA01,Create Sales Orders,SD,S4HANA_CLOUD_PRIVATE|S4HANA_ON_PREMISE,Create a sales order with customer and item details.
+TCODE,VA02,Change Sales Orders,SD,S4HANA_CLOUD_PRIVATE|S4HANA_ON_PREMISE,Maintain an existing sales order.
+TCODE,VA03,Display Sales Orders,SD,S4HANA_CLOUD_PRIVATE|S4HANA_ON_PREMISE,View an existing sales order without changing it.
