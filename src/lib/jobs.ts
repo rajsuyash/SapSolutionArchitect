@@ -4,7 +4,7 @@ import type { PgBoss } from "pg-boss";
 import { z } from "zod";
 import { AuthError, transaction, type AuthService, type SessionUser } from "./auth";
 import { withTenantSession } from "./tenant";
-import { validateProblemAnalysis } from "./ai/problem-analysis";
+import { validateProblemAnalysis, type ProblemAnalysis } from "./ai/problem-analysis";
 import type { createStageRunner } from "./ai/runStage";
 
 export const ANALYSIS_QUEUE = "analysis.problem";
@@ -59,6 +59,20 @@ export function createJobService(pool: Pool, auth: AuthService, queue: PgBoss, s
   }
 
   const service = {
+    latest: (token: string | null, projectId: string) => withTenantSession(pool, auth, token, async ({ client, user }) => {
+      if (!uuid.safeParse(projectId).success) throw notFound("PROJECT");
+      const project = (await client.query<{ is_demo: boolean; setup_status: string; project_role: string | null }>(
+        `SELECT p.is_demo,p.setup_status,m.project_role FROM projects p LEFT JOIN project_memberships m
+         ON m.org_id=p.org_id AND m.project_id=p.id AND m.user_id=$3 WHERE p.org_id=$1 AND p.id=$2`,
+        [user.orgId, projectId, user.id])).rows[0];
+      if (!project || (user.orgRole === "GUEST" && !project.project_role)) throw notFound("PROJECT");
+      const job = (await client.query<Job>(`SELECT id,kind,status,progress_label AS "progressLabel",error,result
+        FROM jobs WHERE org_id=$1 AND project_id=$2 ORDER BY created_at DESC,id DESC LIMIT 1`, [user.orgId, projectId])).rows.at(0) ?? null;
+      const analysis = (await client.query<{ payload: ProblemAnalysis }>(`SELECT payload FROM problem_analyses
+        WHERE org_id=$1 AND project_id=$2 ORDER BY created_at DESC,id DESC LIMIT 1`, [user.orgId, projectId])).rows.at(0)?.payload ?? null;
+      return { job, analysis, canAnalyze: !project.is_demo && project.setup_status !== "ACTIVE" && user.orgRole !== "GUEST"
+        && ["LEAD", "CONSULTANT"].includes(project.project_role ?? "") };
+    }),
     enqueue: (token: string | null, projectId: string, requestId: string) => withTenantSession(pool, auth, token,
       ({ client, user }) => enqueue(client, user, projectId, requestId)),
     get: (token: string | null, id: string) => withTenantSession(pool, auth, token, async ({ client, user }) => {

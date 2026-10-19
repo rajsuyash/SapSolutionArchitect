@@ -15,7 +15,7 @@ const schema = z.object({
   AI_FAULT_INJECTION: z.string().regex(
     /^(problem_analysis|as_is|gap|to_be|change_doc|blueprint_narrative):(timeout|invalid|error)(:once)?$/,
   ).optional(),
-  EMAIL_PROVIDER: z.enum(["resend", "stub"]),
+  EMAIL_PROVIDER: z.enum(["resend", "stub", "disabled"]),
   EMAIL_API_KEY: z.string().optional(),
   EMAIL_FROM: z.email(),
   S3_ENDPOINT: httpUrl,
@@ -23,6 +23,7 @@ const schema = z.object({
   S3_BUCKET: required,
   S3_ACCESS_KEY_ID: required,
   S3_SECRET_ACCESS_KEY: required,
+  DEMO_ACCESS_PASSWORD: z.string().min(24).optional(),
 }).superRefine((config, context) => {
   const invalid = (name: string) => context.addIssue({ code: "custom", path: [name], message: "Invalid configuration" });
   if (config.AI_PROVIDER === "anthropic" && !config.ANTHROPIC_API_KEY?.trim()) invalid("ANTHROPIC_API_KEY");

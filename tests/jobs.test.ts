@@ -139,6 +139,25 @@ describe.skipIf(process.env.RUN_DB_TESTS !== "1")("durable analysis jobs on Post
     await expect(jobs.retry(owner.token, jobId, randomUUID())).rejects.toMatchObject({ code: "INVALID_STATE" });
   });
 
+  it("loads durable scope results with tenant isolation and current write permissions", async () => {
+    const owner = await draft(); const other = await actor();
+    expect(await jobs.latest(owner.token, owner.project.id)).toEqual({ job: null, analysis: null, canAnalyze: true });
+    const { jobId } = await enqueue(owner);
+    expect((await jobs.latest(owner.token, owner.project.id)).job?.status).toBe("QUEUED");
+    await execute(jobId);
+    const result = await jobs.latest(owner.token, owner.project.id);
+    expect(result.job?.status).toBe("SUCCEEDED");
+    expect(result.analysis?.proposedProcesses.length).toBeGreaterThan(0);
+    await expect(jobs.latest(null, owner.project.id)).rejects.toMatchObject({ code: "UNAUTHENTICATED" });
+    await expect(jobs.latest(other.token, owner.project.id)).rejects.toMatchObject({ code: "PROJECT_NOT_FOUND" });
+    await pool.query("UPDATE project_memberships SET project_role='PROCESS_OWNER' WHERE project_id=$1", [owner.project.id]);
+    expect((await jobs.latest(owner.token, owner.project.id)).canAnalyze).toBe(false);
+    await pool.query("UPDATE users SET org_role='GUEST' WHERE id=$1", [owner.user.id]);
+    expect((await jobs.latest(owner.token, owner.project.id)).analysis).toEqual(result.analysis);
+    await pool.query("DELETE FROM project_memberships WHERE project_id=$1", [owner.project.id]);
+    await expect(jobs.latest(owner.token, owner.project.id)).rejects.toMatchObject({ code: "PROJECT_NOT_FOUND" });
+  });
+
   it("persists failures without scope changes and retries with a new durable job", async () => {
     const owner = await draft(); const { jobId } = await enqueue(owner);
     const fault = createStageRunner({ ...config, AI_FAULT_INJECTION: "problem_analysis:timeout:once" });

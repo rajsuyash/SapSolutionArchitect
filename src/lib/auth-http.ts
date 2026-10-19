@@ -125,8 +125,9 @@ class MethodError extends AuthError {
 export function handleProjects(request: Request, path: string[] | undefined, load: LoadRuntime): Promise<NextResponse> {
   return boundary(async (requestId) => {
     if (path?.length === 2 && path[1] === "analysis") {
-      if (request.method !== "POST") throw new MethodError("POST");
+      if (!["GET", "HEAD", "POST"].includes(request.method)) throw new MethodError("GET, HEAD, POST");
       const { jobs, config } = load();
+      if (request.method !== "POST") return success(await jobs.latest(requestToken(request, config.APP_URL), path[0]!));
       assertSameOrigin(request.headers, config.APP_URL);
       return success(await jobs.enqueue(requestToken(request, config.APP_URL), path[0]!, requestId), 202);
     }

@@ -5,6 +5,7 @@ import { getPageSession, loginDestination, requirePageSession } from "../../lib/
 import { isAuthError } from "../../lib/auth";
 import { getRuntime } from "../../lib/runtime";
 import { ProjectForm } from "../project-form";
+import { AnalysisPanel } from "../analysis-panel";
 
 type Props = { params: Promise<{ path?: string[] }> };
 export async function generateMetadata({ params }: Props) {
@@ -48,7 +49,7 @@ export default async function WorkspacePage({ params }: Props) {
   }
   if (route === "/projects/new") {
     if (user.orgRole === "GUEST") notFound();
-    return <Panel title="Start a transformation project"><p className="panel-description">Capture your project details. You can save a draft now; AI scope analysis is not available yet.</p>
+    return <Panel title="Start a transformation project"><p className="panel-description">Capture your project details, then analyze the business problem to draft your process scope.</p>
       <ProjectForm /></Panel>;
   }
 
@@ -68,8 +69,8 @@ export default async function WorkspacePage({ params }: Props) {
     if (path.length !== 2) notFound(); // Unimplemented pages cannot bypass project authorization.
     return <Panel title={project.name}>
       <p className="eyebrow">Project overview</p>
-      <p className="panel-description">{project.clientName} · {project.setupStatus === "ACTIVE" ? "Active" : "Setup incomplete"}</p>
-      <p className="panel-description">Process scope and design tools are not available yet.</p>
+      <p className="panel-description">{project.clientName} · {project.setupStatus === "ACTIVE" ? "Active" : project.setupStatus === "SCOPE_PROPOSED" ? "Scope proposed" : "Draft"}</p>
+      <AnalysisPanel projectId={project.id} />
       <h2 style={{ fontSize: 22 }}>Project details</h2>
       <dl style={{ display: "grid", gridTemplateColumns: "minmax(100px, 1fr) 3fr", gap: "16px 20px", lineHeight: 1.5 }}>
         <dt>Target product</dt><dd style={{ margin: 0 }}>{({ S4HANA_CLOUD_PUBLIC: "SAP S/4HANA Cloud Public Edition", S4HANA_CLOUD_PRIVATE: "SAP S/4HANA Cloud Private Edition", S4HANA_ON_PREMISE: "SAP S/4HANA on-premise" } as Record<string, string>)[project.targetProduct] ?? project.targetProduct}</dd>
@@ -91,7 +92,7 @@ export default async function WorkspacePage({ params }: Props) {
       <h2 style={{ fontSize: 26, fontWeight: 600, lineHeight: 1.3 }}>{user.orgRole === "GUEST"
         ? "No assigned projects" : "Turn a problem statement into an SAP Business Blueprint"}</h2>
       <p className="panel-description">{user.orgRole === "GUEST" ? "Projects shared with you will appear here."
-        : "Start with one project: capture the As-Is of one process and get a draft To-Be in about 15 minutes."}</p>
+        : "Describe a business problem and review an AI-generated proposal for your SAP process scope."}</p>
     </div> : <ul aria-label="Projects" style={{ listStyle: "none", padding: 0, margin: "24px 0" }}>
       {projects.map((item) => <li key={item.id} style={{ borderTop: "1px solid var(--border)", padding: "20px 0" }}>
         <Link href={`/projects/${item.id}`} style={{ fontSize: 19, fontWeight: 600, overflowWrap: "anywhere" }}>{item.name}</Link>

@@ -106,7 +106,7 @@ describe("real SDK protocol with an intercepted transport", () => {
     } finally { trace.disable(); }
   });
 
-  it("forces one schema-generated tool, repairs quote failures and returns measured usage only", async () => {
+  it("uses Sonnet-compatible tool selection, validates one tool and repairs quote failures", async () => {
     const harness = providerHarness((_body, _init, attempt) => {
       const value = payload(); if (attempt === 1) value.painPoints[0]!.quote = "private-invented-fact";
       return message(value);
@@ -114,7 +114,7 @@ describe("real SDK protocol with an intercepted transport", () => {
     const log = vi.spyOn(console, "log"), error = vi.spyOn(console, "error"), debug = vi.spyOn(console, "debug");
     const result = await createStageRunner(harness.settings(), { fetch: harness.fetch })("problem_analysis", input);
     expect(harness.bodies).toHaveLength(2);
-    expect(harness.bodies[0]!.tool_choice).toEqual({ type: "tool", name: "submit_analysis", disable_parallel_tool_use: true });
+    expect(harness.bodies[0]!.tool_choice).toEqual({ type: "auto", disable_parallel_tool_use: true });
     expect(harness.bodies[0]!.tools).toHaveLength(1);
     expect(harness.bodies[0]!.tools[0]!.input_schema).toMatchObject({ type: "object", additionalProperties: false, required: expect.arrayContaining(["objectives", "proposedProcesses"]) });
     expect(harness.bodies[1]!.messages[0]!.content).toContain("quote_not_in_source");
@@ -178,6 +178,18 @@ describe("real SDK protocol with an intercepted transport", () => {
 
   it("rejects truncated tool output even if the partial payload happens to validate", async () => {
     const harness = providerHarness(() => message(payload(), "max_tokens"));
+    await expect(createStageRunner(harness.settings(), { fetch: harness.fetch })("problem_analysis", input))
+      .rejects.toMatchObject({ code: "AI_INVALID_OUTPUT", metrics: { attempts: 2 } });
+  });
+
+  it.each(["text", "multiple-tools"])("rejects %s responses when automatic tool selection is used", async (kind) => {
+    const harness = providerHarness(async () => {
+      const body = await message().json();
+      body.content = kind === "text" ? [{ type: "text", text: "An unstructured proposal" }]
+        : [...body.content, { ...body.content[0], id: "tool_2" }];
+      body.stop_reason = kind === "text" ? "end_turn" : "tool_use";
+      return new Response(JSON.stringify(body), { headers: { "content-type": "application/json" } });
+    });
     await expect(createStageRunner(harness.settings(), { fetch: harness.fetch })("problem_analysis", input))
       .rejects.toMatchObject({ code: "AI_INVALID_OUTPUT", metrics: { attempts: 2 } });
   });

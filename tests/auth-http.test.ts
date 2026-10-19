@@ -30,7 +30,7 @@ const origin = "https://sap-http.test";
 function mockRuntime() {
   return { config: { APP_URL: origin }, auth: { signup: vi.fn(), login: vi.fn(), logout: vi.fn(),
     authenticate: vi.fn(), resolveSession: vi.fn() }, projects: { list: vi.fn(), get: vi.fn(), create: vi.fn() },
-    jobs: { enqueue: vi.fn(), get: vi.fn(), retry: vi.fn(), initialize: vi.fn(), execute: vi.fn(), recover: vi.fn() } } satisfies HttpRuntime;
+    jobs: { latest: vi.fn(), enqueue: vi.fn(), get: vi.fn(), retry: vi.fn(), initialize: vi.fn(), execute: vi.fn(), recover: vi.fn() } } satisfies HttpRuntime;
 }
 function post(body: BodyInit, headers: Record<string, string> = {}) {
   return new Request(`${origin}/api/auth/signup`, { method: "POST", body,
@@ -360,7 +360,11 @@ describe.skipIf(process.env.RUN_BUILD_TESTS !== "1" || process.env.RUN_DB_TESTS 
     const analyze = (headers: Record<string, string> = {}) => request(`/api/projects/${id}/analysis`, { method: "POST", headers: { cookie, origin, ...headers } });
     expect((await analyze({ cookie: "" })).status).toBe(401);
     expect((await analyze({ origin: "https://evil.test" })).status).toBe(403);
-    expect((await request(`/api/projects/${id}/analysis`, { headers: { cookie } })).status).toBe(405);
+    const empty = await request(`/api/projects/${id}/analysis`, { headers: { cookie } });
+    expect(empty.status).toBe(200);
+    expect(await empty.json()).toMatchObject({ success: true, data: { job: null, analysis: null, canAnalyze: true } });
+    expect((await request(`/api/projects/${id}/analysis`)).status).toBe(401);
+    expect((await request(`/api/projects/${id}/analysis`, { method: "DELETE", headers: { cookie } })).status).toBe(405);
     const submitted = await analyze();
     expect(submitted.status).toBe(202);
     const { jobId } = (await submitted.json()).data;
@@ -410,6 +414,9 @@ describe.skipIf(process.env.RUN_BUILD_TESTS !== "1" || process.env.RUN_DB_TESTS 
       expect(result).toMatchObject({ status: "SUCCEEDED", error: null, result: { analysisId: expect.any(String) } });
       const analysis = (await db.query("SELECT payload FROM problem_analyses WHERE id=$1 AND job_id=$2", [result.result.analysisId, nextId])).rows[0];
       expect(analysis.payload.objectives.length).toBeGreaterThan(0);
+      const review = await request(`/api/projects/${id}/analysis`, { headers: { cookie } });
+      expect(await review.json()).toMatchObject({ success: true, data: { job: { id: nextId, status: "SUCCEEDED" }, analysis: analysis.payload } });
+      expect((await request(`/api/projects/${id}/analysis`, { headers: { cookie: foreign.cookie } })).status).toBe(404);
       expect(analysis.payload.proposedProcesses.some((node: { level: number }) => node.level === 1)).toBe(true);
       expect((await db.query("SELECT setup_status FROM projects WHERE id=$1", [id])).rows[0].setup_status).toBe("SCOPE_PROPOSED");
       const head = await request(`/api/jobs/${nextId}`, { method: "HEAD", headers: { cookie } });

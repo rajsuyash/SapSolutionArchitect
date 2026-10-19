@@ -162,7 +162,9 @@ export function createStageRunner(config: Config, options: Options = {}) {
             metrics.attempts++;
             return client!.messages.create({ model: config.AI_MODEL, max_tokens: 12000, system,
               messages: [{ role: "user", content: user }], tools: [{ name: TOOL, input_schema: { ...jsonSchema, type: "object" } }],
-              tool_choice: { type: "tool", name: TOOL, disable_parallel_tool_use: true } }, { signal });
+              // Sonnet 5.5 rejects forced tool selection. The prompt requests the
+              // tool; validation still requires exactly one complete tool payload.
+              tool_choice: { type: "auto", disable_parallel_tool_use: true } }, { signal });
           });
           const usage = z.object({ input_tokens: z.number().int().nonnegative(), output_tokens: z.number().int().nonnegative(),
             cache_creation_input_tokens: z.number().int().nonnegative().nullish(), cache_read_input_tokens: z.number().int().nonnegative().nullish(),

@@ -35,7 +35,7 @@ async function stop(child: ChildProcess) {
   try { await exited; } finally { clearTimeout(timeout); }
 }
 
-for (const scenario of scenarios) test(`synthetic ${scenario.scenario}: browser setup, API analysis and isolation`, async ({ page, browser }, testInfo) => {
+for (const scenario of scenarios) test(`synthetic ${scenario.scenario}: browser setup, scope review and isolation`, async ({ page, browser }, testInfo) => {
   expect(scenario.fictional).toBe(true);
   const project = validateProject(scenario.project);
   const errors: string[] = [];
@@ -77,11 +77,14 @@ for (const scenario of scenarios) test(`synthetic ${scenario.scenario}: browser 
   await testInfo.attach("saved-project", { body: await page.screenshot({ fullPage: true }), contentType: "image/png" });
   expect((await (await page.request.get(`${origin}/api/projects/${projectId}`)).json()).data.project).toMatchObject(project);
 
-  // No analysis controls exist yet. Exercise the real API with this browser's
-  // authenticated cookie jar, not a mocked route or a fabricated UI result.
-  const submitted = await page.request.post(`${origin}/api/projects/${projectId}/analysis`, { headers: { origin } });
+  const submission = page.waitForResponse((r) => r.url().endsWith(`/api/projects/${projectId}/analysis`) && r.request().method() === "POST");
+  await page.getByRole("button", { name: "Analyze business problem", exact: true }).click();
+  const submitted = await submission;
   expect(submitted.status()).toBe(202);
   const firstId = (await submitted.json()).data.jobId as string;
+  await expect(page.getByRole("button", { name: "Analyzing…", exact: true })).toBeDisabled();
+  await page.reload();
+  await expect(page.getByRole("button", { name: "Analyzing…", exact: true })).toBeDisabled();
   const readJob = async (id: string) => {
     const response = await page.request.get(`${origin}/api/jobs/${id}`); expect(response.status()).toBe(200);
     return (await response.json()).data;
@@ -118,7 +121,9 @@ for (const scenario of scenarios) test(`synthetic ${scenario.scenario}: browser 
     if (scenario.fault === "problem_analysis:timeout:once") {
       expect(await terminal(firstId, "FAILED")).toMatchObject({ error: { code: "AI_TIMEOUT" }, result: null });
       expect((await (await page.request.get(`${origin}/api/projects/${projectId}`)).json()).data.project.setupStatus).toBe("DRAFT");
-      const retry = await page.request.post(`${origin}/api/jobs/${firstId}/retry`, { headers: { origin } });
+      const retryResponse = page.waitForResponse((r) => r.url().endsWith(`/api/jobs/${firstId}/retry`) && r.request().method() === "POST");
+      await page.getByRole("button", { name: "Retry analysis", exact: true }).click();
+      const retry = await retryResponse;
       expect(retry.status()).toBe(202); completedId = (await retry.json()).data.jobId;
       expect(completedId).not.toBe(firstId);
     }
@@ -129,8 +134,13 @@ for (const scenario of scenarios) test(`synthetic ${scenario.scenario}: browser 
     expect(row.metrics).toMatchObject({ provider: "stub", attempts: scenario.fault === "problem_analysis:invalid:once" ? 2 : 1 });
     expect((await (await page.request.get(`${origin}/api/projects/${projectId}`)).json()).data.project.setupStatus).toBe("SCOPE_PROPOSED");
     expect((await page.request.post(`${origin}/api/jobs/${completedId}/retry`, { headers: { origin } })).status()).toBe(409);
+    await expect(page.getByTestId("analysis-result")).toBeVisible();
+    await expect(page.getByTestId("analysis-result")).toContainText(row.payload.scopeSummary);
+    await page.reload();
+    await expect(page.getByTestId("analysis-result")).toContainText(row.payload.scopeSummary);
+    await testInfo.attach("scope-review", { body: await page.screenshot({ fullPage: true }), contentType: "image/png" });
     await testInfo.attach("analysis-evidence", { contentType: "application/json", body: JSON.stringify({
-      scenario: scenario.scenario, synthetic: true, aiProvider: "stub", scopeUiTested: false,
+      scenario: scenario.scenario, synthetic: true, aiProvider: "stub", scopeUiTested: true,
       projectId, firstJobId: firstId, completedJobId: completedId, result, ...row }, null, 2) });
   } finally {
     if (worker) await stop(worker);
@@ -143,7 +153,7 @@ for (const scenario of scenarios) test(`synthetic ${scenario.scenario}: browser 
   try {
     const outsider = await foreign.newPage();
     await signup(outsider, "Synthetic unrelated organisation");
-    for (const route of [`/api/projects/${projectId}`, `/api/jobs/${completedId}`]) {
+    for (const route of [`/api/projects/${projectId}`, `/api/projects/${projectId}/analysis`, `/api/jobs/${completedId}`]) {
       expect((await outsider.request.get(`${origin}${route}`)).status()).toBe(404);
     }
     expect((await outsider.request.post(`${origin}/api/projects/${projectId}/analysis`, { headers: { origin } })).status()).toBe(404);
