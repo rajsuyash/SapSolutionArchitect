@@ -71,3 +71,13 @@ pnpm test:browser:synthetic
 ```
 
 The Playwright harness creates and removes an isolated local database, serves the production build over HTTPS, and tests all three fictional journeys with a deterministic worker. It covers progress after reload, retry, persisted scope review, and tenant isolation; it does not evaluate real AI quality. Local evidence is saved under ignored `playwright-report/` and `test-results/`. Live checks and screenshots are under `test-results/live-demo/`.
+
+For an explicitly authorized audit of the live Railway demo:
+
+```sh
+node --import tsx scripts/test-live-demo.ts --create-synthetic-data
+```
+
+This creates a fresh fictional tenant and three projects, invokes real AI (billable), and checks signup/login/logout, persisted inputs, idempotent saves, duplicate jobs, live completion status, schema/hierarchy/source quotes, reload persistence, mobile layout, and tenant isolation. Each run retains its synthetic inputs, outputs, screenshots and JSON report in `test-results/live-audit/<timestamp>/`. The latest QA account credentials stay in ignored `.env.live-test`; existing presenter credentials remain in `.env.demo-access`. Synthetic workspaces are retained for inspection. The script only targets the known demo URL and requires the explicit flag.
+
+The production web and worker configuration was checked on 2026-10-20: `AI_PROVIDER=anthropic`, `AI_MODEL=claude-sonnet-5-5`. This powers **problem/scope analysis**. The To-Be stage is specified in the PRD but is not implemented; passing the current audit does not certify the complete Blueprint journey or the semantic accuracy of every SAP recommendation.

@@ -136,6 +136,9 @@ for (const scenario of scenarios) test(`synthetic ${scenario.scenario}: browser 
     expect((await page.request.post(`${origin}/api/jobs/${completedId}/retry`, { headers: { origin } })).status()).toBe(409);
     await expect(page.getByTestId("analysis-result")).toBeVisible();
     await expect(page.getByTestId("analysis-result")).toContainText(row.payload.scopeSummary);
+    // Completion must also refresh the server-rendered overview without a
+    // manual reload; a correct database status alone missed this UI regression.
+    await expect(page.locator(".panel-description").filter({ hasText: project.clientName }).first()).toContainText("Scope proposed");
     await page.reload();
     await expect(page.getByTestId("analysis-result")).toContainText(row.payload.scopeSummary);
     await testInfo.attach("scope-review", { body: await page.screenshot({ fullPage: true }), contentType: "image/png" });

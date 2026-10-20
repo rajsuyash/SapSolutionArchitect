@@ -86,9 +86,10 @@ export function createAuthService(pool: Pool, config: { secret: string; appUrl: 
 
   async function issueSession(client: PoolClient, user: SessionUser) {
     const token = randomBytes(32).toString("base64url");
+    // Calendar days can be 23/25 hours across DST. Match the cookie's exact TTL.
     const { rows } = await client.query<{ expires_at: Date }>(`INSERT INTO auth.sessions(token_hash,org_id,user_id,created_at,expires_at)
-      VALUES($1,$2,$3,statement_timestamp(),statement_timestamp()+interval '7 days') RETURNING expires_at`,
-    [digest("session", token), user.orgId, user.id]);
+      VALUES($1,$2,$3,statement_timestamp(),statement_timestamp()+$4*interval '1 second') RETURNING expires_at`,
+    [digest("session", token), user.orgId, user.id, SESSION_SECONDS]);
     return { user, token, expiresAt: rows[0]!.expires_at };
   }
 

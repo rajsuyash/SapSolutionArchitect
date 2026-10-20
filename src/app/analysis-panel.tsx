@@ -1,11 +1,14 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import type { createJobService } from "../lib/jobs";
 
 type State = Awaited<ReturnType<ReturnType<typeof createJobService>["latest"]>>;
 
 export function AnalysisPanel({ projectId }: { projectId: string }) {
+  const router = useRouter();
+  const refreshedJob = useRef<string | null>(null);
   const [state, setState] = useState<State | null>(null);
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -22,6 +25,12 @@ export function AnalysisPanel({ projectId }: { projectId: string }) {
         if (!response.ok || !body.success) throw new Error(body.error?.message ?? "Couldn't load analysis");
         if (controller.signal.aborted) return;
         setState(body.data); setError("");
+        // The worker updates server-rendered project metadata as well as this
+        // panel. Refresh it once per completed job, preserving the user's scroll.
+        if (body.data.job?.status === "SUCCEEDED" && refreshedJob.current !== body.data.job.id) {
+          refreshedJob.current = body.data.job.id;
+          router.refresh();
+        }
         if (["QUEUED", "RUNNING"].includes(body.data.job?.status)) timer = setTimeout(refresh, 1500);
       } catch (failure) {
         if (!controller.signal.aborted) setError(failure instanceof Error ? failure.message : "Couldn't load analysis");
@@ -29,7 +38,7 @@ export function AnalysisPanel({ projectId }: { projectId: string }) {
     }
     void refresh();
     return () => { controller.abort(); clearTimeout(timer); };
-  }, [endpoint, projectId, version]);
+  }, [endpoint, projectId, version, router]);
 
   async function analyze() {
     setSubmitting(true); setError("");
