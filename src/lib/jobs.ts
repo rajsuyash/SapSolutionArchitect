@@ -14,7 +14,7 @@ const invalidState = () => new AuthError("INVALID_STATE", 409, "This operation i
 const metricSchema = z.object({ stage: z.literal("problem_analysis"), provider: z.enum(["stub", "anthropic"]),
   model: z.string().max(160), inputTokens: z.number().int().nonnegative(), outputTokens: z.number().int().nonnegative(),
   latencyMs: z.number().nonnegative(), attempts: z.number().int().nonnegative(),
-  validationErrors: z.array(z.object({ path: z.string().max(200), code: z.string().max(80) })).max(1000) });
+  validationErrors: z.array(z.object({ path: z.string().max(200), code: z.string().max(80), detail: z.string().max(200).optional() })).max(1000) });
 const errorCodes = z.enum(["AI_INPUT_INVALID", "AI_INPUT_TOO_LARGE", "AI_INVALID_OUTPUT", "AI_PROVIDER_ERROR", "AI_TIMEOUT", "AI_CANCELLED"]);
 type Job = { id: string; kind: string; status: string; progressLabel: string;
   error: { code: string; message: string } | null; result: { analysisId: string } | null };

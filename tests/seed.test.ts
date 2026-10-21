@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { parseEnv, promisify } from "node:util";
 import { Client } from "pg";
 import bcrypt from "bcryptjs";
@@ -9,6 +9,10 @@ import { applyMigration, fixtureId, parseReferences } from "../scripts/seed";
 
 const run = promisify(execFile);
 const header = "kind,code,title,module,targetProducts,summary\n";
+// Every checked-in migration must be applied; derive the list so new migrations cannot silently drift.
+// Floor guards against an empty/misresolved directory making the equality vacuous.
+const migrationFiles = readdirSync(new URL("../migrations/", import.meta.url)).filter((name) => name.endsWith(".sql")).sort();
+if (migrationFiles.length < 7) throw new Error("migrations directory not resolved");
 const csv = () => readFileSync(new URL("../seed/reference-library.csv", import.meta.url), "utf8");
 
 describe("reference seed validation", () => {
@@ -113,7 +117,7 @@ describe.skipIf(process.env.RUN_DB_TESTS !== "1")("foundation database", () => {
     expect((await seedCommand()).stdout).toContain("Database seeded");
     expect(await snapshot()).toEqual(first);
     expect((await client.query("SELECT version FROM sap_pm_migrations ORDER BY version")).rows)
-      .toEqual([{ version: "0001_foundation.sql" }, { version: "0002_auth.sql" }, { version: "0003_project_creation.sql" }, { version: "0004_analysis_jobs.sql" }]);
+      .toEqual(migrationFiles.map((version) => ({ version })));
     await client.query(`CREATE ROLE ${role} NOLOGIN NOSUPERUSER NOBYPASSRLS`);
     roleCreated = true;
     await client.query(`GRANT USAGE ON SCHEMA public TO ${role}`);
@@ -232,6 +236,6 @@ describe.skipIf(process.env.RUN_DB_TESTS !== "1")("foundation database", () => {
       .rejects.toMatchObject({ code: "42703" });
     await client.query("ROLLBACK");
     expect((await client.query("SELECT to_regclass('public.never_committed') AS table_name")).rows[0].table_name).toBeNull();
-    expect((await client.query("SELECT * FROM sap_pm_migrations")).rowCount).toBe(4);
+    expect((await client.query("SELECT * FROM sap_pm_migrations")).rowCount).toBe(migrationFiles.length);
   });
 });

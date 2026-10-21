@@ -126,8 +126,9 @@ describe.skipIf(process.env.RUN_DB_TESTS !== "1")("durable analysis jobs on Post
   it("stores one validated analysis with repair metrics and never passes identity fields to the model", async () => {
     const owner = await draft(); const { jobId } = await enqueue(owner);
     const repair = createStageRunner({ ...config, AI_FAULT_INJECTION: "problem_analysis:invalid:once" });
-    const spy = vi.fn(repair);
-    await Promise.all([execute(jobId, spy), execute(jobId, spy)]);
+    const spy = vi.fn();
+    const observed: typeof repair = async (...args) => { spy(...args); return repair(...args); };
+    await Promise.all([execute(jobId, observed), execute(jobId, observed)]);
     expect(spy).toHaveBeenCalledOnce();
     const input = spy.mock.calls[0]![1] as Record<string, unknown>;
     expect(Object.keys(input).sort()).toEqual(["candidates", "clientName", "modules", "name", "orgUnits", "problemStatement", "startingLandscape", "targetProduct"]);
@@ -195,8 +196,10 @@ describe.skipIf(process.env.RUN_DB_TESTS !== "1")("durable analysis jobs on Post
     expect((await jobs.get(owner.token, jobId)).error?.code).toBe("JOB_INTERRUPTED");
     const retry = await jobs.retry(owner.token, jobId, randomUUID());
     await pool.query("UPDATE project_memberships SET project_role='PROCESS_OWNER' WHERE project_id=$1", [owner.project.id]);
-    const run = vi.fn(runner());
-    await execute(retry.jobId, run); expect(run).not.toHaveBeenCalled();
+    const run = vi.fn();
+    const real = runner();
+    await execute(retry.jobId, async (...args) => { run(...args); return real(...args); });
+    expect(run).not.toHaveBeenCalled();
     expect((await jobs.get(owner.token, retry.jobId)).status).toBe("FAILED");
     const fresh = await draft(); const secretJob = await enqueue(fresh);
     const log = vi.spyOn(console, "info").mockImplementation(() => {});

@@ -1,0 +1,203 @@
+import { createHash, randomUUID } from "node:crypto";
+import type { Pool, PoolClient } from "pg";
+import type { PgBoss } from "pg-boss";
+import { z } from "zod";
+import { AuthError, transaction, type AuthService } from "./auth";
+import { withTenantSession } from "./tenant";
+import { validateDiscovery } from "./discovery";
+import { loadWorkspaceForWorker, persistWorkspaceTurn } from "./discovery-workspace";
+import { buildInterviewInput } from "./discovery-workspace-model";
+import { parseToBeInput, validateToBeOutput } from "./ai/to-be";
+import { loadSapReferences, type SapReferenceOptions } from "./ai/sap-references";
+import { parseStoredToBe, type ReportData } from "./consultant-report";
+import type { createStageRunner } from "./ai/runStage";
+
+export const CONSULTANT_QUEUE = "consultant.discovery";
+const scope = z.strictObject({ projectId: z.uuid(), variantCode: z.string().regex(/^[A-Z][A-Z0-9_-]{0,39}$/) });
+const request = z.discriminatedUnion("kind", [
+  z.strictObject({ kind: z.literal("INTERVIEW"), expectedRevision: z.number().int().positive(), messageId: z.string().regex(/^[A-Za-z0-9_-]{1,64}$/) }),
+  z.strictObject({ kind: z.literal("TO_BE"), expectedRevision: z.number().int().positive() }),
+]);
+const metricsSchema = z.strictObject({ stage: z.enum(["interview_turn", "to_be"]), provider: z.enum(["stub", "anthropic"]),
+  model: z.string().max(160), inputTokens: z.number().int().nonnegative(), outputTokens: z.number().int().nonnegative(),
+  latencyMs: z.number().nonnegative(), attempts: z.number().int().nonnegative(),
+  validationErrors: z.array(z.strictObject({ path: z.string().max(200), code: z.string().max(80), detail: z.string().max(200).optional() })).max(1000) });
+type StoredJob = { id: string; org_id: string; project_id: string; variant_code: string; kind: "INTERVIEW" | "TO_BE";
+  input_revision: number; message_id: string | null; snapshot_id: string | null; requested_by: string;
+  status: string; request_hash: string; error: { code: string; message: string } | null; result: unknown; metrics: unknown;
+  finished_at: Date | null };
+const expose = (job: StoredJob) => ({ id: job.id, kind: job.kind, status: job.status, inputRevision: job.input_revision,
+  error: job.error, result: job.result, metrics: job.metrics });
+const stale = () => new AuthError("STALE_INPUT", 409, "Discovery changed. Review the latest answers before continuing.");
+const missing = () => new AuthError("WORKSPACE_NOT_FOUND", 404, "Discovery conversation not found");
+const forbidden = () => new AuthError("FORBIDDEN", 403, "You cannot run the consultant for this project.");
+const workerScope = (job: StoredJob) => ({ orgId: job.org_id, projectId: job.project_id, variantCode: job.variant_code, requestedBy: job.requested_by });
+
+async function designInput(client: PoolClient, job: StoredJob) {
+  const row = (await client.query(`SELECT target_product,payload,source_digests FROM discovery_versions
+    WHERE id=$1 AND org_id=$2 AND project_id=$3 AND variant_code=$4`,
+  [job.snapshot_id, job.org_id, job.project_id, job.variant_code])).rows[0];
+  if (!row) throw stale();
+  const input = parseToBeInput({ targetProduct: row.target_product, discovery: row.payload });
+  for (const source of input.discovery.sources) {
+    if (row.source_digests[source.id] !== createHash("sha256").update(source.text, "utf8").digest("hex")) throw stale();
+  }
+  return input;
+}
+
+/** Every job pins a workspace revision. Model calls occur outside transactions;
+ * successful completion rechecks authorization, revision, deadline and run token. */
+export function createConsultantJobs(pool: Pool, auth: AuthService, queue: PgBoss, startQueue: () => Promise<void>) {
+  return {
+    async initialize() {
+      await queue.createQueue(CONSULTANT_QUEUE, { retryLimit: 0, expireInSeconds: 330, retentionSeconds: 3600, deleteAfterSeconds: 604800 });
+    },
+    enqueue: (token: string | null, projectId: string, variantCode: string, raw: unknown, key: string | null) =>
+      withTenantSession(pool, auth, token, async ({ client, user }) => {
+        if (!scope.safeParse({ projectId, variantCode }).success) throw missing();
+        const parsed = request.safeParse(raw);
+        if (!parsed.success) throw new AuthError("INVALID_REQUEST", 400, "Check the conversation revision and request.");
+        if (!z.uuid().safeParse(key).success) throw new AuthError("INVALID_IDEMPOTENCY_KEY", 400, "Send a UUID Idempotency-Key header");
+        const input = parsed.data;
+        // The helper holds the same workspace advisory transaction lock as all
+        // edits: concurrent enqueue/replay checks below are serialized too.
+        const workspace = await loadWorkspaceForWorker(client, { orgId: user.orgId, projectId, variantCode, requestedBy: user.id });
+        if (!workspace.canEdit) throw forbidden();
+        const hash = createHash("sha256").update(JSON.stringify(input)).digest("hex");
+        const prior = (await client.query<StoredJob>(`SELECT * FROM consultant_jobs WHERE org_id=$1 AND project_id=$2
+          AND variant_code=$3 AND requested_by=$4 AND request_key=$5`, [user.orgId, projectId, variantCode, user.id, key])).rows[0];
+        if (prior) {
+          if (prior.request_hash !== hash) throw new AuthError("IDEMPOTENCY_CONFLICT", 409, "This request key was already used for different inputs.");
+          return expose(prior);
+        }
+        if (workspace.state.revision !== input.expectedRevision) throw stale();
+        if (input.kind === "TO_BE" && (!workspace.canConfirm || !workspace.confirmedSnapshotId)) {
+          throw new AuthError("DISCOVERY_NOT_CONFIRMED", 409, "A project lead or consultant must confirm the completed As-Is discovery first.");
+        }
+        if (input.kind === "INTERVIEW") buildInterviewInput(workspace.state, input.messageId);
+        const pending = (await client.query(`SELECT id FROM consultant_jobs WHERE org_id=$1 AND project_id=$2
+          AND variant_code=$3 AND status IN ('QUEUED','RUNNING')`, [user.orgId, projectId, variantCode])).rows[0];
+        if (pending) throw new AuthError("JOB_ALREADY_RUNNING", 409, "The consultant is already responding. Please wait for that response.");
+        await startQueue();
+        const id = randomUUID();
+        const job = (await client.query<StoredJob>(`INSERT INTO consultant_jobs
+          (id,org_id,project_id,variant_code,kind,input_revision,message_id,snapshot_id,requested_by,request_key,request_hash)
+          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`,
+        [id, user.orgId, projectId, variantCode, input.kind, input.expectedRevision,
+          input.kind === "INTERVIEW" ? input.messageId : null, input.kind === "TO_BE" ? workspace.confirmedSnapshotId : null,
+          user.id, key, hash])).rows[0]!;
+        // Restore the trusted connection role solely for pg-boss insertion in this transaction.
+        await client.query("SET LOCAL ROLE NONE");
+        const queued = await queue.send(CONSULTANT_QUEUE, { jobId: id }, { id, retryLimit: 0, expireInSeconds: 330,
+          retentionSeconds: 3600, deleteAfterSeconds: 604800, db: { executeSql: (sql, values) => client.query(sql, values) } });
+        if (!queued) throw new Error("Consultant enqueue failed");
+        return expose(job);
+      }),
+    latest: (token: string | null, projectId: string, variantCode: string) =>
+      withTenantSession(pool, auth, token, async ({ client, user }) => {
+        if (!scope.safeParse({ projectId, variantCode }).success) throw missing();
+        // Reading is available to project viewers too. Do not use the worker write-authorizer here.
+        const member = await client.query(`SELECT 1 FROM project_memberships WHERE org_id=$1 AND project_id=$2 AND user_id=$3`,
+          [user.orgId, projectId, user.id]);
+        if (!member.rowCount) throw missing();
+        const jobs = (await client.query<StoredJob>(`SELECT * FROM consultant_jobs WHERE org_id=$1 AND project_id=$2 AND variant_code=$3
+          ORDER BY created_at DESC,id DESC LIMIT 20`, [user.orgId, projectId, variantCode])).rows;
+        return { jobs: jobs.map(expose) };
+      }),
+    /** Full validated To-Be result for one finished job. Visible to any project member; tenant isolation,
+     * job/workspace binding and SUCCEEDED-only are all enforced by the query. Metrics are never selected into the view. */
+    async report(token: string | null, projectId: string, variantCode: string, jobId: string, options: SapReferenceOptions = {}): Promise<ReportData> {
+      const rows = await withTenantSession(pool, auth, token, async ({ client, user }) => {
+        if (!scope.safeParse({ projectId, variantCode }).success || !z.uuid().safeParse(jobId).success) throw missing();
+        const member = await client.query(`SELECT 1 FROM project_memberships WHERE org_id=$1 AND project_id=$2 AND user_id=$3`,
+          [user.orgId, projectId, user.id]);
+        if (!member.rowCount) throw missing();
+        const job = (await client.query<StoredJob>(`SELECT * FROM consultant_jobs WHERE id=$1 AND org_id=$2 AND project_id=$3
+          AND variant_code=$4 AND kind='TO_BE' AND status='SUCCEEDED'`, [jobId, user.orgId, projectId, variantCode])).rows[0];
+        if (!job) throw new AuthError("REPORT_NOT_FOUND", 404, "Report not found");
+        const snapshot = (await client.query(`SELECT target_product,payload FROM discovery_versions
+          WHERE id=$1 AND org_id=$2 AND project_id=$3 AND variant_code=$4`, [job.snapshot_id, user.orgId, projectId, variantCode])).rows[0];
+        const project = (await client.query(`SELECT name,client_name FROM projects WHERE org_id=$1 AND id=$2`, [user.orgId, projectId])).rows[0];
+        if (!snapshot || !project) throw new AuthError("REPORT_NOT_FOUND", 404, "Report not found");
+        return { job, snapshot, project };
+      });
+      const stored = parseStoredToBe(rows.job.result);
+      const discovery = validateDiscovery(rows.snapshot.payload);
+      const catalog = await loadSapReferences(rows.snapshot.target_product, discovery.targetRelease, options);
+      const cited = new Set(stored.design.steps.flatMap(step => step.implementation.referenceIds));
+      return { jobId: rows.job.id, project: { name: rows.project.name, clientName: rows.project.client_name },
+        variant: { code: variantCode, name: discovery.variantName }, targetProduct: rows.snapshot.target_product,
+        targetRelease: discovery.targetRelease, sourceRevision: stored.sourceRevision,
+        generatedAt: rows.job.finished_at ? rows.job.finished_at.toISOString() : null,
+        discovery: { asIsSteps: discovery.asIsSteps, requirements: discovery.requirements, conflicts: discovery.conflicts,
+          openQuestions: discovery.openQuestions, sources: discovery.sources.map(({ id, title, locator, revision }) => ({ id, title, locator, revision })) },
+        design: stored.design, blockers: stored.evaluation.blockers, unresolvedInputQuestions: stored.unresolvedInputQuestions,
+        references: catalog.filter(reference => cited.has(reference.id)) };
+    },
+    async recover() {
+      await pool.query(`UPDATE consultant_jobs j SET status='FAILED',run_token=NULL,deadline_at=NULL,finished_at=clock_timestamp(),
+        error=jsonb_build_object('code',CASE WHEN j.status='RUNNING' THEN 'AI_TIMEOUT' ELSE 'JOB_INTERRUPTED' END,
+          'message','The response was interrupted. Your saved answers are safe; you can retry.')
+        WHERE status IN ('QUEUED','RUNNING') AND ((status='RUNNING' AND deadline_at<=clock_timestamp()) OR NOT EXISTS (
+          SELECT 1 FROM pgboss.job q WHERE q.name=$1 AND q.id=j.id AND q.state IN ('created','retry','active')))`, [CONSULTANT_QUEUE]);
+    },
+    async execute(id: string, signal: AbortSignal, runStage: ReturnType<typeof createStageRunner>) {
+      if (!z.uuid().safeParse(id).success) return;
+      const runToken = randomUUID();
+      const job = (await pool.query<StoredJob>(`UPDATE consultant_jobs SET status='RUNNING',run_token=$2,
+        deadline_at=clock_timestamp()+interval '300 seconds' WHERE id=$1 AND status='QUEUED' RETURNING *`, [id, runToken])).rows[0];
+      if (!job) return;
+      try {
+        signal.throwIfAborted();
+        const input = await transaction(pool, async client => {
+          const workspace = await loadWorkspaceForWorker(client, workerScope(job), true);
+          if (!workspace.canEdit) throw forbidden();
+          if (workspace.state.revision !== job.input_revision) throw stale();
+          if (job.kind === "INTERVIEW") return { kind: "INTERVIEW" as const, input: buildInterviewInput(workspace.state, job.message_id!) };
+          if (!workspace.canConfirm || workspace.confirmedSnapshotId !== job.snapshot_id) throw stale();
+          return { kind: "TO_BE" as const, input: await designInput(client, job) };
+        });
+        const generated = input.kind === "INTERVIEW"
+          ? await runStage("interview_turn", input.input, signal)
+          : await runStage("to_be", input.input, signal);
+        const metrics = metricsSchema.parse(generated.metrics);
+        if (metrics.stage !== (job.kind === "INTERVIEW" ? "interview_turn" : "to_be")) throw new Error("Invalid stage metrics");
+        signal.throwIfAborted();
+        await transaction(pool, async client => {
+          const locked = await client.query(`SELECT id FROM consultant_jobs WHERE id=$1 AND status='RUNNING'
+            AND run_token=$2 AND deadline_at>clock_timestamp() FOR UPDATE`, [id, runToken]);
+          if (!locked.rowCount) return;
+          const workspace = await loadWorkspaceForWorker(client, workerScope(job), true);
+          if (!workspace.canEdit) throw forbidden();
+          if (workspace.state.revision !== job.input_revision) throw stale();
+          let result: unknown;
+          if (input.kind === "INTERVIEW") {
+            const saved = await persistWorkspaceTurn(client, { ...workerScope(job), expectedRevision: job.input_revision,
+              currentMessageId: job.message_id!, turn: generated.payload, requestKey: id });
+            result = { workspaceRevision: saved.state.revision };
+          } else {
+            if (!workspace.canConfirm || workspace.confirmedSnapshotId !== job.snapshot_id) throw stale();
+            const validation = validateToBeOutput(input.input, (generated.payload as { design?: unknown }).design);
+            if (!validation.success) throw new Error("Invalid design output");
+            result = { ...validation.data, sourceRevision: job.input_revision, snapshotId: job.snapshot_id,
+              status: validation.data.evaluation.blockers.length ? "BLOCKED" : "HUMAN_REVIEW_REQUIRED" };
+          }
+          signal.throwIfAborted();
+          const completed = await client.query(`UPDATE consultant_jobs SET status='SUCCEEDED',result=$3,metrics=$4,
+            run_token=NULL,deadline_at=NULL,finished_at=clock_timestamp()
+            WHERE id=$1 AND status='RUNNING' AND run_token=$2 AND deadline_at>clock_timestamp()`, [id, runToken, result, metrics]);
+          if (!completed.rowCount) throw stale();
+          signal.throwIfAborted();
+        });
+      } catch (error) {
+        const safe = z.enum(["AI_INPUT_INVALID", "AI_INPUT_TOO_LARGE", "AI_INVALID_OUTPUT", "AI_PROVIDER_ERROR", "AI_TIMEOUT", "AI_CANCELLED", "STALE_INPUT"])
+          .safeParse((error as { code?: unknown })?.code);
+        const code = signal.aborted ? "AI_CANCELLED" : safe.success ? safe.data : "CONSULTANT_FAILED";
+        await pool.query(`UPDATE consultant_jobs SET status='FAILED',error=$3,run_token=NULL,deadline_at=NULL,finished_at=clock_timestamp()
+          WHERE id=$1 AND status='RUNNING' AND run_token=$2`, [id, runToken, { code,
+          message: code === "STALE_INPUT" ? "The answers changed while the consultant was working. Review the latest conversation and retry."
+            : "The consultant could not finish this response. Your saved answers are safe; you can retry." }]);
+      }
+    },
+  };
+}
