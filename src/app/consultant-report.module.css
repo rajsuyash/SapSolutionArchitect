@@ -1,0 +1,60 @@
+.report { width: min(1400px, calc(100% - 48px)); margin: 32px auto 64px; line-height: 1.55; overflow-wrap: anywhere; }
+.report h1 { margin: 0 0 12px; font-size: 28px; letter-spacing: -0.02em; }
+.report h2 { margin: 0 0 14px; font-size: 22px; }
+.report h3 { margin: 18px 0 8px; font-size: 17px; }
+.report h4 { margin: 18px 0 6px; font-size: 15px; }
+.report p { margin: 0 0 8px; }
+.head { padding: 24px 28px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); }
+.eyebrow { color: var(--accent); font-weight: 650; font-size: 14px; }
+.muted { color: var(--muted); }
+.status { padding: 12px 14px; border-radius: 8px; border: 1px solid var(--border); }
+.status[data-status="BLOCKED"], .blockedNote { background: #fff4e6; border-color: #b26d3d; color: #62330d; }
+.status[data-status="HUMAN_REVIEW_REQUIRED"] { background: #eef6f4; border-color: #8fbfb3; }
+.blockedNote { padding: 10px 12px; border: 1px solid #b26d3d; border-radius: 8px; margin: 10px 0; }
+.facts { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 20px; margin: 14px 0; }
+.facts dt { color: var(--muted); font-size: 14px; }
+.facts dd { margin: 0; }
+.actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin: 12px 0; }
+.button { padding: 8px 14px; border: 1px solid var(--accent); border-radius: 6px; background: var(--surface); color: var(--accent); font: inherit; font-size: 14px; font-weight: 600; text-decoration: none; cursor: pointer; }
+.toc { display: flex; flex-wrap: wrap; gap: 6px 20px; padding-top: 10px; border-top: 1px solid var(--border); font-size: 14px; }
+.section { margin-top: 32px; scroll-margin-top: 16px; }
+.step { margin: 24px 0; padding: 18px 20px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); scroll-margin-top: 16px; }
+.step h3 { margin-top: 0; }
+.tableWrap { overflow-x: auto; margin: 8px 0 14px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); max-width: 100%; }
+.tableWrap table { border-collapse: collapse; width: 100%; min-width: 760px; font-size: 14px; }
+.tableWrap th, .tableWrap td { padding: 10px 12px; border-bottom: 1px solid var(--border); text-align: left; vertical-align: top; }
+.tableWrap thead th { background: #eef2f4; font-size: 13px; position: sticky; top: 0; }
+.tableWrap tbody th { font-weight: 400; background: #fafbfb; min-width: 220px; }
+.cellStep { padding-bottom: 10px; margin-bottom: 10px; border-bottom: 1px dashed var(--border); }
+.cellStep:last-child { border-bottom: 0; margin-bottom: 0; padding-bottom: 0; }
+.tight { margin: 4px 0 8px; padding-left: 18px; }
+.quote { margin: 4px 0 0; padding: 4px 10px; border-left: 3px solid var(--accent); background: #f3f8f6; font-size: 13px; }
+.badge { display: inline-block; padding: 2px 9px; border-radius: 999px; border: 1px solid var(--border); font-size: 12px; font-weight: 650; vertical-align: middle; }
+.badge[data-status="BLOCKED"] { background: #fff4e6; border-color: #b26d3d; color: #62330d; }
+.badge[data-status="REVIEW"] { background: #eef6f4; border-color: #8fbfb3; }
+.badge[data-status="SPEC"] { background: #f3f0fa; border-color: #a99bd0; color: #3b2a6b; }
+.code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; color: var(--muted); }
+.ref { font-size: 13px; }
+
+@media (max-width: 700px) {
+  .report { width: calc(100% - 32px); margin-top: 16px; }
+  .head { padding: 16px; }
+  .facts { grid-template-columns: minmax(0, 1fr); gap: 0; }
+  .facts dd { margin-bottom: 8px; }
+}
+@media print {
+  .report { width: 100%; margin: 0; font-size: 11px; }
+  .head { border: 0; padding: 0; }
+  .actions, .toc { display: none !important; }
+  .step { break-inside: avoid-page; border-color: #999; }
+  .section { margin-top: 18px; }
+  .tableWrap { overflow: visible; border-color: #999; }
+  .tableWrap table { min-width: 0; font-size: 10px; }
+  .tableWrap thead { display: table-header-group; }
+  .tableWrap tr { break-inside: avoid; }
+  .tableWrap thead th { position: static; }
+  .report a { color: inherit; text-decoration: none; }
+}
+/* "anywhere" shrinks min-content and splits short words in narrow columns; break only when a word cannot fit. */
+.tableWrap th, .tableWrap td { overflow-wrap: break-word; min-width: 84px; }
+.badge { white-space: nowrap; }

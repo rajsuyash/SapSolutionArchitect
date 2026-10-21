@@ -3,9 +3,12 @@ import { NextResponse } from "next/server";
 import { AuthError, assertSameOrigin, isAuthError, sessionCookie, type AuthService } from "./auth";
 import type { createProjectRepository } from "./tenant";
 import type { createJobService } from "./jobs";
+import type { createDiscoveryRepository } from "./discovery";
+import { handleConsultant, type ConsultantRuntime } from "./consultant-http";
 
 export type HttpRuntime = { config: { APP_URL: string }; auth: AuthService;
-  projects: ReturnType<typeof createProjectRepository>; jobs: ReturnType<typeof createJobService> };
+  projects: ReturnType<typeof createProjectRepository>; jobs: ReturnType<typeof createJobService>;
+  discovery?: ReturnType<typeof createDiscoveryRepository> } & Pick<ConsultantRuntime, "workspaces" | "consultantJobs">;
 type LoadRuntime = () => HttpRuntime;
 const MAX_BODY_BYTES = 8192;
 const success = (data: unknown, status = 200) => NextResponse.json({ success: true, data }, { status });
@@ -124,6 +127,31 @@ class MethodError extends AuthError {
 
 export function handleProjects(request: Request, path: string[] | undefined, load: LoadRuntime): Promise<NextResponse> {
   return boundary(async (requestId) => {
+    if (path?.[1] === "discovery" && (path.length === 2 || path.length === 3)) {
+      const allowed = path.length === 3 ? "GET, HEAD, POST" : "GET, HEAD";
+      if (!allowed.split(", ").includes(request.method)) throw new MethodError(allowed);
+      const { discovery, auth, config } = load();
+      if (!discovery) throw new Error("Discovery repository unavailable");
+      const token = requestToken(request, config.APP_URL);
+      const url = new URL(request.url);
+      if (request.method === "POST") {
+        if (!await auth.authenticate(token)) throw new AuthError("UNAUTHENTICATED", 401, "Sign in to continue");
+        assertSameOrigin(request.headers, config.APP_URL);
+        const input = await readJson(request, 256 * 1024);
+        return success({ snapshot: await discovery.save(token, path[0]!, path[2]!, input, request.headers.get("idempotency-key")) }, 201);
+      }
+      if (path.length === 2) return success({ variants: await discovery.list(token, path[0]!) });
+      const versions = url.searchParams.getAll("version");
+      if (versions.length > 1 || (versions.length && !/^[1-9]\d{0,9}$/.test(versions[0]!))) {
+        throw new AuthError("INVALID_DISCOVERY", 400, "Send a positive revision number", "version");
+      }
+      return success(await discovery.get(token, path[0]!, path[2]!, versions.length ? Number(versions[0]) : undefined));
+    }
+    if (path?.[1] === "consultant") {
+      const runtime = load();
+      return handleConsultant(request, path, runtime, { token: requestToken(request, runtime.config.APP_URL), readJson, success,
+        methodNotAllowed: (allow) => new MethodError(allow) });
+    }
     if (path?.length === 2 && path[1] === "analysis") {
       if (!["GET", "HEAD", "POST"].includes(request.method)) throw new MethodError("GET, HEAD, POST");
       const { jobs, config } = load();

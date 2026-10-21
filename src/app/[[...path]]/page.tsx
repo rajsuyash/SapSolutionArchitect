@@ -6,6 +6,10 @@ import { isAuthError } from "../../lib/auth";
 import { getRuntime } from "../../lib/runtime";
 import { ProjectForm } from "../project-form";
 import { AnalysisPanel } from "../analysis-panel";
+import { DiscoveryPanel, type Variant } from "../discovery-panel";
+import { ConsultantPanel } from "../consultant-panel";
+import { ConsultantReport } from "../consultant-report";
+import { buildReport } from "../../lib/consultant-report";
 
 type Props = { params: Promise<{ path?: string[] }> };
 export async function generateMetadata({ params }: Props) {
@@ -14,8 +18,8 @@ export async function generateMetadata({ params }: Props) {
     : path[0] === "projects" ? "Projects" : "Workspace" };
 }
 
-function Panel({ title, children }: { title: string; children: ReactNode }) {
-  return <section className="access-panel access-placeholder" style={{ width: "min(880px, calc(100% - 48px))" }}>
+function Panel({ title, children, wide = false }: { title: string; children: ReactNode; wide?: boolean }) {
+  return <section className="access-panel access-placeholder" style={{ width: `min(${wide ? 1280 : 880}px, calc(100% - 48px))` }}>
     <h1>{title}</h1>{children}
   </section>;
 }
@@ -66,11 +70,58 @@ export default async function WorkspacePage({ params }: Props) {
       <a className="primary-button" href={route} data-primary-cta>Retry</a></Panel>;
   }
   if (project) {
+    if (path.length === 3 && path[2] === "consultant") {
+      // Data loads in the browser from the authorized API so the page resumes from server state on every visit.
+      return <Panel title="Discovery conversation" wide>
+        <p className="eyebrow">{project.name}</p>
+        <ConsultantPanel projectId={project.id} />
+        <p className="signup-link"><Link href={`/projects/${project.id}/discovery`}>Enter process details manually instead</Link>
+          {" · "}<Link href={`/projects/${project.id}`}>Back to project overview</Link></p>
+      </Panel>;
+    }
+    if (path.length === 6 && path[2] === "consultant" && path[4] === "to-be") {
+      let data: Awaited<ReturnType<NonNullable<ReturnType<typeof getRuntime>["consultantJobs"]>["report"]>>;
+      try { data = await getRuntime().consultantJobs.report(token, project.id, path[3]!, path[5]!); }
+      catch (error) {
+        if (isAuthError(error) && error.status === 401) redirect(`/login?${new URLSearchParams({ next: route })}`);
+        if (isAuthError(error) && error.status === 404) notFound();
+        return <Panel title="Could not load the report"><p className="panel-description">Please try again in a moment.</p>
+          <a className="primary-button" href={route} data-primary-cta>Retry</a></Panel>;
+      }
+      const api = `/api/projects/${encodeURIComponent(project.id)}/consultant/${encodeURIComponent(path[3]!)}/to-be/${encodeURIComponent(path[5]!)}`;
+      return <ConsultantReport model={buildReport(data)} downloads={{ markdown: `${api}/report.md`, csv: `${api}/traceability.csv`,
+        back: `/projects/${project.id}/consultant` }} />;
+    }
+    if (path.length === 3 && path[2] === "discovery") {
+      let variants: Variant[];
+      let canEdit: boolean;
+      try {
+        const discovery = getRuntime().discovery;
+        variants = await discovery.list(token, project.id);
+        // The repository applies project membership and read-only permissions,
+        // including when this project has not saved a variant yet.
+        ({ canEdit } = await discovery.get(token, project.id, variants[0]?.variantCode ?? "DEFAULT"));
+      } catch (error) {
+        if (isAuthError(error) && error.status === 401) redirect(`/login?${new URLSearchParams({ next: route })}`);
+        if (isAuthError(error) && error.status === 404) notFound();
+        return <Panel title="Could not load discovery"><p>Please try again.</p><a href={route}>Retry</a></Panel>;
+      }
+      return <Panel title="Detailed process discovery">
+        <p className="eyebrow">{project.name}</p>
+        <DiscoveryPanel projectId={project.id} initialVariants={variants} canCreate={canEdit} />
+        <p className="signup-link"><Link href={`/projects/${project.id}/consultant`}>Describe the process in a conversation instead</Link>
+          {" · "}<Link href={`/projects/${project.id}`}>Back to project overview</Link></p>
+      </Panel>;
+    }
     if (path.length !== 2) notFound(); // Unimplemented pages cannot bypass project authorization.
     return <Panel title={project.name}>
       <p className="eyebrow">Project overview</p>
       <p className="panel-description">{project.clientName} · {project.setupStatus === "ACTIVE" ? "Active" : project.setupStatus === "SCOPE_PROPOSED" ? "Scope proposed" : "Draft"}</p>
       <AnalysisPanel projectId={project.id} />
+      <h2 style={{ fontSize: 22 }}>Detailed process discovery</h2>
+      <p className="panel-description">Capture current steps, source notes and future requirements before designing the To-Be process.</p>
+      <p><Link href={`/projects/${project.id}/consultant`}>Describe the process in a guided conversation</Link></p>
+      <Link href={`/projects/${project.id}/discovery`}>Capture and review process details</Link>
       <h2 style={{ fontSize: 22 }}>Project details</h2>
       <dl style={{ display: "grid", gridTemplateColumns: "minmax(100px, 1fr) 3fr", gap: "16px 20px", lineHeight: 1.5 }}>
         <dt>Target product</dt><dd style={{ margin: 0 }}>{({ S4HANA_CLOUD_PUBLIC: "SAP S/4HANA Cloud Public Edition", S4HANA_CLOUD_PRIVATE: "SAP S/4HANA Cloud Private Edition", S4HANA_ON_PREMISE: "SAP S/4HANA on-premise" } as Record<string, string>)[project.targetProduct] ?? project.targetProduct}</dd>

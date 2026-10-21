@@ -5,6 +5,9 @@ import { createInfrastructure } from "./infrastructure";
 import { createAuthService } from "./auth";
 import { createProjectRepository } from "./tenant";
 import { createJobService } from "./jobs";
+import { createDiscoveryRepository } from "./discovery";
+import { createDiscoveryWorkspaceRepository } from "./discovery-workspace";
+import { createConsultantJobs } from "./consultant-jobs";
 
 export const HEALTH_QUEUE = "health.noop";
 type Status = "ok" | "error";
@@ -38,7 +41,10 @@ function createRuntime() {
   const services = createInfrastructure(config);
   const auth = createAuthService(services.pool, { secret: config.AUTH_SECRET, appUrl: config.APP_URL });
   const projects = createProjectRepository(services.pool, auth);
+  const discovery = createDiscoveryRepository(services.pool, auth);
+  const workspaces = createDiscoveryWorkspaceRepository(services.pool, auth);
   const jobs = createJobService(services.pool, auth, services.queue, startQueue);
+  const consultantJobs = createConsultantJobs(services.pool, auth, services.queue, startQueue);
   let queueStart: Promise<void> | undefined;
   let pendingHealth: Promise<Health> | undefined;
   let pendingQueueProbe: Promise<void> | undefined;
@@ -50,6 +56,7 @@ function createRuntime() {
         retryLimit: 0, expireInSeconds: 5, retentionSeconds: 60, deleteAfterSeconds: 60,
       });
       await jobs.initialize();
+      await consultantJobs.initialize();
     })().catch((error: unknown) => {
       queueStart = undefined; // A transient DB failure must not poison later checks.
       throw error;
@@ -98,7 +105,7 @@ function createRuntime() {
     return pendingHealth;
   }
 
-  return { config, services, auth, projects, jobs, startQueue, health };
+  return { config, services, auth, projects, discovery, workspaces, jobs, consultantJobs, startQueue, health };
 }
 
 const processState = globalThis as typeof globalThis & { sapPmRuntime?: ReturnType<typeof createRuntime> };

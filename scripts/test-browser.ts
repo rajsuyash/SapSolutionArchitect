@@ -85,7 +85,7 @@ try {
     try { if ((await fetch(`http://127.0.0.1:${port}/login`, { signal: AbortSignal.timeout(1000) })).status === 200) break; } catch { /* Startup only. */ }
     await delay(100);
   }
-  const tests = spawn("pnpm", ["test:browser"], { cwd, detached: true, stdio: "inherit", env: { ...process.env,
+  const tests = spawn("pnpm", ["test:browser", ...process.argv.slice(2)], { cwd, detached: true, stdio: "inherit", env: { ...process.env,
     PLAYWRIGHT_BASE_URL: origin, BROWSER_TEST_DATABASE_URL: url.href, RUN_SYNTHETIC_E2E: "1" } });
   const timeout = setTimeout(() => tests.kill("SIGTERM"), 240000);
   try {

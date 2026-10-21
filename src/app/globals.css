@@ -144,3 +144,10 @@ main:focus { outline: none; }
   .login-layout { width: min(440px, calc(100% - 40px)); grid-template-columns: 1fr; gap: 36px; margin-block: 40px; }
   .access-panel { padding: 28px; }
 }
+
+/* Reports print on landscape pages without application navigation. */
+@page { size: A4 landscape; margin: 12mm; }
+@media print {
+  .topbar, .skip-link { display: none !important; }
+  body { background: #fff; }
+}
