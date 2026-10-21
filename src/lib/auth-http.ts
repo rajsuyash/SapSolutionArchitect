@@ -29,7 +29,7 @@ async function boundary(work: (requestId: string) => Promise<NextResponse>): Pro
     if (known && error.retryAfter) response.headers.set("Retry-After", String(error.retryAfter));
     if (error instanceof MethodError) response.headers.set("Allow", error.allow);
   }
-  response.headers.set("Cache-Control", "no-store");
+  if (!response.headers.has("Cache-Control")) response.headers.set("Cache-Control", "no-store"); // downloads set "private, no-store"
   response.headers.set("X-Request-Id", requestId);
   response.headers.set("X-Content-Type-Options", "nosniff");
   return response;

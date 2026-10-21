@@ -102,4 +102,19 @@ describe("consultant report exports", () => {
     expect(reportFilename(model, "md")).toBe("to-be-hire-returns-rental-r7.md");
     expect(reportFilename(model, "csv")).toBe("to-be-hire-returns-rental-r7-traceability.csv");
   });
+  it("neutralizes spreadsheet formulas hidden behind a newline or leading spaces", () => {
+    const csv = renderTraceabilityCsv(buildReport({ ...data, discovery: { ...data.discovery,
+      requirements: [{ ...data.discovery.requirements[0]!, statement: "\n=HYPERLINK(\"x\")" }, { ...data.discovery.requirements[0]!, id: "R9", statement: " =1+1" }] } }));
+    expect(csv).toContain(`"'\n=HYPERLINK(""x"")"`);
+    expect(csv).toContain("'\u0020=1+1");
+  });
+  it("escapes raw HTML and link syntax in client-origin text", () => {
+    const hostile = buildReport({ ...data, discovery: { ...data.discovery,
+      requirements: [{ ...data.discovery.requirements[0]!, statement: "<img src=x onerror=alert(1)> [click](https://evil.example/x)" }] } });
+    const text = renderMarkdown(hostile);
+    expect(text).not.toContain("<img");
+    expect(text).not.toContain("[click]");
+    expect(text).toContain("&lt;img src=x onerror=alert(1)&gt; &#91;click](https://evil.example/x)");
+    expect(text).toContain("Returns processing [REF-1]");
+  });
 });

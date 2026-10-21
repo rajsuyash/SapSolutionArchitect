@@ -20,6 +20,8 @@ describe("server environment", () => {
     expect(config.AI_MAX_INPUT_TOKENS).toBe(60000);
     expect(config.AI_MAX_CONCURRENCY).toBe(4);
     expect(config.AI_PROVIDER).toBe("stub");
+    expect(config.CONSULTANT_DAILY_JOB_LIMIT).toBe(200);
+    expect(parseEnvironment({ ...example(), CONSULTANT_DAILY_JOB_LIMIT: "50", AI_MAX_INPUT_TOKENS: "60000" }).CONSULTANT_DAILY_JOB_LIMIT).toBe(50);
   });
 
   it.each([
@@ -40,6 +42,8 @@ describe("server environment", () => {
     ["AI_MAX_CONCURRENCY", "0"],
     ["AI_MAX_INPUT_TOKENS", "1.5"],
     ["AI_MAX_INPUT_TOKENS", ""],
+    ["CONSULTANT_DAILY_JOB_LIMIT", "0"],
+    ["CONSULTANT_DAILY_JOB_LIMIT", "many"],
     ["AI_FAULT_INJECTION", "unknown:timeout"],
   ])("rejects invalid %s", (name, value) => {
     expect(() => parseEnvironment({ ...example(), [name]: value })).toThrow(name);

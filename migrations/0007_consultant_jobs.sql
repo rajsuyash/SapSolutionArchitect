@@ -15,7 +15,8 @@ CREATE TABLE consultant_jobs (
   FOREIGN KEY (org_id,requested_by) REFERENCES users(org_id,id),
   FOREIGN KEY (org_id,project_id,variant_code,input_revision)
     REFERENCES discovery_workspace_revisions(org_id,project_id,variant_code,revision),
-  FOREIGN KEY (snapshot_id) REFERENCES discovery_versions(id),
+  FOREIGN KEY (org_id,project_id,variant_code,snapshot_id)
+    REFERENCES discovery_versions(org_id,project_id,variant_code,id),
   CHECK ((kind='INTERVIEW' AND message_id IS NOT NULL AND snapshot_id IS NULL)
     OR (kind='TO_BE' AND message_id IS NULL AND snapshot_id IS NOT NULL)),
   CHECK ((status='RUNNING') = (run_token IS NOT NULL AND deadline_at IS NOT NULL)),

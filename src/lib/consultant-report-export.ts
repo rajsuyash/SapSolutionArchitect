@@ -16,7 +16,14 @@ function registerTable(items: Register[]) {
   return items.length ? table(["Item", "Owner", "Affects", "State"], items.map(item => row(item.text, item.owner, item.affects, item.state))) : "None.\n";
 }
 
-export function renderMarkdown(model: ReportModel): string {
+/** Client-origin text must not inject HTML or links into a Markdown viewer. Entities survive the cell escaping above. */
+const neutralize = <T,>(value: T): T => typeof value === "string"
+  ? value.replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/\[/g, "&#91;") as T
+  : Array.isArray(value) ? value.map(neutralize) as T
+  : value && typeof value === "object" ? Object.fromEntries(Object.entries(value).map(([key, item]) => [key, neutralize(item)])) as T : value;
+
+export function renderMarkdown(source: ReportModel): string {
+  const model = neutralize(source);
   const { header, summary } = model;
   const out: string[] = [];
   const add = (...lines: string[]) => out.push(...lines, "");
@@ -78,7 +85,8 @@ export function renderMarkdown(model: ReportModel): string {
 
 /** Spreadsheet apps execute cells that start with these characters. */
 const csvCell = (value: string) => {
-  const safe = /^[=+\-@\t\r]/.test(value) ? `'${value}` : value;
+  // Leading whitespace and newlines are skipped by spreadsheets before a formula is recognised.
+  const safe = /^[=+\-@\t\r\n]/.test(value) || /^[=+\-@]/.test(value.trimStart()) ? `'${value}` : value;
   return /[",\r\n]/.test(safe) ? `"${safe.replace(/"/g, '""')}"` : safe;
 };
 export function renderTraceabilityCsv(model: ReportModel): string {

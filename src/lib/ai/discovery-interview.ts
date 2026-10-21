@@ -54,6 +54,8 @@ export type InterviewIssue = { path: string; code: string };
 // Defense in depth for common identifiers/credential formats, not a complete
 // secret detector. Authorized context assembly must exclude credential stores.
 const sensitive = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}|\b(?:sk-(?:ant-)?[A-Za-z0-9_-]{16,}|(?:AKIA|ASIA)[A-Z0-9]{16}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|xox[baprs]-[A-Za-z0-9-]{10,}|eyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)\b|-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY-----|\b(?:Bearer\s+\S+|Authorization\s*:\s*Basic\s+\S+|(?:password|api[_ -]?key|secret|token)\s*[:=]\s*\S+)/i;
+/** The same screen the interview input applies, exposed so a message is refused when sent rather than wedging every later turn. */
+export const containsSensitiveText = (text: string) => sensitive.test(text);
 const duplicate = (values: string[]) => new Set(values).size !== values.length;
 const questionKey = (value: string) => value.replace(/\s+/g, " ").trim().toLocaleLowerCase("en");
 

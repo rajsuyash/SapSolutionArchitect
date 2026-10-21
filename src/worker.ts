@@ -30,7 +30,7 @@ async function run() {
       batchSize: 1, localConcurrency: config.AI_MAX_CONCURRENCY, pollingIntervalSeconds: 0.5,
     }, async ([job]) => {
       if (!job || job.data.jobId !== job.id) return;
-      await consultantJobs.execute(job.id, AbortSignal.any([job.signal, shutdown.signal]), runStage);
+      await consultantJobs.execute(job.id, AbortSignal.any([job.signal, shutdown.signal]), runStage, { baseDir: catalogs.baseDir });
     });
     recoveryTimer = setInterval(() => {
       recovery ??= Promise.all([jobs.recover(), consultantJobs.recover()]).then(() => {})

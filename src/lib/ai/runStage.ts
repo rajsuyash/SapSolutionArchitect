@@ -4,6 +4,7 @@ import { z } from "zod";
 import { parseEnvironment, type Environment } from "../env";
 import { ProblemAnalysisInputSchema, ProblemAnalysisSchema, redactInput, schemaIssues, validateProblemAnalysis,
   type ProblemAnalysis, type ValidationIssue } from "./problem-analysis";
+import { STAGE_BUDGET_MS } from "./timeouts";
 import { DetailedDesignSchema } from "./design-quality";
 import { loadToBeReferences, parseToBeInput, validateToBeOutput, type ToBeOutput } from "./to-be";
 import { InterviewTurnSchema, parseInterviewInput, validateInterviewTurn, type InterviewInput, type InterviewTurn } from "./discovery-interview";
@@ -22,7 +23,7 @@ type Config = Pick<Environment, "NODE_ENV" | "AI_PROVIDER" | "ANTHROPIC_API_KEY"
 type Options = { fetch?: typeof fetch; sapCatalogDir?: string };
 const CALL_TIMEOUT = 120000;
 const DESIGN_CALL_TIMEOUT = 240000;
-const JOB_TIMEOUT = 300000;
+const JOB_TIMEOUT = STAGE_BUDGET_MS;
 
 function pause(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {

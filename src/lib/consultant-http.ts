@@ -102,7 +102,7 @@ export async function handleConsultant(request: Request, path: string[], runtime
 type ReportRoute = { projectId: string; variant: string; action: string | undefined; jobId: string; file: string | undefined; length: number };
 /** `GET .../:variant/to-be/:jobId` returns the validated result; `/report.md` and `/traceability.csv` download it. */
 async function handleReport(request: Request, route: ReportRoute, runtime: ConsultantRuntime, tools: ConsultantTools) {
-  const exported = route.file ? EXPORTS[route.file as keyof typeof EXPORTS] : undefined;
+  const exported = route.file && Object.hasOwn(EXPORTS, route.file) ? EXPORTS[route.file as keyof typeof EXPORTS] : undefined;
   if (route.action !== "to-be" || route.length > 6 || (route.file && !exported)) throw new AuthError("NOT_FOUND", 404, "Route not found");
   if (!["GET", "HEAD"].includes(request.method)) throw tools.methodNotAllowed("GET, HEAD");
   if (!runtime.consultantJobs) unavailable();
@@ -111,5 +111,6 @@ async function handleReport(request: Request, route: ReportRoute, runtime: Consu
   const model = buildReport(data);
   return new NextResponse(exported.extension === "md" ? renderMarkdown(model) : renderTraceabilityCsv(model), { headers: {
     "Content-Type": `${exported.type}; charset=utf-8`,
-    "Content-Disposition": `attachment; filename="${reportFilename(model, exported.extension)}"` } });
+    "Content-Disposition": `attachment; filename="${reportFilename(model, exported.extension)}"`,
+    "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff" } });
 }

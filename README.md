@@ -2,7 +2,17 @@
 
 A private demo for capturing SAP transformation projects and reviewing AI-generated process scope. The implemented flow is sign in → create project → analyze business problem → review objectives, quoted pain points, proposed processes, and clarifying questions.
 
-Scope confirmation, detailed As-Is/To-Be design, invitations, and blueprint exports are still in development. AI proposals require human review.
+The consultant workflow adds a guided discovery conversation per process variant, lead/consultant confirmation of the As-Is, a To-Be design generated from the confirmed revision, and Markdown and CSV exports. Invitations and full blueprint exports are still in development. AI proposals require human review.
+
+## Consultant workflow
+
+1. In a project, start a discovery conversation for a process variant (up to 20 per project). Answer the consultant's questions; messages containing emails, passwords or tokens are refused before they are saved.
+2. A project lead or consultant confirms the As-Is once the gaps are resolved. Confirmation pins an immutable revision.
+3. Generate the To-Be design from that revision. The result is a reviewable report (blockers, comparison, traceability) with `report.md` and `traceability.csv` downloads. Nothing is approved automatically; SAP claims are trusted only when they cite the curated, VERIFIED reference catalog in `fixtures/sap`.
+
+Cost controls: `CONSULTANT_DAILY_JOB_LIMIT` (default 200) caps consultant jobs per organization per rolling 24 hours (HTTP 429 `RATE_LIMITED` with `Retry-After`). The To-Be stage needs `AI_MAX_INPUT_TOKENS` of about 45000 or more.
+
+The worker must start with its working directory at the repository root so it finds `fixtures/sap`. It resolves the catalog directory at startup and exits with an error if it is missing or malformed, rather than silently treating every SAP claim as unverified.
 
 ## Live demo
 
@@ -47,7 +57,7 @@ node --import tsx scripts/seed.ts --migrate-only
 
 Configure secrets through Railway variables, never Docker build arguments or the repository. Required variables are documented in `.env.example` and validated in `src/lib/env.ts`. Production uses HTTPS for `APP_URL` and `S3_ENDPOINT`, a random `AUTH_SECRET`, real Anthropic credentials, and `EMAIL_PROVIDER=disabled` until email features exist. `DATABASE_URL` references `${{Postgres.DATABASE_URL}}` on the private network. Set `DEMO_ACCESS_PASSWORD` to a random string of at least 24 characters to enable the additional demo gate (username `demo`). The gate does not replace session or tenant authorization.
 
-The demo sets `AI_MAX_CONCURRENCY=1` and `AI_MAX_INPUT_TOKENS=12000`. These limit concurrency and input size, not total monthly AI spending. Do not share the invitation password publicly. Do not enable service tracing that captures request bodies or credentials.
+The demo sets `AI_MAX_CONCURRENCY=1` and `AI_MAX_INPUT_TOKENS=60000` (To-Be generation needs about 45000 or more). These limit concurrency and input size, not total monthly AI spending. Do not share the invitation password publicly. Do not enable service tracing that captures request bodies or credentials.
 
 Deploy reviewed source using the Railway CLI:
 
@@ -80,4 +90,4 @@ node --import tsx scripts/test-live-demo.ts --create-synthetic-data
 
 This creates a fresh fictional tenant and three projects, invokes real AI (billable), and checks signup/login/logout, persisted inputs, idempotent saves, duplicate jobs, live completion status, schema/hierarchy/source quotes, reload persistence, mobile layout, and tenant isolation. Each run retains its synthetic inputs, outputs, screenshots and JSON report in `test-results/live-audit/<timestamp>/`. The latest QA account credentials stay in ignored `.env.live-test`; existing presenter credentials remain in `.env.demo-access`. Synthetic workspaces are retained for inspection. The script only targets the known demo URL and requires the explicit flag.
 
-The production web and worker configuration was checked on 2026-10-20: `AI_PROVIDER=anthropic`, `AI_MODEL=claude-sonnet-5-5`. This powers **problem/scope analysis**. The To-Be stage is specified in the PRD but is not implemented; passing the current audit does not certify the complete Blueprint journey or the semantic accuracy of every SAP recommendation.
+The production web and worker configuration was checked on 2026-10-20: `AI_PROVIDER=anthropic`, `AI_MODEL=claude-sonnet-5-5`. This powers **problem/scope analysis** and the consultant workflow. The live audit script covers problem analysis only; passing it does not certify the complete Blueprint journey or the semantic accuracy of every SAP recommendation.

@@ -1,6 +1,9 @@
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { parseEnv, promisify } from "node:util";
 import bcrypt from "bcryptjs";
 import { Client, Pool } from "pg";
@@ -29,6 +32,10 @@ describe.skipIf(process.env.RUN_DB_TESTS !== "1")("durable consultant conversati
   const projects = createProjectRepository(pool, auth);
   const workspaces = createDiscoveryWorkspaceRepository(pool, auth);
   const jobs = createConsultantJobs(pool, auth, queue, async () => {});
+  let catalogDir = "";
+  const catalog = { schemaVersion: 1, targetProducts: ["S4HANA_CLOUD_PRIVATE"], targetRelease: "2023", references: [{
+    id: "REF-SYN", capability: "Synthetic capability", fitType: "STANDARD", objects: ["Synthetic object"], verification: "VERIFIED",
+    evidence: [{ url: "https://help.sap.com/docs/synthetic", quote: "Synthetic quote", release: "2023" }], limitations: [] }] };
   let created = false;
   const runner = (observe?: (input: InterviewInput) => Promise<void>): ReturnType<typeof createStageRunner> =>
     (async (_stage: string, raw: unknown) => {
@@ -39,13 +46,13 @@ describe.skipIf(process.env.RUN_DB_TESTS !== "1")("durable consultant conversati
       metrics: { stage: "interview_turn", provider: "anthropic", model: "synthetic-test-double", inputTokens: 1,
         outputTokens: 1, latencyMs: 1, attempts: 1, validationErrors: [] } };
     }) as ReturnType<typeof createStageRunner>;
-  async function draft() {
+  async function draft(targetRelease: string | null = null) {
     const owner = await auth.signup({ name: "Synthetic participant", email: `consultant-${randomUUID()}@test.local`,
       password: "Password123!", orgName: "Consultant test" });
     const project = await projects.create(owner.token, { name: "Rental discovery", clientName: "Synthetic Rental",
       problemStatement: "Manual rental dispatch and invoice handoffs cause repeated entry, delays and reconciliation errors.",
       targetProduct: "S4HANA_CLOUD_PRIVATE", modules: ["SD"] }, randomUUID());
-    const initial = await workspaces.create(owner.token, project.id, "RENTAL", { variantName: "Equipment rental", targetRelease: null }, randomUUID());
+    const initial = await workspaces.create(owner.token, project.id, "RENTAL", { variantName: "Equipment rental", targetRelease }, randomUUID());
     const current = await workspaces.command(owner.token, project.id, "RENTAL", initial.state.revision, randomUUID(),
       { type: "SEND_MESSAGE", text: "The rental coordinator tracks dispatch in a spreadsheet today." });
     return { ...owner, project, state: current.state, messageId: current.state.messages.at(-1)!.id };
@@ -56,20 +63,20 @@ describe.skipIf(process.env.RUN_DB_TESTS !== "1")("durable consultant conversati
 
 
   /** A runner for the To-Be stage that maps the benchmark design onto the confirmed workspace's own ids. */
-  const toBeRunner = (observe?: (input: ToBeInput) => Promise<void>): ReturnType<typeof createStageRunner> =>
+  const toBeRunner = (observe?: (input: ToBeInput) => Promise<void>, cite?: string): ReturnType<typeof createStageRunner> =>
     (async (_stage: string, raw: unknown) => {
       const input = raw as ToBeInput; await observe?.(input);
       const step = input.discovery.asIsSteps[0]!; const req = input.discovery.requirements[0]!;
       const tb = rentalDraft.steps[0]!;
-      const design = { ...rentalDraft, steps: [{ ...tb, asIsStepIds: [step.id], requirementIds: [req.id],
+      const design = { ...rentalDraft, steps: [{ ...tb, ...(cite && { implementation: { kind: "STANDARD" as const, detail: "Synthetic realization", referenceIds: [cite] } }), asIsStepIds: [step.id], requirementIds: [req.id],
         acceptanceTests: tb.acceptanceTests.map(t => ({ ...t, requirementIds: [req.id] })) }],
       coverage: [{ requirementId: req.id, disposition: "IMPLEMENTED", stepIds: [tb.id], decisionId: null, rationale: "Covered by the proposed hire step." }],
       conflictDecisions: [], openQuestions: [] };
       return { payload: { design }, metrics: { stage: "to_be", provider: "anthropic", model: "synthetic-test-double", inputTokens: 1,
         outputTokens: 1, latencyMs: 1, attempts: 1, validationErrors: [] } };
     }) as ReturnType<typeof createStageRunner>;
-  async function confirmed() {
-    const owner = await draft(); let current = await workspaces.get(owner.token, owner.project.id, "RENTAL");
+  async function confirmed(release: string | null = null) {
+    const owner = await draft(release); let current = await workspaces.get(owner.token, owner.project.id, "RENTAL");
     const run = async (command: object) => {
       current = await workspaces.command(owner.token, owner.project.id, "RENTAL", current.state!.revision, randomUUID(), command);
     };
@@ -94,8 +101,12 @@ describe.skipIf(process.env.RUN_DB_TESTS !== "1")("durable consultant conversati
     await admin.connect(); await admin.query(`CREATE DATABASE ${database}`); created = true;
     await promisify(execFile)("pnpm", ["db:seed"], { env: { ...process.env, NODE_ENV: "test", DATABASE_URL: url.href }, timeout: 30000 });
     await queue.start(); await jobs.initialize();
+    catalogDir = await mkdtemp(join(tmpdir(), "consultant-sap-"));
+    await mkdir(join(catalogDir, "s4hana-2023"), { recursive: true });
+    await writeFile(join(catalogDir, "s4hana-2023", "reference-catalog.json"), JSON.stringify(catalog));
   }, 40000);
   afterAll(async () => {
+    await rm(catalogDir, { recursive: true, force: true });
     await queue.stop({ graceful: true }); await pool.end();
     try { if (created) await admin.query(`DROP DATABASE ${database}`); } finally { await admin.end(); }
   }, 15000);
@@ -204,5 +215,58 @@ describe.skipIf(process.env.RUN_DB_TESTS !== "1")("durable consultant conversati
     await expect(jobs.enqueue(token, owner.project.id, "RENTAL", { kind: "INTERVIEW", expectedRevision: owner.state.revision,
       messageId: owner.messageId }, randomUUID())).rejects.toMatchObject({ code: "WORKSPACE_NOT_FOUND" });
     expect((await workspaces.get(owner.token, owner.project.id, "RENTAL")).state?.messages.at(-1)?.id).toBe(owner.messageId);
+  });
+
+  it("keeps a To-Be job that cites a VERIFIED catalog reference from failing worker re-validation", async () => {
+    const c = await confirmed("2023"); const job = await enqueueToBe(c);
+    await jobs.execute(job.id, new AbortController().signal, toBeRunner(undefined, "REF-SYN"), { baseDir: catalogDir });
+    const done = (await jobs.latest(c.token, c.project.id, "RENTAL")).jobs[0]!;
+    expect(done).toMatchObject({ status: "SUCCEEDED", error: null });
+  });
+
+  it("gives the deadline headroom over the stage budget and reports an expired deadline as a timeout, not changed answers", async () => {
+    const owner = await draft(); const job = await enqueue(owner); let headroom = 0;
+    await execute(job.id, runner(async () => {
+      headroom = Number((await pool.query("SELECT extract(epoch FROM deadline_at-clock_timestamp()) AS s FROM consultant_jobs WHERE id=$1", [job.id])).rows[0].s);
+      await pool.query("UPDATE consultant_jobs SET deadline_at=clock_timestamp()-interval '1 second' WHERE id=$1", [job.id]);
+    }));
+    expect(headroom).toBeGreaterThan(330);
+    expect((await jobs.latest(owner.token, owner.project.id, "RENTAL")).jobs[0]).toMatchObject({ status: "FAILED", error: { code: "AI_TIMEOUT" }, result: null });
+  });
+
+  it("rejects a job pinned to another project's snapshot and a confirmed revision without a confirmation", async () => {
+    const a = await confirmed(); const b = await confirmed();
+    const bad = pool.query(`INSERT INTO consultant_jobs(id,org_id,project_id,variant_code,kind,input_revision,snapshot_id,requested_by,request_key,request_hash)
+      VALUES($1,$2,$3,'RENTAL','TO_BE',$4,$5,$6,$7,$8)`,
+    [randomUUID(), a.user.orgId, a.project.id, a.state.revision, b.snapshotId, a.user.id, randomUUID(), "0".repeat(64)]);
+    await expect(bad).rejects.toMatchObject({ code: "23503" });
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      await expect(client.query(`INSERT INTO discovery_workspace_revisions(id,org_id,project_id,variant_code,revision,operation,state,request_key,request_hash,created_by,confirmed_snapshot_id)
+        VALUES($1,$2,$3,'RENTAL',$4,'CONFIRM','{}',$5,$6,$7,$8)`,
+      [randomUUID(), a.user.orgId, a.project.id, a.state.revision + 50, randomUUID(), "0".repeat(64), a.user.id, a.snapshotId])).rejects.toMatchObject({ code: "23514" });
+    } finally { await client.query("ROLLBACK"); client.release(); }
+  });
+
+  it("caps consultant jobs per organization over a rolling 24 hours and tells the caller when to retry", async () => {
+    const capped = createConsultantJobs(pool, auth, queue, async () => {}, { dailyJobLimit: 2 });
+    const owner = await auth.signup({ name: "Capped lead", email: `capped-${randomUUID()}@test.local`, password: "Password123!", orgName: "Capped org" });
+    const submit = async (n: number) => {
+      const project = await projects.create(owner.token, { name: `Capped ${n}`, clientName: "Synthetic Rental",
+        problemStatement: "Manual rental dispatch and invoice handoffs cause repeated entry, delays and reconciliation errors.",
+        targetProduct: "S4HANA_CLOUD_PRIVATE", modules: ["SD"] }, randomUUID());
+      const initial = await workspaces.create(owner.token, project.id, "RENTAL", { variantName: "Equipment rental", targetRelease: null }, randomUUID());
+      const sent = await workspaces.command(owner.token, project.id, "RENTAL", initial.state.revision, randomUUID(), { type: "SEND_MESSAGE", text: "Dispatch is tracked in a spreadsheet." });
+      return capped.enqueue(owner.token, project.id, "RENTAL", { kind: "INTERVIEW", expectedRevision: sent.state.revision, messageId: sent.state.messages.at(-1)!.id }, randomUUID());
+    };
+    await submit(1); await submit(2);
+    const refused = await submit(3).catch(error => error);
+    expect(refused).toMatchObject({ code: "RATE_LIMITED", status: 429 });
+    expect(refused.retryAfter).toBeGreaterThan(0);
+    expect((await pool.query("SELECT count(*)::int AS n FROM consultant_jobs WHERE org_id=$1", [owner.user.orgId])).rows[0].n).toBe(2);
+    expect((await pool.query("SELECT count(*)::int AS n FROM pgboss.job WHERE name=$1 AND data->>'jobId' NOT IN (SELECT id::text FROM consultant_jobs)", [CONSULTANT_QUEUE])).rows[0].n).toBe(0);
+    await pool.query("UPDATE consultant_jobs SET created_at=clock_timestamp()-interval '25 hours' WHERE org_id=$1", [owner.user.orgId]);
+    await expect(submit(4)).resolves.toMatchObject({ status: "QUEUED" });
   });
 });

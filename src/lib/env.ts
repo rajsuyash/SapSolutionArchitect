@@ -11,6 +11,7 @@ const schema = z.object({
   ANTHROPIC_API_KEY: z.string().optional(),
   AI_MODEL: required.default("claude-sonnet-5-5"),
   AI_MAX_INPUT_TOKENS: z.coerce.number().int().positive().default(60000),
+  CONSULTANT_DAILY_JOB_LIMIT: z.coerce.number().int().min(1).max(100000).default(200),
   AI_MAX_CONCURRENCY: z.coerce.number().int().positive().default(4),
   AI_FAULT_INJECTION: z.string().regex(
     /^(problem_analysis|as_is|gap|to_be|change_doc|blueprint_narrative):(timeout|invalid|error)(:once)?$/,

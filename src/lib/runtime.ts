@@ -44,7 +44,8 @@ function createRuntime() {
   const discovery = createDiscoveryRepository(services.pool, auth);
   const workspaces = createDiscoveryWorkspaceRepository(services.pool, auth);
   const jobs = createJobService(services.pool, auth, services.queue, startQueue);
-  const consultantJobs = createConsultantJobs(services.pool, auth, services.queue, startQueue);
+  const consultantJobs = createConsultantJobs(services.pool, auth, services.queue, startQueue,
+    { dailyJobLimit: config.CONSULTANT_DAILY_JOB_LIMIT });
   let queueStart: Promise<void> | undefined;
   let pendingHealth: Promise<Health> | undefined;
   let pendingQueueProbe: Promise<void> | undefined;

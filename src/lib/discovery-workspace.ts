@@ -3,7 +3,7 @@ import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
 import { AuthError, type AuthService } from "./auth";
 import { withTenantSession } from "./tenant";
-import { validateInterviewTurn } from "./ai/discovery-interview";
+import { containsSensitiveText, validateInterviewTurn } from "./ai/discovery-interview";
 import { applyWorkspaceCommand, buildInterviewInput, compileDiscovery, createWorkspace,
   getWorkspaceReadiness, recordInterviewTurn, WorkspaceCommandSchema, WorkspaceStateSchema,
   type WorkspaceState } from "./discovery-workspace-model";
@@ -136,6 +136,8 @@ export async function persistWorkspaceTurn(client: PoolClient, args: WorkspaceTu
 
 /** Session-facing entry points accept only a session token and resource IDs.
  * Project identity, roles, timestamps and generated IDs come from the server. */
+/** Bounds per-project spend and storage from variant creation. */
+const MAX_VARIANTS_PER_PROJECT = 20;
 export function createDiscoveryWorkspaceRepository(pool: Pool, auth: AuthService) {
   return {
     list: (token: string | null, projectId: string) => withTenantSession(pool, auth, token, async ({ client, user }) => {
@@ -171,6 +173,11 @@ export function createDiscoveryWorkspaceRepository(pool: Pool, auth: AuthService
         const prior = await replay(client, args, key!, hash);
         if (prior) return result(prior, a);
         if (await latest(client, args)) throw conflict();
+        const variants = (await client.query<{ n: number }>(`SELECT count(DISTINCT variant_code)::int AS n
+          FROM discovery_workspace_revisions WHERE org_id=$1 AND project_id=$2`, [user.orgId, projectId])).rows[0]!.n;
+        if (variants >= MAX_VARIANTS_PER_PROJECT) {
+          throw new AuthError("VARIANT_LIMIT", 409, `A project can have at most ${MAX_VARIANTS_PER_PROJECT} process variants.`);
+        }
         const state = createWorkspace({ variantCode, ...parsed.data, targetProduct: a.target_product,
           problemStatement: a.problem_statement }, metadata(user.id));
         return result(await append(client, args, "CREATE", state, key!, hash), a);
@@ -187,6 +194,9 @@ export function createDiscoveryWorkspaceRepository(pool: Pool, auth: AuthService
         const parsed = WorkspaceCommandSchema.safeParse(rawCommand);
         if (!parsed.success) throw new AuthError("INVALID_WORKSPACE_COMMAND", 400, "Check the discovery edit");
         if (parsed.data.type === "CONFIRM") requireConfirm(a);
+        if (parsed.data.type === "SEND_MESSAGE" && containsSensitiveText(parsed.data.text)) {
+          throw new AuthError("SENSITIVE_MESSAGE", 400, "Remove emails, passwords or tokens before sending", "text");
+        }
         const hash = digest({ expectedRevision, command: parsed.data });
         const prior = await replay(client, args, key!, hash);
         if (prior) return result(prior, a);

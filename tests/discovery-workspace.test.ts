@@ -158,4 +158,22 @@ describe.skipIf(process.env.RUN_DB_TESTS !== "1")("durable discovery workspace",
       { type: "CONFIRM" })).confirmedSnapshotId).toBe(confirmed.confirmedSnapshotId);
     expect((await pool.query("SELECT count(*)::int AS count FROM discovery_versions WHERE project_id=$1", [project.id])).rows[0].count).toBe(1);
   });
+
+  it("caps process variants per project", async () => {
+    const { owner, project } = await fixture();
+    for (let n = 1; n <= 20; n++) await workspaces.create(owner.token, project.id, `V${n}`, { variantName: `Variant ${n}` }, randomUUID());
+    await expect(workspaces.create(owner.token, project.id, "V21", { variantName: "Variant 21" }, randomUUID()))
+      .rejects.toMatchObject({ code: "VARIANT_LIMIT", status: 409 });
+  }, 60000);
+
+  it("refuses a message that fails the sensitive-data screen before saving it, so later turns are not wedged", async () => {
+    const { owner, project } = await fixture();
+    const created = await workspaces.create(owner.token, project.id, "SAFE", { variantName: "Safe" }, randomUUID());
+    await expect(workspaces.command(owner.token, project.id, "SAFE", created.state.revision, randomUUID(),
+      { type: "SEND_MESSAGE", text: "Write to jane@example.com with password: hunter2" }))
+      .rejects.toMatchObject({ code: "SENSITIVE_MESSAGE", status: 400, message: "Remove emails, passwords or tokens before sending" });
+    const after = await workspaces.get(owner.token, project.id, "SAFE");
+    expect(after.state?.revision).toBe(created.state.revision);
+    expect(after.state?.messages).toHaveLength(0);
+  });
 });

@@ -22,7 +22,7 @@ CREATE TABLE discovery_workspace_revisions (
   FOREIGN KEY (org_id,project_id,variant_code,confirmed_snapshot_id)
     REFERENCES discovery_versions(org_id,project_id,variant_code,id),
   CHECK (operation <> 'CONFIRM' OR confirmed_snapshot_id IS NOT NULL),
-  CHECK (confirmed_snapshot_id IS NULL OR state->'confirmation' <> 'null'::jsonb)
+  CHECK (confirmed_snapshot_id IS NULL OR (state ? 'confirmation' AND state->'confirmation' <> 'null'::jsonb))
 );
 CREATE INDEX discovery_workspace_actor_idx ON discovery_workspace_revisions(org_id,created_by);
 ALTER TABLE discovery_workspace_revisions ENABLE ROW LEVEL SECURITY;
@@ -57,3 +57,22 @@ $$;
 CREATE TRIGGER immutable_discovery_workspace_revision
   BEFORE UPDATE OR DELETE ON discovery_workspace_revisions
   FOR EACH ROW EXECUTE FUNCTION protect_discovery_workspace_revision();
+
+-- A process owner's edit may only carry the previous revision's confirmation forward unchanged; it can never
+-- introduce one. A trigger, not a policy: a policy that reads its own table recurses. Runs as the caller, so RLS still applies.
+CREATE FUNCTION guard_discovery_workspace_confirmation() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF NEW.operation = 'CONFIRM' OR (NEW.confirmed_snapshot_id IS NULL
+    AND coalesce(NEW.state->'confirmation','null'::jsonb) = 'null'::jsonb) THEN RETURN NEW; END IF;
+  IF EXISTS (SELECT 1 FROM project_memberships m WHERE m.org_id=NEW.org_id AND m.project_id=NEW.project_id
+      AND m.user_id=NEW.created_by AND m.project_role IN ('LEAD','CONSULTANT'))
+    OR EXISTS (SELECT 1 FROM discovery_workspace_revisions prev WHERE prev.org_id=NEW.org_id
+      AND prev.project_id=NEW.project_id AND prev.variant_code=NEW.variant_code AND prev.revision=NEW.revision-1
+      AND prev.confirmed_snapshot_id IS NOT DISTINCT FROM NEW.confirmed_snapshot_id
+      AND prev.state->'confirmation' IS NOT DISTINCT FROM NEW.state->'confirmation') THEN RETURN NEW; END IF;
+  RAISE EXCEPTION 'Only a lead or consultant can confirm discovery' USING ERRCODE = '42501';
+END;
+$$;
+CREATE TRIGGER guard_discovery_workspace_confirmation
+  BEFORE INSERT ON discovery_workspace_revisions
+  FOR EACH ROW EXECUTE FUNCTION guard_discovery_workspace_confirmation();

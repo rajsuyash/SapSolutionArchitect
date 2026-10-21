@@ -7,12 +7,18 @@ import { withTenantSession } from "./tenant";
 import { validateDiscovery } from "./discovery";
 import { loadWorkspaceForWorker, persistWorkspaceTurn } from "./discovery-workspace";
 import { buildInterviewInput } from "./discovery-workspace-model";
-import { parseToBeInput, validateToBeOutput } from "./ai/to-be";
+import { loadToBeReferences, parseToBeInput, validateToBeOutput } from "./ai/to-be";
 import { loadSapReferences, type SapReferenceOptions } from "./ai/sap-references";
+import { STAGE_BUDGET_MS } from "./ai/timeouts";
 import { parseStoredToBe, type ReportData } from "./consultant-report";
 import type { createStageRunner } from "./ai/runStage";
 
 export const CONSULTANT_QUEUE = "consultant.discovery";
+/** The stage runner owns STAGE_BUDGET_MS. The row deadline and queue expiry add headroom for the
+ * pre-stage transaction and the completion transaction, so a valid late result is not fenced out. */
+const DEADLINE_SECONDS = STAGE_BUDGET_MS / 1000 + 60;
+const QUEUE_EXPIRE_SECONDS = DEADLINE_SECONDS + 60;
+const timeoutError = () => Object.assign(new Error("AI_TIMEOUT"), { code: "AI_TIMEOUT" as const });
 const scope = z.strictObject({ projectId: z.uuid(), variantCode: z.string().regex(/^[A-Z][A-Z0-9_-]{0,39}$/) });
 const request = z.discriminatedUnion("kind", [
   z.strictObject({ kind: z.literal("INTERVIEW"), expectedRevision: z.number().int().positive(), messageId: z.string().regex(/^[A-Za-z0-9_-]{1,64}$/) }),
@@ -47,10 +53,12 @@ async function designInput(client: PoolClient, job: StoredJob) {
 
 /** Every job pins a workspace revision. Model calls occur outside transactions;
  * successful completion rechecks authorization, revision, deadline and run token. */
-export function createConsultantJobs(pool: Pool, auth: AuthService, queue: PgBoss, startQueue: () => Promise<void>) {
+export const DEFAULT_DAILY_JOB_LIMIT = 200;
+export function createConsultantJobs(pool: Pool, auth: AuthService, queue: PgBoss, startQueue: () => Promise<void>,
+  { dailyJobLimit = DEFAULT_DAILY_JOB_LIMIT }: { dailyJobLimit?: number } = {}) {
   return {
     async initialize() {
-      await queue.createQueue(CONSULTANT_QUEUE, { retryLimit: 0, expireInSeconds: 330, retentionSeconds: 3600, deleteAfterSeconds: 604800 });
+      await queue.createQueue(CONSULTANT_QUEUE, { retryLimit: 0, expireInSeconds: QUEUE_EXPIRE_SECONDS, retentionSeconds: 3600, deleteAfterSeconds: 604800 });
     },
     enqueue: (token: string | null, projectId: string, variantCode: string, raw: unknown, key: string | null) =>
       withTenantSession(pool, auth, token, async ({ client, user }) => {
@@ -88,7 +96,15 @@ export function createConsultantJobs(pool: Pool, auth: AuthService, queue: PgBos
           user.id, key, hash])).rows[0]!;
         // Restore the trusted connection role solely for pg-boss insertion in this transaction.
         await client.query("SET LOCAL ROLE NONE");
-        const queued = await queue.send(CONSULTANT_QUEUE, { jobId: id }, { id, retryLimit: 0, expireInSeconds: 330,
+        // Spend guard (OWASP LLM10): per-organization rolling 24h cap, counted org-wide (tenant RLS would only show
+        // the caller's projects) and serialized per org so concurrent enqueues cannot all slip under the limit.
+        await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))", [`consultant-quota:${user.orgId}`]);
+        const used = (await client.query<{ n: number; retry: number | null }>(`SELECT count(*)::int AS n,
+          ceil(extract(epoch FROM min(created_at)+interval '24 hours'-clock_timestamp()))::int AS retry FROM consultant_jobs
+          WHERE org_id=$1 AND created_at>clock_timestamp()-interval '24 hours'`, [user.orgId])).rows[0]!;
+        if (used.n > dailyJobLimit) throw new AuthError("RATE_LIMITED", 429,
+          "Your organization has reached its daily consultant limit. Try again later.", undefined, Math.max(60, used.retry ?? 3600));
+        const queued = await queue.send(CONSULTANT_QUEUE, { jobId: id }, { id, retryLimit: 0, expireInSeconds: QUEUE_EXPIRE_SECONDS,
           retentionSeconds: 3600, deleteAfterSeconds: 604800, db: { executeSql: (sql, values) => client.query(sql, values) } });
         if (!queued) throw new Error("Consultant enqueue failed");
         return expose(job);
@@ -141,11 +157,12 @@ export function createConsultantJobs(pool: Pool, auth: AuthService, queue: PgBos
         WHERE status IN ('QUEUED','RUNNING') AND ((status='RUNNING' AND deadline_at<=clock_timestamp()) OR NOT EXISTS (
           SELECT 1 FROM pgboss.job q WHERE q.name=$1 AND q.id=j.id AND q.state IN ('created','retry','active')))`, [CONSULTANT_QUEUE]);
     },
-    async execute(id: string, signal: AbortSignal, runStage: ReturnType<typeof createStageRunner>) {
+    async execute(id: string, signal: AbortSignal, runStage: ReturnType<typeof createStageRunner>,
+      catalog: SapReferenceOptions = {}) {
       if (!z.uuid().safeParse(id).success) return;
       const runToken = randomUUID();
       const job = (await pool.query<StoredJob>(`UPDATE consultant_jobs SET status='RUNNING',run_token=$2,
-        deadline_at=clock_timestamp()+interval '300 seconds' WHERE id=$1 AND status='QUEUED' RETURNING *`, [id, runToken])).rows[0];
+        deadline_at=clock_timestamp()+make_interval(secs=>$3) WHERE id=$1 AND status='QUEUED' RETURNING *`, [id, runToken, DEADLINE_SECONDS])).rows[0];
       if (!job) return;
       try {
         signal.throwIfAborted();
@@ -164,9 +181,10 @@ export function createConsultantJobs(pool: Pool, auth: AuthService, queue: PgBos
         if (metrics.stage !== (job.kind === "INTERVIEW" ? "interview_turn" : "to_be")) throw new Error("Invalid stage metrics");
         signal.throwIfAborted();
         await transaction(pool, async client => {
-          const locked = await client.query(`SELECT id FROM consultant_jobs WHERE id=$1 AND status='RUNNING'
-            AND run_token=$2 AND deadline_at>clock_timestamp() FOR UPDATE`, [id, runToken]);
+          const locked = await client.query<{ live: boolean }>(`SELECT deadline_at>clock_timestamp() AS live FROM consultant_jobs
+            WHERE id=$1 AND status='RUNNING' AND run_token=$2 FOR UPDATE`, [id, runToken]);
           if (!locked.rowCount) return;
+          if (!locked.rows[0]!.live) throw timeoutError();
           const workspace = await loadWorkspaceForWorker(client, workerScope(job), true);
           if (!workspace.canEdit) throw forbidden();
           if (workspace.state.revision !== job.input_revision) throw stale();
@@ -177,7 +195,8 @@ export function createConsultantJobs(pool: Pool, auth: AuthService, queue: PgBos
             result = { workspaceRevision: saved.state.revision };
           } else {
             if (!workspace.canConfirm || workspace.confirmedSnapshotId !== job.snapshot_id) throw stale();
-            const validation = validateToBeOutput(input.input, (generated.payload as { design?: unknown }).design);
+            const validation = validateToBeOutput(input.input, (generated.payload as { design?: unknown }).design,
+              await loadToBeReferences(input.input, catalog));
             if (!validation.success) throw new Error("Invalid design output");
             result = { ...validation.data, sourceRevision: job.input_revision, snapshotId: job.snapshot_id,
               status: validation.data.evaluation.blockers.length ? "BLOCKED" : "HUMAN_REVIEW_REQUIRED" };
@@ -186,7 +205,7 @@ export function createConsultantJobs(pool: Pool, auth: AuthService, queue: PgBos
           const completed = await client.query(`UPDATE consultant_jobs SET status='SUCCEEDED',result=$3,metrics=$4,
             run_token=NULL,deadline_at=NULL,finished_at=clock_timestamp()
             WHERE id=$1 AND status='RUNNING' AND run_token=$2 AND deadline_at>clock_timestamp()`, [id, runToken, result, metrics]);
-          if (!completed.rowCount) throw stale();
+          if (!completed.rowCount) throw timeoutError();
           signal.throwIfAborted();
         });
       } catch (error) {
@@ -196,6 +215,7 @@ export function createConsultantJobs(pool: Pool, auth: AuthService, queue: PgBos
         await pool.query(`UPDATE consultant_jobs SET status='FAILED',error=$3,run_token=NULL,deadline_at=NULL,finished_at=clock_timestamp()
           WHERE id=$1 AND status='RUNNING' AND run_token=$2`, [id, runToken, { code,
           message: code === "STALE_INPUT" ? "The answers changed while the consultant was working. Review the latest conversation and retry."
+            : code === "AI_TIMEOUT" ? "The consultant took too long to respond. Your saved answers are safe; you can retry."
             : "The consultant could not finish this response. Your saved answers are safe; you can retry." }]);
       }
     },
