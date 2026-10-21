@@ -4,8 +4,12 @@ import { z } from "zod";
 import { parseEnvironment, type Environment } from "../env";
 import { ProblemAnalysisInputSchema, ProblemAnalysisSchema, redactInput, schemaIssues, validateProblemAnalysis,
   type ProblemAnalysis, type ValidationIssue } from "./problem-analysis";
+import { DetailedDesignSchema } from "./design-quality";
+import { loadToBeReferences, parseToBeInput, validateToBeOutput, type ToBeOutput } from "./to-be";
+import { InterviewTurnSchema, parseInterviewInput, validateInterviewTurn, type InterviewInput, type InterviewTurn } from "./discovery-interview";
 
-type Stage = "problem_analysis";
+type Stage = "problem_analysis" | "to_be" | "interview_turn";
+type Payloads = { problem_analysis: ProblemAnalysis; to_be: ToBeOutput; interview_turn: InterviewTurn };
 type Code = "AI_INPUT_INVALID" | "AI_INPUT_TOO_LARGE" | "AI_INVALID_OUTPUT" | "AI_PROVIDER_ERROR" | "AI_TIMEOUT" | "AI_CANCELLED";
 export type StageMetrics = { stage: Stage; provider: "stub" | "anthropic"; model: string; inputTokens: number;
   outputTokens: number; latencyMs: number; attempts: number; validationErrors: ValidationIssue[] };
@@ -15,10 +19,10 @@ export class AIStageError extends Error {
   }
 }
 type Config = Pick<Environment, "NODE_ENV" | "AI_PROVIDER" | "ANTHROPIC_API_KEY" | "AI_MODEL" | "AI_MAX_INPUT_TOKENS" | "AI_MAX_CONCURRENCY" | "AI_FAULT_INJECTION">;
-type Options = { fetch?: typeof fetch };
+type Options = { fetch?: typeof fetch; sapCatalogDir?: string };
 const CALL_TIMEOUT = 120000;
+const DESIGN_CALL_TIMEOUT = 240000;
 const JOB_TIMEOUT = 300000;
-const TOOL = "submit_analysis";
 
 function pause(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -65,7 +69,7 @@ export function createStageRunner(config: Config, options: Options = {}) {
     });
   }
 
-  return async function runStage(stage: Stage, rawInput: unknown, externalSignal?: AbortSignal): Promise<{ payload: ProblemAnalysis; metrics: StageMetrics }> {
+  return async function runStage<S extends Stage>(stage: S, rawInput: unknown, externalSignal?: AbortSignal): Promise<{ payload: Payloads[S]; metrics: StageMetrics }> {
     const started = Date.now();
     const metrics: StageMetrics = { stage, provider, model: config.AI_MODEL, inputTokens: 0, outputTokens: 0,
       latencyMs: 0, attempts: 0, validationErrors: [] };
@@ -76,12 +80,12 @@ export function createStageRunner(config: Config, options: Options = {}) {
     const pending = new Set<Promise<unknown>>();
     let acquired = false;
 
-    async function call<T>(work: (signal: AbortSignal) => Promise<T>): Promise<T> {
+    async function call<T>(work: (signal: AbortSignal) => Promise<T>, timeoutMs = CALL_TIMEOUT): Promise<T> {
       signal.throwIfAborted();
       const controller = new AbortController();
       const abort = () => controller.abort(signal.reason);
       signal.addEventListener("abort", abort, { once: true });
-      const timeout = setTimeout(() => controller.abort(fail("AI_TIMEOUT")), CALL_TIMEOUT);
+      const timeout = setTimeout(() => controller.abort(fail("AI_TIMEOUT")), timeoutMs);
       let stop!: () => void;
       const interrupted = new Promise<never>((_, reject) => {
         stop = () => reject(controller.signal.reason);
@@ -94,9 +98,9 @@ export function createStageRunner(config: Config, options: Options = {}) {
       finally { clearTimeout(timeout); signal.removeEventListener("abort", abort); controller.signal.removeEventListener("abort", stop); }
     }
 
-    async function transport<T>(work: (signal: AbortSignal) => Promise<T>): Promise<T> {
+    async function transport<T>(work: (signal: AbortSignal) => Promise<T>, timeoutMs = CALL_TIMEOUT): Promise<T> {
       for (let retry = 0; ; retry++) {
-        try { return await call(work); }
+        try { return await call(work, timeoutMs); }
         catch (error) {
           if (signal.aborted) throw error;
           if (error instanceof AIStageError) throw error;
@@ -110,13 +114,31 @@ export function createStageRunner(config: Config, options: Options = {}) {
     }
 
     try {
-      if (stage !== "problem_analysis") throw fail("AI_INPUT_INVALID");
-      const parsed = ProblemAnalysisInputSchema.safeParse(rawInput);
-      if (!parsed.success) { metrics.validationErrors = schemaIssues(parsed.error.issues); throw fail("AI_INPUT_INVALID"); }
+      if (stage !== "problem_analysis" && stage !== "to_be" && stage !== "interview_turn") throw fail("AI_INPUT_INVALID");
+      let designInput: ReturnType<typeof parseToBeInput> | undefined;
+      let designReferences: Awaited<ReturnType<typeof loadToBeReferences>> = [];
+      let interviewInput: InterviewInput | undefined;
+      let analysisInput: ReturnType<typeof redactInput> = null;
+      let original = "";
+      if (stage === "to_be") {
+        try { designInput = parseToBeInput(rawInput); }
+        catch { metrics.validationErrors = [{ path: "input", code: "invalid_or_sensitive_discovery" }]; throw fail("AI_INPUT_INVALID"); }
+        // A static sample cannot faithfully represent arbitrary discovery input.
+        if (!client) throw fail("AI_PROVIDER_ERROR");
+        // A malformed curated catalog fails closed (provider error) rather than dropping or inventing trust.
+        designReferences = await loadToBeReferences(designInput, { baseDir: options.sapCatalogDir });
+      } else if (stage === "interview_turn") {
+        try { interviewInput = parseInterviewInput(rawInput); }
+        catch { metrics.validationErrors = [{ path: "input", code: "invalid_or_sensitive_interview" }]; throw fail("AI_INPUT_INVALID"); }
+        if (!client) throw fail("AI_PROVIDER_ERROR");
+      } else {
+        const parsed = ProblemAnalysisInputSchema.safeParse(rawInput);
+        if (!parsed.success) { metrics.validationErrors = schemaIssues(parsed.error.issues); throw fail("AI_INPUT_INVALID"); }
+        original = parsed.data.problemStatement;
+        analysisInput = redactInput(parsed.data);
+        if (!analysisInput) { metrics.validationErrors = [{ path: "input", code: "sensitive_identifier" }]; throw fail("AI_INPUT_INVALID"); }
+      }
       await acquire(signal); acquired = true;
-      const original = parsed.data.problemStatement;
-      const input = redactInput(parsed.data);
-      if (!input) { metrics.validationErrors = [{ path: "input", code: "sensitive_identifier" }]; throw fail("AI_INPUT_INVALID"); }
       let inputTruncated = false;
       const count = async (source: string) => {
         if (!client) return Buffer.byteLength(source, "utf8"); // Conservative byte cap in offline tests; not reported as measured tokens.
@@ -125,28 +147,44 @@ export function createStageRunner(config: Config, options: Options = {}) {
         if (!Number.isSafeInteger(result.input_tokens) || result.input_tokens < 0) throw fail("AI_PROVIDER_ERROR");
         return result.input_tokens;
       };
-      if (await count(input.problemStatement) > config.AI_MAX_INPUT_TOKENS) {
-        const points = Array.from(input.problemStatement);
+      if (analysisInput && await count(analysisInput.problemStatement) > config.AI_MAX_INPUT_TOKENS) {
+        const points = Array.from(analysisInput.problemStatement);
         let low = 0, high = points.length;
         while (low < high) {
           const middle = Math.ceil((low + high) / 2);
           if (await count(points.slice(0, middle).join("")) <= config.AI_MAX_INPUT_TOKENS) low = middle;
           else high = middle - 1;
         }
-        input.problemStatement = points.slice(0, low).join(""); inputTruncated = true;
-        if (!input.problemStatement.trim() || await count(input.problemStatement) > config.AI_MAX_INPUT_TOKENS) throw fail("AI_INPUT_TOO_LARGE");
+        analysisInput.problemStatement = points.slice(0, low).join(""); inputTruncated = true;
+        if (!analysisInput.problemStatement.trim() || await count(analysisInput.problemStatement) > config.AI_MAX_INPUT_TOKENS) throw fail("AI_INPUT_TOO_LARGE");
       }
-      const [system, template] = await call(() => Promise.all([
+      const [system, template] = designInput || interviewInput ? [await call(() =>
+        readFile(new URL(designInput ? "../../../prompts/to_be.system.md" : "../../../prompts/discovery_interview.system.md", import.meta.url), "utf8")), ""] : await call(() => Promise.all([
         readFile(new URL("../../../prompts/problem_analysis.system.md", import.meta.url), "utf8"),
         readFile(new URL("../../../prompts/problem_analysis.user.md", import.meta.url), "utf8"),
       ]));
-      if (!template.includes("{{input}}") || !template.includes("{{validationErrors}}")) throw fail("AI_PROVIDER_ERROR");
-      const jsonSchema = z.toJSONSchema(ProblemAnalysisSchema);
+      if (analysisInput && (!template.includes("{{input}}") || !template.includes("{{validationErrors}}"))) throw fail("AI_PROVIDER_ERROR");
+      const jsonSchema = z.toJSONSchema(designInput ? DetailedDesignSchema : interviewInput ? InterviewTurnSchema : ProblemAnalysisSchema);
+      const tool = designInput ? "submit_to_be" : interviewInput ? "submit_interview_turn" : "submit_analysis";
+      const tools: Anthropic.Tool[] = [{ name: tool, input_schema: { ...jsonSchema, type: "object" } }];
+      const toolChoice = { type: "auto" as const, disable_parallel_tool_use: true };
       let errors: ValidationIssue[] = [];
       for (let repair = 0; repair < 2; repair++) {
         // One replacement pass prevents client text containing template markers from being interpreted.
-        const user = template.replace(/\{\{(input|validationErrors)\}\}/g, (_, key: string) =>
-          key === "input" ? JSON.stringify({ ...input, inputTruncated }) : JSON.stringify(errors));
+        const user = designInput ? JSON.stringify({ input: designInput, approvedDecisions: [], references: designReferences, validationErrors: errors })
+          : interviewInput ? JSON.stringify({ input: interviewInput, validationErrors: errors })
+          : template.replace(/\{\{(input|validationErrors)\}\}/g, (_, key: string) =>
+            key === "input" ? JSON.stringify({ ...analysisInput, inputTruncated }) : JSON.stringify(errors));
+        const messages: Anthropic.MessageParam[] = [{ role: "user", content: user }];
+        if (designInput || interviewInput) {
+          // Count the whole request, including schema and repair instructions.
+          // Never truncate source evidence, requirements or unresolved policies.
+          const counted = await transport(signal => client!.messages.countTokens({
+            model: config.AI_MODEL, system, messages, tools, tool_choice: toolChoice,
+          }, { signal }));
+          if (!Number.isSafeInteger(counted.input_tokens) || counted.input_tokens < 0) throw fail("AI_PROVIDER_ERROR");
+          if (counted.input_tokens > config.AI_MAX_INPUT_TOKENS) throw fail("AI_INPUT_TOO_LARGE");
+        }
         let output: unknown;
         if (provider === "stub") {
           metrics.attempts++;
@@ -160,29 +198,39 @@ export function createStageRunner(config: Config, options: Options = {}) {
         } else {
           const message = await transport((signal) => {
             metrics.attempts++;
-            return client!.messages.create({ model: config.AI_MODEL, max_tokens: 12000, system,
-              messages: [{ role: "user", content: user }], tools: [{ name: TOOL, input_schema: { ...jsonSchema, type: "object" } }],
+            return client!.messages.create({ model: config.AI_MODEL, max_tokens: designInput ? 24000 : interviewInput ? 8000 : 12000, system,
+              messages, tools,
               // Sonnet 5.5 rejects forced tool selection. The prompt requests the
               // tool; validation still requires exactly one complete tool payload.
-              tool_choice: { type: "auto", disable_parallel_tool_use: true } }, { signal });
-          });
+              tool_choice: toolChoice }, { signal, timeout: designInput ? DESIGN_CALL_TIMEOUT : CALL_TIMEOUT });
+          }, designInput ? DESIGN_CALL_TIMEOUT : CALL_TIMEOUT);
           const usage = z.object({ input_tokens: z.number().int().nonnegative(), output_tokens: z.number().int().nonnegative(),
             cache_creation_input_tokens: z.number().int().nonnegative().nullish(), cache_read_input_tokens: z.number().int().nonnegative().nullish(),
           }).safeParse(message.usage);
           if (!usage.success) throw fail("AI_PROVIDER_ERROR");
           metrics.inputTokens += usage.data.input_tokens + (usage.data.cache_creation_input_tokens ?? 0) + (usage.data.cache_read_input_tokens ?? 0);
           metrics.outputTokens += usage.data.output_tokens;
-          const tools = message.content.filter((block) => block.type === "tool_use");
-          output = message.stop_reason === "tool_use" && tools.length === 1 && tools[0]!.name === TOOL ? tools[0]!.input : null;
+          const toolCalls = message.content.filter((block) => block.type === "tool_use");
+          output = message.stop_reason === "tool_use" && toolCalls.length === 1 && toolCalls[0]!.name === tool ? toolCalls[0]!.input : null;
         }
         signal.throwIfAborted();
-        const result = validateProblemAnalysis(output, input.problemStatement);
-        errors = result.success ? [] : result.errors;
-        // A redacted quote must also exist verbatim in the original source.
-        if (result.success && result.data.painPoints.some((point) => !original.includes(point.quote) || point.quote.includes("[redacted]"))) {
-          errors = [{ path: "painPoints", code: "quote_not_in_source" }];
+        if (designInput) {
+          const result = validateToBeOutput(designInput, output, designReferences);
+          if (result.success) return { payload: result.data as Payloads[S], metrics };
+          errors = result.errors;
+        } else if (interviewInput) {
+          const result = validateInterviewTurn(interviewInput, output);
+          if (result.success) return { payload: result.data as Payloads[S], metrics };
+          errors = result.errors;
+        } else {
+          const result = validateProblemAnalysis(output, analysisInput!.problemStatement);
+          errors = result.success ? [] : result.errors;
+          // A redacted quote must also exist verbatim in the original source.
+          if (result.success && result.data.painPoints.some((point) => !original.includes(point.quote) || point.quote.includes("[redacted]"))) {
+            errors = [{ path: "painPoints", code: "quote_not_in_source" }];
+          }
+          if (result.success && !errors.length) return { payload: { ...result.data, inputTruncated } as Payloads[S], metrics };
         }
-        if (result.success && !errors.length) return { payload: { ...result.data, inputTruncated }, metrics };
         metrics.validationErrors.push(...errors);
       }
       throw fail("AI_INVALID_OUTPUT");
@@ -203,7 +251,7 @@ export function createStageRunner(config: Config, options: Options = {}) {
 }
 
 let defaultRunner: ReturnType<typeof createStageRunner> | undefined;
-export function runStage(stage: Stage, input: unknown, signal?: AbortSignal) {
+export function runStage<S extends Stage>(stage: S, input: unknown, signal?: AbortSignal) {
   defaultRunner ??= createStageRunner(parseEnvironment());
   return defaultRunner(stage, input, signal);
 }

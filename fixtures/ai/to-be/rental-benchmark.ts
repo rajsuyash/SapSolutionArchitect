@@ -1,0 +1,143 @@
+// Fictional, hand-authored evaluation case. No customer workbook text or names.
+// This is an expected example, not model output or verified SAP functionality.
+import type { DesignContext, DetailedDesign } from "../../../src/lib/ai/design-quality";
+
+export const rentalContext: DesignContext = {
+  targetProduct: "S4HANA_CLOUD_PRIVATE", targetRelease: "TBD",
+  asIsSteps: [{ id: "AS-1", name: "Create hire order" }, { id: "AS-2", name: "Record returns" },
+    { id: "AS-3", name: "Prepare monthly billing" }],
+  sources: [
+    { id: "SRC-1", locator: "Fictional workshop / order entry", text: "A quotation for four units becomes four independently tracked hire-order items. Each item has its own start and end dates." },
+    { id: "SRC-2", locator: "Fictional workshop / returns", text: "Assets on the same order may return on different dates. A return must stop future hire charges for that item only. A missing return date must block completion." },
+    { id: "SRC-3", locator: "Fictional workshop / billing", text: "Installation is charged once. Hire charges recur monthly. The treatment of a partial final day has not been agreed." },
+  ],
+  requirements: [
+    { id: "R-1", asIsStepId: "AS-1", sourceId: "SRC-1", quote: "four independently tracked hire-order items", critical: true },
+    { id: "R-2", asIsStepId: "AS-1", sourceId: "SRC-1", quote: "Each item has its own start and end dates.", critical: true },
+    { id: "R-3", asIsStepId: "AS-2", sourceId: "SRC-2", quote: "A return must stop future hire charges for that item only.", critical: true },
+    { id: "R-4", asIsStepId: "AS-2", sourceId: "SRC-2", quote: "A missing return date must block completion.", critical: true },
+    { id: "R-5", asIsStepId: "AS-3", sourceId: "SRC-3", quote: "Installation is charged once.", critical: true },
+    { id: "R-6", asIsStepId: "AS-3", sourceId: "SRC-3", quote: "Hire charges recur monthly.", critical: true },
+  ],
+  conflicts: [{ id: "CON-1", sourceIds: ["SRC-3"], question: "How is a partial final day charged?" }],
+  approvedDecisions: [],
+  references: [],
+};
+
+const implementation: DetailedDesign["steps"][number]["implementation"] = {
+  kind: "NEEDS_VALIDATION",
+  detail: "Proposed business behavior. The target release, licensed capabilities and fit-to-standard design must be confirmed before assigning configuration or development objects.",
+  referenceIds: [],
+};
+
+export const rentalDraft: DetailedDesign = {
+  schemaVersion: 1,
+  processName: "Fictional equipment hire: order, partial return and monthly billing",
+  steps: [
+    {
+      id: "TB-1", sequence: 1, title: "Create individually traceable hire items",
+      asIsStepIds: ["AS-1"], requirementIds: ["R-1", "R-2"],
+      actor: "Rental coordinator", trigger: "A customer accepts a quotation containing four identical hire units.",
+      inputDocuments: ["Accepted quotation and item quantity", "Customer and delivery location", "Available asset identifiers"],
+      actions: [
+        { actor: "Rental coordinator", system: "Proposed hire workspace", operation: "Select the accepted quotation lines and confirm the quantity to convert.",
+          fields: ["quotation reference", "quotation item", "accepted quantity"] },
+        { actor: "System", system: "Proposed hire workspace", operation: "Create four quantity-one hire items, retaining the source quotation item on each.",
+          fields: ["hire-order ID", "hire-item ID", "source quotation item", "quantity = 1"] },
+        { actor: "Rental coordinator", system: "Proposed hire workspace", operation: "Assign a unique available asset and maintain dates separately for each hire item.",
+          fields: ["asset identifier", "hire start date", "planned end date", "customer location"] },
+      ],
+      outputDocuments: ["Hire order with four separately addressable items", "Asset-to-hire-item allocation"],
+      businessRules: [
+        { id: "BR-1", condition: "Accepted quotation quantity is four", response: "Create four quantity-one hire items; do not create a single quantity-four item." },
+        { id: "BR-2", condition: "One item's planned end date is changed", response: "Update only that item and retain the prior value in change history." },
+      ],
+      exceptions: [{ condition: "The selected asset is already allocated during overlapping dates", response: "Reject allocation and retain the unsaved item for correction.", owner: "Rental coordinator" }],
+      exceptionsNotApplicableReason: null,
+      masterData: [{ object: "Rental asset", fields: ["unique asset identifier", "availability status", "owning party"], owner: "Rental master-data steward" }],
+      effects: { inventory: "Reserve availability; do not treat reservation as physical dispatch.", financial: "No invoice is produced at this step.", ownership: "Hire allocation does not transfer ownership." },
+      implementation,
+      addedValue: "Each asset can be dispatched, extended, returned and billed independently without manual quantity splitting.",
+      acceptanceTests: [
+        { id: "TEST-1", kind: "NORMAL", given: "An accepted quotation has four units and four eligible assets.",
+          when: "The coordinator converts all four units and changes one end date.",
+          then: "Exactly four quantity-one items exist, all retain the quotation reference, and only the selected item's date changes.", requirementIds: ["R-1", "R-2"] },
+        { id: "TEST-2", kind: "EXCEPTION", given: "An asset already has an overlapping allocation.", when: "The coordinator assigns it to a new hire item.",
+          then: "The allocation is rejected with the conflicting period identified; no duplicate reservation is saved.", requirementIds: ["R-1"] },
+      ],
+    },
+    {
+      id: "TB-2", sequence: 2, title: "Receive a partial return and end charges per item",
+      asIsStepIds: ["AS-2"], requirementIds: ["R-3", "R-4"],
+      actor: "Rental stores clerk", trigger: "One of four hired assets physically returns.",
+      inputDocuments: ["Open hire items", "Customer return note", "Returned asset identifier"],
+      actions: [
+        { actor: "Rental stores clerk", system: "Proposed returns workspace", operation: "Match the returned asset to the open hire item and record receipt details.",
+          fields: ["hire-item ID", "asset identifier", "actual return timestamp", "return-note reference", "condition at receipt"] },
+        { actor: "System", system: "Proposed returns workspace", operation: "Save the return for that item, preserve the remaining active items and mark it for final billing reconciliation.",
+          fields: ["item return status", "billing cut-off", "inspection status", "audit user"] },
+      ],
+      outputDocuments: ["Item-specific return record", "Final-billing reconciliation task"],
+      businessRules: [{ id: "BR-3", condition: "One item returns while three remain on hire",
+        response: "End future charging only for the returned item; retain all three other items as active." }],
+      exceptions: [
+        { condition: "The actual return timestamp is missing", response: "Block return completion and ask the clerk to enter the timestamp.", owner: "Rental stores clerk" },
+        { condition: "The return would affect an already posted billing period", response: "Route the discrepancy to billing review; do not rewrite a posted invoice.", owner: "Billing reviewer" },
+      ],
+      exceptionsNotApplicableReason: null,
+      masterData: [{ object: "Asset return condition", fields: ["condition code", "inspection required"], owner: "Rental stores lead" }],
+      effects: { inventory: "Record physical return separately from availability for re-hire; inspection may still be pending.",
+        financial: "Reconcile the final charge using the approved proration decision; that decision is currently open.", ownership: "Preserve the asset's recorded owning party." },
+      implementation,
+      addedValue: "A partial return does not prematurely close the entire order or continue billing a returned asset.",
+      acceptanceTests: [
+        { id: "TEST-3", kind: "NORMAL", given: "Four hire items are active and one asset is returned with a timestamp.",
+          when: "The clerk completes that item's return.", then: "Only that item is returned and marked for final billing; the other three remain active.", requirementIds: ["R-3"] },
+        { id: "TEST-4", kind: "EXCEPTION", given: "A return has no actual return timestamp.", when: "The clerk tries to complete the return.",
+          then: "Completion is blocked, no cut-off is persisted, and the missing timestamp is identified.", requirementIds: ["R-4"] },
+      ],
+    },
+    {
+      id: "TB-3", sequence: 3, title: "Prepare recurring hire billing with one-time charges separated",
+      asIsStepIds: ["AS-3"], requirementIds: ["R-5", "R-6"],
+      actor: "Billing clerk", trigger: "The monthly billing period is ready for review.",
+      inputDocuments: ["Hire items and their charge types", "Item-specific return records", "Prior billing records", "Approved billing rules"],
+      actions: [
+        { actor: "System", system: "Proposed billing workspace", operation: "Select eligible hire items for the period and separate recurring hire from installation charges.",
+          fields: ["billing period", "hire-item ID", "charge type", "already-billed indicator", "return cut-off"] },
+        { actor: "Billing clerk", system: "Proposed billing workspace", operation: "Review proposed charges and exclusions before releasing billing. Keep items with unresolved proration on hold.",
+          fields: ["eligible period", "charge basis", "billing hold reason", "reviewer"] },
+      ],
+      outputDocuments: ["Reviewed billing proposal", "Exceptions requiring a business decision"],
+      businessRules: [
+        { id: "BR-4", condition: "An installation charge has already been billed", response: "Exclude it from subsequent monthly billing proposals." },
+        { id: "BR-5", condition: "A hire item remains active in the next monthly period", response: "Include its recurring charge according to the agreed period calculation." },
+      ],
+      exceptions: [{ condition: "An item's final day needs a proration rule that is not approved", response: "Hold that item's affected charge and request a billing-policy decision.", owner: "Billing policy owner" }],
+      exceptionsNotApplicableReason: null,
+      masterData: [{ object: "Charge classification", fields: ["recurring hire", "one-time installation", "rate period"], owner: "Billing master-data steward" }],
+      effects: { inventory: "Billing proposal creation does not move stock.", financial: "Posting and tax/account determination remain subject to the separate approved finance design.",
+        ownership: "Billing does not change asset ownership." },
+      implementation,
+      addedValue: "Monthly rental billing retains asset-level traceability and prevents repeat billing of installation.",
+      acceptanceTests: [
+        { id: "TEST-5", kind: "NORMAL", given: "An active hire item has a recurring charge and an installation charge billed last month.",
+          when: "The clerk prepares the next monthly billing proposal.", then: "Recurring hire is included and installation is excluded; both retain the hire-item reference.", requirementIds: ["R-5", "R-6"] },
+        { id: "TEST-6", kind: "EXCEPTION", given: "A partial-day return exists and no proration decision is approved.",
+          when: "The clerk prepares final billing.", then: "The affected charge is held with an explicit decision request; no arbitrary full-day charge is invented.", requirementIds: ["R-6"] },
+      ],
+    },
+  ],
+  eliminatedAsIsSteps: [],
+  coverage: [
+    { requirementId: "R-1", disposition: "IMPLEMENTED", stepIds: ["TB-1"], decisionId: null, rationale: "Split quantity and preserve asset-level identity." },
+    { requirementId: "R-2", disposition: "IMPLEMENTED", stepIds: ["TB-1"], decisionId: null, rationale: "Dates belong to individual hire items." },
+    { requirementId: "R-3", disposition: "IMPLEMENTED", stepIds: ["TB-2"], decisionId: null, rationale: "Partial return updates only the selected item." },
+    { requirementId: "R-4", disposition: "IMPLEMENTED", stepIds: ["TB-2"], decisionId: null, rationale: "Missing actual return date blocks completion." },
+    { requirementId: "R-5", disposition: "IMPLEMENTED", stepIds: ["TB-3"], decisionId: null, rationale: "One-time installation is excluded after first billing." },
+    { requirementId: "R-6", disposition: "IMPLEMENTED", stepIds: ["TB-3"], decisionId: null, rationale: "Active hire charges recur with an explicit hold for unresolved proration." },
+  ],
+  conflictDecisions: [{ conflictId: "CON-1", decisionId: null }],
+  openQuestions: [{ id: "Q-1", question: "Which proration convention applies to a partial final day, and who approves it?",
+    owner: "Billing policy owner", affectedStepIds: ["TB-2", "TB-3"] }],
+};

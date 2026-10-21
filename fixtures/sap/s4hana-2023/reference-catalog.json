@@ -1,0 +1,2538 @@
+{
+  "schemaVersion": 1,
+  "targetProducts": [
+    "S4HANA_CLOUD_PRIVATE",
+    "S4HANA_ON_PREMISE"
+  ],
+  "targetRelease": "2023",
+  "references": [
+    {
+      "id": "S4-2023-SD-QUOTE",
+      "capability": "Sales inquiry and quotation (validity date, document flow)",
+      "fitType": "STANDARD",
+      "objects": [
+        "VA21/VA22/VA23",
+        "Manage Sales Quotations",
+        "Sales document type QT"
+      ],
+      "verification": "VERIFIED",
+      "evidence": [
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/7b24a64d9d0941bda1afa753263d9e39/2364b65334e6b54ce10000000a174cb4.html?version=2023.000",
+          "quote": "A sales quotation presents the customer with a legally binding offer for delivering a product or providing a service within certain fixed conditions.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/7b24a64d9d0941bda1afa753263d9e39/2364b65334e6b54ce10000000a174cb4.html?version=2023.000",
+          "quote": "You can maintain a validity date in the sales inquiries and sales quotations to indicate by which time they should have been answered.",
+          "release": "2023"
+        }
+      ],
+      "limitations": [
+        "Validity date is for monitoring/evaluation; automatic close-on-expiry of an SD quotation was NOT found on a 2023 on-premise page (only the service-quotation page was seen via search, not fetched).",
+        "Does not provide an on-hold customer print note, a cross-hire flag, or stock visibility panel on the quotation; those need configuration/extension.",
+        "Rental-specific rate units (day/week/month) are pricing configuration, see S4-2023-SD-PRICING."
+      ]
+    },
+    {
+      "id": "S4-2023-SD-QUOTE-TO-ORDER",
+      "capability": "Create sales order with reference to quotation (full or partial copy)",
+      "fitType": "STANDARD",
+      "objects": [
+        "VA01 create with reference",
+        "Sales Order (A2X) API: ReferenceSDDocument / ReferenceSDDocumentItem",
+        "document flow / copy control"
+      ],
+      "verification": "VERIFIED",
+      "evidence": [
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/19d48293097f4a2589433856b034dfa5/03373661272d43b0b43538f171ae6aba.html?version=2023.000",
+          "quote": "You copy some items from the reference document, partially changing the quantity.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/19d48293097f4a2589433856b034dfa5/03373661272d43b0b43538f171ae6aba.html?version=2023.000",
+          "quote": "you cannot copy an item from a reference document when the item is already completely referenced.",
+          "release": "2023"
+        }
+      ],
+      "limitations": [
+        "Evidence page is the Sales Order (A2X) API page; the same copy checks apply per the page, but VA01 UI behaviour was not separately fetched.",
+        "Splitting a quantity N into N one-unit items is not described and needs copy-control/BAdI or explicit enhancement (EXTENSION).",
+        "Remaining convertible quantity tracking by document flow is standard but not quoted here."
+      ]
+    },
+    {
+      "id": "S4-2023-SD-PRICING",
+      "capability": "Condition-technique pricing (rate records per material/customer, scales)",
+      "fitType": "CONFIGURATION",
+      "objects": [
+        "Pricing procedure",
+        "Condition types / access sequences",
+        "Condition records (VK11/VK12)"
+      ],
+      "verification": "VERIFIED",
+      "evidence": [
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/7b24a64d9d0941bda1afa753263d9e39/d69fbe532789b44ce10000000a174cb4.html?version=2023.000",
+          "quote": "In pricing, master data can be prices, discounts for materials and business partners, surcharges, sales taxes, and planned costs for customs or freight.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/7b24a64d9d0941bda1afa753263d9e39/d69fbe532789b44ce10000000a174cb4.html?version=2023.000",
+          "quote": "To control the search sequence per condition type, you can define an access sequence and assign it to a condition type.",
+          "release": "2023"
+        }
+      ],
+      "limitations": [
+        "Pricing by hire duration (billable days x daily/weekly/monthly rate, cap rules) is not shown in the fetched pages; a custom condition formula/routine or an extension is likely required (UNVERIFIED for rental-duration logic).",
+        "Zero-value-asset rate rule is business policy, not SAP behaviour."
+      ]
+    },
+    {
+      "id": "S4-2023-SD-BOM-ASSEMBLY",
+      "capability": "Sales BOM (sales kit) assembly with main item and sub-items",
+      "fitType": "CONFIGURATION",
+      "objects": [
+        "Maintain Bill of Material app (BOM usage 5)",
+        "Item category groups ERLA/CPFH/DISH via material master",
+        "VA01 BOM explosion"
+      ],
+      "verification": "VERIFIED",
+      "evidence": [
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/7b24a64d9d0941bda1afa753263d9e39/5d66b65334e6b54ce10000000a174cb4.html?version=2023.000",
+          "quote": "The main item or higher-level item: This item stands for the product you sell, including all components.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/7b24a64d9d0941bda1afa753263d9e39/5d66b65334e6b54ce10000000a174cb4.html?version=2023.000",
+          "quote": "The difference is that pricing, inventory control, and delivery processing are run on either main item or subitem level.",
+          "release": "2023"
+        }
+      ],
+      "limitations": [
+        "Sales BOM components are materials; per-component pricing with a derived customer-facing assembly total, and allocation of specific serialised assets to components, are not covered (EXTENSION/validation).",
+        "Item category group to behaviour mapping (e.g. which group prices at main vs sub-item) was not read from a table on the fetched page."
+      ]
+    },
+    {
+      "id": "S4-2023-SD-RENTAL-BILLPLAN",
+      "capability": "Periodic billing plan for rental contracts (SD)",
+      "fitType": "CONFIGURATION",
+      "objects": [
+        "Billing plan type periodic",
+        "Sales contract/rental contract document type",
+        "Report RVFPLAN01 (horizon extension)",
+        "VA41/VA42 outline agreement contract"
+      ],
+      "verification": "VERIFIED",
+      "evidence": [
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/7b24a64d9d0941bda1afa753263d9e39/ba6fb6535fe6b74ce10000000a174cb4.html?version=2023.000",
+          "quote": "Periodic billing can be used, for example, in rental contracts.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/7b24a64d9d0941bda1afa753263d9e39/ba6fb6535fe6b74ce10000000a174cb4.html?version=2023.000",
+          "quote": "Report RVFPLAN01 which supports this function can be scheduled to run at regular intervals.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/7b24a64d9d0941bda1afa753263d9e39/0f22bf53d25ab64ce10000000a174cb4.html?version=2023.000",
+          "quote": "Maintenance and rental contracts often require that billing be carried out on a periodic basis",
+          "release": "2023"
+        }
+      ],
+      "limitations": [
+        "Billing plan dates carry fixed or rule-derived amounts per period; billing by actual item return date (billable days), per-unit start dates, holding charges when return data is missing, and per-item exclusion of one-time service lines are NOT covered by the quoted behaviour (EXTENSION or process design).",
+        "The billing-plan pages are in the SD generic documentation (billing plans for service/rental contracts), not a dedicated equipment-rental solution; SAP does not ship an equipment-rental industry solution in the fetched 2023 documentation.",
+        "Each hire unit as a separate contract item means very many billing plan items; volume/performance not evidenced.",
+        "ROUND 3: the only standard time-based rental fee calculation found is returnable packaging processing (S4-2023-SD-RP-RENTAL-FEES), percentage-of-value fees for batch-managed items; it is not an equipment rate-card function."
+      ]
+    },
+    {
+      "id": "S4-2023-SD-BILLING",
+      "capability": "Billing documents: billing due list, invoices, credit/debit memos, cancellation",
+      "fitType": "STANDARD",
+      "objects": [
+        "Create Billing Documents (VF04 / F0798-class apps)",
+        "Manage Billing Documents",
+        "Billing types F2/G2/L2/S1/S2 (S1 cancel invoice, S2 cancel credit memo)",
+        "Schedule Billing Creation"
+      ],
+      "verification": "VERIFIED",
+      "evidence": [
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/7b24a64d9d0941bda1afa753263d9e39/4c74c957b7018809e10000000a4450e5.html?version=2023.000",
+          "quote": "You can carry out billing functions manually or schedule them to run automatically.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/7b24a64d9d0941bda1afa753263d9e39/d96fb6535fe6b74ce10000000a174cb4.html?version=2023.000",
+          "quote": "Controls the processing of billing documents such as invoices, credit and debit memos, as well as the associated cancellation documents.",
+          "release": "2023"
+        }
+      ],
+      "limitations": [
+        "Duplicate-identity guard on (item + billing period) and retry of FI posting without re-invoicing are not described; billing-to-accounting status handling exists in standard but was not quoted.",
+        "Selection of a subset of hire orders and proposal review before issue maps to billing due list/billing block, but the fetched page does not state that a preliminary review step exists for this scenario."
+      ]
+    },
+    {
+      "id": "S4-2023-SD-BLOCKS",
+      "capability": "Delivery and billing blocks on sales documents",
+      "fitType": "STANDARD",
+      "objects": [
+        "Delivery block / billing block fields (header and item)",
+        "Manage Sales Orders - Version 2",
+        "Customizing: Assign Blocking Reasons to Delivery Types"
+      ],
+      "verification": "VERIFIED",
+      "evidence": [
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/7b24a64d9d0941bda1afa753263d9e39/0865b65334e6b54ce10000000a174cb4.html?version=2023.000",
+          "quote": "You can set a billing block on header level and in the individual items.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/7b24a64d9d0941bda1afa753263d9e39/0865b65334e6b54ce10000000a174cb4.html?version=2023.000",
+          "quote": "The system doesn't let you create a delivery for a sales order that is blocked for shipping.",
+          "release": "2023"
+        }
+      ],
+      "limitations": [
+        "Customer-master-level hold/block behaviour at quotation save and conversion was not evidenced by a fetched 2023 page (UNVERIFIED for that part).",
+        "Blocks are manual/rule-set; automatic print suppression for credit-blocked orders needs output-condition configuration.",
+        "Billing block on an individual billing plan date, and a block raised by a billable-start gate, are not evidenced; blocks are header/item level (see S4-2023-SD-BILLPLAN-DATES-FINAL, S4-2023-SD-CMR-BILLING-BLOCK)."
+      ]
+    },
+    {
+      "id": "S4-2023-FIN-CREDIT-CHECK",
+      "capability": "Credit check at order save and delivery (SAP Credit Management, FIN-FSCM-CR)",
+      "fitType": "CONFIGURATION",
+      "objects": [
+        "SAP Credit Management check rules / credit segments",
+        "Business partner credit profile",
+        "UKM_LOGS_DISPLAY"
+      ],
+      "verification": "VERIFIED",
+      "evidence": [
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/3cb1182b4a184bdd93f8d62e3f1f0741/811174d486d74c709469ef3d36f9b7bb.html?version=2023.000",
+          "quote": "The performed credit check leads to a credit decision about the order or process. As a result, the system can raise an alert or even block the order or delivery for further processing.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/3cb1182b4a184bdd93f8d62e3f1f0741/4d4653b0cfd70692e10000000a42189b.html?version=2023.000",
+          "quote": "The applications connected (for example, Sales and Distribution, Logistics Execution, Financial Accounting) report the commitment of a business partner to SAP Credit Management.",
+          "release": "2023"
+        }
+      ],
+      "limitations": [
+        "What counts as exposure (rental quotations, billing-plan future items, hire order values) depends on configuration; not evidenced.",
+        "Does not itself send e-mail to the finance team or suppress print; those require output/workflow configuration.",
+        "Credit Management in FSCM is an S/4HANA component; contractual licensing of FIN-FSCM-CR not verified in fetched sources.",
+        "Which action triggers which check is evidenced in S4-2023-FIN-CREDIT-SD-INTEGRATION (sales documents, deliveries; exposure update on saving and on billing). A check at post goods issue or output suppression is not evidenced (S4-2023-FIN-CREDIT-GI-OUTPUT, UNVERIFIED)."
+      ]
+    },
+    {
+      "id": "S4-2023-FIN-CREDIT-RELEASE",
+      "capability": "Credit-blocked document worklists and documented credit decisions",
+      "fitType": "STANDARD",
+      "objects": [
+        "Documented Credit Decisions (Manage Documented Credit Decisions app)",
+        "Credit worklists",
+        "VKM1/VKM4 workarounds"
+      ],
+      "verification": "VERIFIED",
+      "evidence": [
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/7b24a64d9d0941bda1afa753263d9e39/d9afc6535e601e4be10000000a174cb4.html?version=2023.000",
+          "quote": "Credit personnel can create overview lists of the credit holds (blocked sales orders) and deliveries that they are authorized to process.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/f296651f454c4284ade361292c633d69/9adf27e0587147d6b4eabc1f05229307.html?version=2023.000",
+          "quote": "In the Manage Documented Credit Decisions app, we have added a new filter view: My Documents with Credit Block",
+          "release": "2023"
+        }
+      ],
+      "limitations": [
+        "The detailed release/recheck page (Credit Block Release and Recheck) was only retrievable as release 2025 FPS02, not 2023, so its text is NOT used as evidence; confirm the 2023 release/recheck behaviour in the system.",
+        "Automatic recheck/release on limit increase, and real-time status update are not evidenced by the 2023 pages fetched."
+      ]
+    },
+    {
+      "id": "S4-2023-FIN-CREDIT-LIMIT-REQUEST",
+      "capability": "Credit limit request with approval hierarchy",
+      "fitType": "CONFIGURATION",
+      "objects": [
+        "Manage Credit Management Rules app",
+        "Credit limit request approval hierarchy",
+        "Situation Handling: Approve Credit Limit Requests"
+      ],
+      "verification": "VERIFIED",
+      "evidence": [
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/3cb1182b4a184bdd93f8d62e3f1f0741/07264b0bd8d84454930ee8523fc79c57.html?version=2023.000",
+          "quote": "The approval hierarchy enables you to ensure that only authorized persons can release a document.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/3cb1182b4a184bdd93f8d62e3f1f0741/07264b0bd8d84454930ee8523fc79c57.html?version=2023.000",
+          "quote": "You can notify approvers of a credit limit request about a pending approval using the situations framework.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/3cb1182b4a184bdd93f8d62e3f1f0741/60d98146673a401e98a103d45f57cfd1.html?version=2023.000",
+          "quote": "You can define the hierarchies for the approval process of documented credit decisions (DCDs) and credit limit requests.",
+          "release": "2023"
+        }
+      ],
+      "limitations": [
+        "Mobile approval is not evidenced on these pages; combine with My Inbox only if the situation/task is surfaced there (UNVERIFIED).",
+        "Request is created by a credit controller on a business partner credit segment; a sales-initiated request per order is not described."
+      ]
+    },
+    {
+      "id": "S4-2023-WF-SD-APPROVAL",
+      "capability": "Approval workflow for sales documents (BAdI-triggered)",
+      "fitType": "EXTENSION",
+      "objects": [
+        "BAdI Approval Request Reasons for Sales Documents",
+        "SAP Business Workflow for sales documents",
+        "Credit Memo Request approval"
+      ],
+      "verification": "VERIFIED",
+      "evidence": [
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/7b24a64d9d0941bda1afa753263d9e39/8ce4b1c034b343208104500fd7f3dab9.html?version=2023.000",
+          "quote": "Whenever an internal sales representative (that is, the approval requester) creates or changes a sales document and saves it, the Business Add-In (BAdI) Approval Request Reasons for Sales Documents is called.",
+          "release": "2023"
+        }
+      ],
+      "limitations": [
+        "Approval reasons are set by a customer-specific BAdI implementation, so conditions such as plant-head approval of transfer requests are custom logic.",
+        "Applies to sales document categories listed on the page, not to asset-transfer requests or internal-order consumption."
+      ]
+    },
+    {
+      "id": "S4-2023-WF-MYINBOX",
+      "capability": "Fiori My Inbox for workflow task approval (desktop/mobile)",
+      "fitType": "STANDARD",
+      "objects": [
+        "My Inbox app",
+        "Scenario-specific inbox tiles",
+        "Task Gateway"
+      ],
+      "verification": "VERIFIED",
+      "evidence": [
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/6f020371ca9f4bbb8ec6e59e21da2e98/f510145761df5e38e10000000a44147b.html?version=2023.000",
+          "quote": "With the transactional app My Inbox, you can make important decisions via mobile or desktop devices anywhere and anytime.",
+          "release": "2023"
+        }
+      ],
+      "limitations": [
+        "Page states capability for the workflow tasks defined in the backend; it does not prove native-app packaging, push notification or offline use.",
+        "Only works for tasks that exist as workflow/gateway tasks; custom approvals need a workflow scenario."
+      ]
+    },
+    {
+      "id": "S4-2023-WF-FLEXIBLE",
+      "capability": "Flexible workflow (condition-based approvals) for purchasing documents",
+      "fitType": "CONFIGURATION",
+      "objects": [
+        "Flexible Workflow for Purchase Orders / Purchase Requisitions",
+        "Manage Workflows apps"
+      ],
+      "verification": "VERIFIED",
+      "evidence": [
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/af9ef57f504840d2b81be8667206d485/b33a97f3014f43c488ec798633824081.html?version=2023.000",
+          "quote": "The flexible workflow is a general function that allows you to define condition-based workflows for approval processes.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/af9ef57f504840d2b81be8667206d485/b33a97f3014f43c488ec798633824081.html?version=2023.000",
+          "quote": "Approvers receive notifications about new work items in the SAP Fiori launchpad. If required, you can also configure e-mail notifications to be sent to them.",
+          "release": "2023"
+        }
+      ],
+      "limitations": [
+        "In the 2023 pages fetched, flexible workflow is documented for purchasing objects (PR/PO/contracts); for sales documents the BAdI approach (S4-2023-WF-SD-APPROVAL) is documented instead.",
+        "Not applicable out of the box to asset-transfer requests or internal order consumption approvals.",
+        "Scenario families found on 2023 pages / Feature Scope Description: purchase requisitions (regular and central), centrally managed purchase orders, purchase contracts, scheduling agreements, supplier invoices, service entry sheets. No flexible-workflow scenario for stock transfer, transfer posting or asset transfer was found (see UNVERIFIED S4-2023-WF-INVENTORY-TRANSFER)."
+      ]
+    },
+    {
+      "id": "S4-2023-PROC-3P-INDIVIDUAL-PO",
+      "capability": "Cross-hire sourcing: third-party order processing (TAS, supplier ships to customer) versus individual purchase order (supplier ships to you, then you deliver)",
+      "fitType": "CONFIGURATION",
+      "objects": [
+        "Third-party order processing (supplier ships to customer): item category TAS, item category group BANS in the material master",
+        "Individual purchase order processing (supplier ships to you): goods held as sales order stock; MRP group 0020 and plant at sales order item level",
+        "Item category TAB: evidenced only for aATP-generated subitems from 2023 FPS02 (see S4-2023-ATP-TPO-TAB-SUBITEMS); no 2023 page fetched names the item category of a classic individual-PO item",
+        "Purchase requisition generated from sales order",
+        "Account assignment to sales order"
+      ],
+      "verification": "VERIFIED",
+      "evidence": [
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/7b24a64d9d0941bda1afa753263d9e39/6f66b65334e6b54ce10000000a174cb4.html?version=2023.000",
+          "quote": "If you order products from a third-party supplier, who delivers the goods directly to you so that you can then deliver them to the customer yourself, you can use individual purchase order processing.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/7b24a64d9d0941bda1afa753263d9e39/6f66b65334e6b54ce10000000a174cb4.html?version=2023.000",
+          "quote": "During subsequent sales order processing, the system automatically determines the appropriate item category for a third-party item: TAS.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/7b24a64d9d0941bda1afa753263d9e39/4866b65334e6b54ce10000000a174cb4.html?version=2023.000",
+          "quote": "The purchasing department creates a purchase order based on the requisition and the supplier ships the goods directly to you (unlike third party order processing , where the supplier ships directly to your customer).",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/7b24a64d9d0941bda1afa753263d9e39/4866b65334e6b54ce10000000a174cb4.html?version=2023.000",
+          "quote": "While the goods are part of your inventory, you manage them as part of the sales order stock.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/7b24a64d9d0941bda1afa753263d9e39/4866b65334e6b54ce10000000a174cb4.html?version=2023.000",
+          "quote": "The material in question must be maintained for the MRP group 0020 and a plant must be assigned at the item level in the sales order.",
+          "release": "2023"
+        }
+      ],
+      "limitations": [
+        "CORRECTION (reviewer N2): TAS/BANS is the supplier-ships-to-customer item. It must NOT be used for a unit that EMM receives into its own warehouse and then delivers; that path is individual purchase order processing (page quotes: supplier ships goods to you, you then ship them to the customer).",
+        "The individual-PO page names no sales item category. TAB is evidenced only on the 2023 FPS02 What's New page for aATP sourcing-profile subitems (S4-2023-ATP-TPO-TAB-SUBITEMS); whether a classic individual-PO sales item uses TAB, TAN with account assignment, or another category was not evidenced and must be validated in the system. TAB is not asserted for individual PO here.",
+        "While goods are in your inventory they sit in sales order stock (stock assigned to one sales order, unusable for other purposes): this is customer-order-specific stock, so a unit received this way is not available to other hire orders and its valuation/FI effect at goods receipt is not described (see S4-2023-INV-VENDOR-CONSIGNMENT for supplier-owned stock).",
+        "Link between hire-order item and PO item beyond requisition/sales order stock, markup between supplier rent and customer rate, cost allocation to the hire-order item, and visibility of PO/GRN status on the order item are not described (EXTENSION/reporting).",
+        "Return of the unit to the supplier at hire end is a separate flow (S4-2023-PROC-RETURN-VENDOR); the individual-PO page describes only the outbound sale to the customer.",
+        "ROUND 3: reuse of sales order stock after the first order (transfer into own stock 411, transfer between sales order stocks) is described in S4-2023-SD-SALES-ORDER-STOCK-TRANSFER; this makes the unit own stock."
+      ]
+    },
+    {
+      "id": "S4-2023-PROC-PR-PO",
+      "capability": "Purchase requisition and conversion to purchase order",
+      "fitType": "STANDARD",
+      "objects": [
+        "Purchase requisition (ME51N/ME52N/ME53N)",
+        "Process Purchase Requisitions apps",
+        "Manage Purchase Orders"
+      ],
+      "verification": "VERIFIED",
+      "evidence": [
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/af9ef57f504840d2b81be8667206d485/4f7eb65334e6b54ce10000000a174cb4.html?version=2023.000",
+          "quote": "A purchase requisition is a request or instruction to Purchasing to procure a certain quantity of a material or a service so that it is available at a certain point in time.",
+          "release": "2023"
+        }
+      ],
+      "limitations": [
+        "Duplicate-request protection by hire-order line, and generation after order release are process rules not described on this page.",
+        "Supplier packaging as separate requisition lines is data design, not a standard feature."
+      ]
+    },
+    {
+      "id": "S4-2023-PROC-RENTAL-INVOICING-PLAN",
+      "capability": "Purchase order invoicing plan for recurring rent (supplier rental)",
+      "fitType": "CONFIGURATION",
+      "objects": [
+        "PO item invoicing plan (periodic)",
+        "Customizing: invoicing plan types and date categories"
+      ],
+      "verification": "VERIFIED",
+      "evidence": [
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/af9ef57f504840d2b81be8667206d485/681dbf53d25ab64ce10000000a174cb4.html?version=2023.000",
+          "quote": "The invoicing plan facilitates the largely automated creation and payment of invoices for both recurrent procurement transactions (e.g. rental or leasing) and transactions that are to be invoiced in stages",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/af9ef57f504840d2b81be8667206d485/681dbf53d25ab64ce10000000a174cb4.html?version=2023.000",
+          "quote": "The total value of the PO item is invoiced on each due date set out in the invoicing plan.",
+          "release": "2023"
+        }
+      ],
+      "limitations": [
+        "Whole PO item value is invoiced per date, so rent proportional to actual hire days is not natively supported (use fixed-period rent or manual invoice verification).",
+        "Page belongs to Accelerated and Simplified Processes in Sourcing and Procurement; carrier freight invoices are a different flow."
+      ]
+    },
+    {
+      "id": "S4-2023-PROC-RETURN-VENDOR",
+      "capability": "Return delivery to supplier and returns purchase order",
+      "fitType": "STANDARD",
+      "objects": [
+        "Return delivery (MIGO, movement 122/161/124)",
+        "Returns purchase order",
+        "Return via shipping (LE-SHP) document"
+      ],
+      "verification": "VERIFIED",
+      "evidence": [
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/91b21005dded4984bcccf4a69ae1300c/e263bd534f22b44ce10000000a174cb4.html?version=2023.000",
+          "quote": "If you want to return delivered goods to the vendor for some reason (for example, due to poor quality or because they are damaged), you can use this function to return the goods, even if you have already posted the goods receipt.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/af9ef57f504840d2b81be8667206d485/de6a3d45bb814393b04cff7fd6b9aefd.html?version=2023.000",
+          "quote": "In a returns purchase order, you enter information that is the basis for the subsequent logistical and financial processing of the return.",
+          "release": "2023"
+        }
+      ],
+      "limitations": [
+        "Returning a rented-in unit plus its separate packaging lines as one document needs design (one return delivery can reference several PO items; packaging linkage not shown).",
+        "Supplier confirmation of receipt is process, not a standard confirmation step on these pages."
+      ]
+    },
+    {
+      "id": "S4-2023-INV-STOCK-TYPES",
+      "capability": "Stock types: unrestricted, quality inspection, blocked, customer returns blocked",
+      "fitType": "STANDARD",
+      "objects": [
+        "Unrestricted-use / quality inspection (Q) / blocked (S) / blocked returns (R)",
+        "Movement types 349/350 (blocked <-> QI), 321/343",
+        "Stock - Multiple Materials / Stock - Single Material apps"
+      ],
+      "verification": "VERIFIED",
+      "evidence": [
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/b2dee5e83e2446149294f9860a7c08f0/4c5bc4530b29b44ce10000000a174cb4.html?version=2023.000",
+          "quote": "Stock in quality inspection has been valuated but does not count as unrestricted-use stock.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/b2dee5e83e2446149294f9860a7c08f0/4c5bc4530b29b44ce10000000a174cb4.html?version=2023.000",
+          "quote": "These materials are a company's own stock that should not be used.",
+          "release": "2023"
+        }
+      ],
+      "limitations": [
+        "Evidence page is Warehouse Management stock categories; inventory-management stock types are equivalent but that page was not quoted.",
+        "There is no standard stock type for stock 'on hire at customer'; tracking location/status of rented assets needs equipment/functional location or a custom status (see S4-2023-PM-EQUIPMENT).",
+        "Evidence describes 'a company's own stock'; it says nothing about supplier-owned stock. Supplier-owned receipts are special stock (see S4-2023-INV-VENDOR-CONSIGNMENT), so a normal purchased-stock goods receipt must not be assumed to preserve a supplier-owned, unvalued custody record (reviewer N3).",
+        "ROUND 3: there IS a standard special stock for company-owned units at the customer: customer consignment (W) and returnable packaging at customer (V), with ownership staying with the company; see S4-2023-INV-CUSTOMER-CONSIGNMENT and S4-2023-INV-CUSTOMER-RETURNABLE-PACKAGING. They track custody, not hire status or rent."
+      ]
+    },
+    {
+      "id": "S4-2023-INV-GOODS-ISSUE",
+      "capability": "Outbound delivery goods issue (stock, serial status, POD worklist)",
+      "fitType": "STANDARD",
+      "objects": [
+        "Outbound delivery (VL01N/Create Outbound Deliveries)",
+        "Post Goods Issue (VL02N)",
+        "Material document"
+      ],
+      "verification": "VERIFIED",
+      "evidence": [
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/c7894a248ca14f74aca67f97528e5ad7/cb1fbf53f106b44ce10000000a174cb4.html?version=2023.000",
+          "quote": "The serial number status is updated",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/c7894a248ca14f74aca67f97528e5ad7/cb1fbf53f106b44ce10000000a174cb4.html?version=2023.000",
+          "quote": "After goods issue is posted for an outbound delivery, the scope for changing the delivery document becomes very limited.",
+          "release": "2023"
+        }
+      ],
+      "limitations": [
+        "Copy of the asset code from order line to delivery item with change lock is a configuration/validation (serial number or batch handling) and is not evidenced by a quote.",
+        "Goods issue to a customer reduces own stock; rental-style 'owned asset at customer' is not a stock type (see S4-2023-INV-STOCK-TYPES)."
+      ]
+    },
+    {
+      "id": "S4-2023-INV-RETURNS-CUSTOMER",
+      "capability": "Customer returns process (returns order/returns delivery)",
+      "fitType": "STANDARD",
+      "objects": [
+        "Manage Customer Returns app",
+        "Returns order",
+        "Customer returns delivery (movement types 651-657)"
+      ],
+      "verification": "VERIFIED",
+      "evidence": [
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/c7894a248ca14f74aca67f97528e5ad7/bbe075c1b4994b3a92be8d0deebc2361.html?version=2023.000",
+          "quote": "The customer returns process models receiving goods from a customer when they return delivered goods.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/b2dee5e83e2446149294f9860a7c08f0/4c5bc4530b29b44ce10000000a174cb4.html?version=2023.000",
+          "quote": "When delivered goods are returned by a customer, they are first posted in the system to \"blocked stock returns\" with a stock category of \"R\"",
+          "release": "2023"
+        }
+      ],
+      "limitations": [
+        "Returned rental unit inspection routing (to QI stock, internal order) uses stock transfer postings; the link to a maintenance order is not described.",
+        "Hire-end-date capture for billing is a business-date field, not part of the returns document (EXTENSION).",
+        "Return -> inspection -> release to unrestricted stock is evidenced separately in S4-2023-INV-RETURNS-INSPECT-RELEASE; this entry only evidences the returns process and blocked returns stock R."
+      ]
+    },
+    {
+      "id": "S4-2023-SERIAL-NUMBER",
+      "capability": "Serial number management (serial number profile, equipment synchronisation)",
+      "fitType": "CONFIGURATION",
+      "objects": [
+        "Serial number profile (Customizing for Plant Maintenance)",
+        "Material master: serial number profile, Serialization Level 1",
+        "Serial number master data (IQ01/IQ02)"
+      ],
+      "verification": "VERIFIED",
+      "evidence": [
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/25a41481f62e469ba0e61015a0d39d20/990eb753128eb44ce10000000a174cb4.html?version=2023.000",
+          "quote": "The serial number profile must be defined in Customizing for Plant Maintenance.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/25a41481f62e469ba0e61015a0d39d20/780eb753128eb44ce10000000a174cb4.html?version=2023.000",
+          "quote": "When creating master records for serial numbers, you can use the material master record to control that the serial number and equipment number are kept synchronous.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/e98c7c41bbe8439e90daa5c114a7573b/177bbb53707db44ce10000000a174cb4.html?version=2023.000",
+          "quote": "In Customizing of serial number management you configure the serial number profile such that a serial number (for example, for goods receipt) is automatically created as an equipment master record.",
+          "release": "2023"
+        }
+      ],
+      "limitations": [
+        "Uniqueness of one asset code allocated to only one open order line, and replacement-allocation rejection are validations to add (EXTENSION).",
+        "Serial profile cannot be deleted once serial numbers exist (page note); plan the profile before loading the fleet."
+      ]
+    },
+    {
+      "id": "S4-2023-PM-EQUIPMENT",
+      "capability": "Equipment master and functional location (technical objects, installation at customer site)",
+      "fitType": "STANDARD",
+      "objects": [
+        "Equipment master (IE01/IE02/IE03)",
+        "Functional location (IL01) for customer site",
+        "Install/dismantle equipment without material movement"
+      ],
+      "verification": "VERIFIED",
+      "evidence": [
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/e98c7c41bbe8439e90daa5c114a7573b/0ab7b853dcfcb44ce10000000a174cb4.html?version=2023.000",
+          "quote": "A functional location represents the system area at which an object can be installed. Objects that can be installed at functional locations are called pieces of equipment in the SAP system.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/e98c7c41bbe8439e90daa5c114a7573b/7e7abb53707db44ce10000000a174cb4.html?version=2023.000",
+          "quote": "You want to install equipment in a superordinate piece of equipment or functional location without posting a goods issue.",
+          "release": "2023"
+        }
+      ],
+      "limitations": [
+        "No built-in rental status model (available/on hire/in inspection) or dashboard; status is derived by custom logic or user status profile (EXTENSION).",
+        "Using functional locations for each customer site is a design choice, not a SAP rental feature.",
+        "ROUND 3: equipment/asset link S4-2023-PM-EQUIPMENT-ASSET-SYNC; install/dismantle and usage list S4-2023-PM-EQUIPMENT-INSTALL-HISTORY; status profile S4-2023-PM-EQUIPMENT-STATUS (status profile cannot be changed once assigned)."
+      ]
+    },
+    {
+      "id": "S4-2023-PM-ORDER-SETTLEMENT",
+      "capability": "Maintenance/internal order cost collection and settlement",
+      "fitType": "STANDARD",
+      "objects": [
+        "Maintenance order (IW31/IW32)",
+        "Order settlement (KO88/KO8G)",
+        "Settlement rule",
+        "Planned settlement for internal orders"
+      ],
+      "verification": "VERIFIED",
+      "evidence": [
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/efc7922405fd4d56b7571930c5eaa798/ccc9b65334e6b54ce10000000a174cb4.html?version=2023.000",
+          "quote": "The costs are initially collected on the order. They are then transferred to the settlement receiver specified in the settlement rule",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/efc7922405fd4d56b7571930c5eaa798/ccc9b65334e6b54ce10000000a174cb4.html?version=2023.000",
+          "quote": "You can simulate the settlement first in a test run, without saving it.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/5e23dc8fe9be4fd496f8ab556667ea05/ab12d553088f4308e10000000a174cb4.html?version=2023.000",
+          "quote": "In planned settlement, you can post plan costs that you planned on an internal order.",
+          "release": "2023"
+        }
+      ],
+      "limitations": [
+        "Approval gate before accessory consumption is issued (hold awaiting finance approval) is not shown; needs release procedure/BAdI (EXTENSION).",
+        "Inspection plans/quality inspection of returned equipment (QM) were not evidenced by a fetched page.",
+        "Billing damage recovery to the customer from the order is a separate SD process (customer-specific services line)."
+      ]
+    },
+    {
+      "id": "S4-2023-ATP-CHECK",
+      "capability": "Availability check (ATP, scope of check) in sales and delivery",
+      "fitType": "STANDARD",
+      "objects": [
+        "Availability check against ATP quantity",
+        "Checking group / checking rule (OVZ2, OVZ9)",
+        "Advanced ATP (aATP) scope OVZ9A"
+      ],
+      "verification": "VERIFIED",
+      "evidence": [
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/7b24a64d9d0941bda1afa753263d9e39/5a63b753128eb44ce10000000a174cb4.html?version=2023.000",
+          "quote": "The ATP quantity is calculated from the warehouse stock, the planned inward movements of stock (production orders, purchase orders, planned orders) and the planned outward movements of stock (sales orders, deliveries, reservations).",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/f132c385e0234fe68ae9ff35b2da178c/d0960a564b52fb37e10000000a44147b.html?version=2023.000",
+          "quote": "Unrestricted stock is always considered in the advanced availability check.",
+          "release": "2023"
+        }
+      ],
+      "limitations": [
+        "Availability by hire period (asset returns on a future date becoming available again, overlapping reservations) is not described; time-phased rental availability likely needs custom logic (EXTENSION).",
+        "Serialised-asset-level availability is not covered by the quoted ATP logic.",
+        "Time-period quantity caps (product allocation) and reservations are in S4-2023-ATP-ALLOCATION-RESERVATION; hire-period availability remains an extension (S4-2023-ATP-RENTAL-PERIOD, UNVERIFIED)."
+      ]
+    },
+    {
+      "id": "S4-2023-FI-ASSET-ACQ-FROM-STOCK",
+      "capability": "Transfer of stock material to a fixed asset and asset under construction settlement",
+      "fitType": "CONFIGURATION",
+      "objects": [
+        "Asset Accounting (FI-AA) integration with MM",
+        "Processing a Goods Issue from the Warehouse to an asset",
+        "Asset under construction settlement (AIAB/AIBU) and intracompany transfer (ABUMN)"
+      ],
+      "verification": "VERIFIED",
+      "evidence": [
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/67e323b7117e4c91869c258933f47182/b5c7b053b08cd444e10000000a44538d.html?version=2023.000",
+          "quote": "For information on transferring stock material (current assets) to a fixed asset (for example, installation of a replacement part) see Processing a Goods Issue from the Warehouse.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/67e323b7117e4c91869c258933f47182/592b3250326543f7bbceba6ae91fc061.html?version=2023.000",
+          "quote": "it is possible to post from the Materials Management MM component directly to Asset Accounting.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/67e323b7117e4c91869c258933f47182/b5c7b053b08cd444e10000000a44538d.html?version=2023.000",
+          "quote": "You settle an asset under construction and transfer it to a finished asset.",
+          "release": "2023"
+        }
+      ],
+      "limitations": [
+        "The referenced page 'Processing a Goods Issue from the Warehouse' was NOT fetched; the exact posting (movement type, asset class, account determination) is unverified.",
+        "Approval by inventory plant head, tracking of remaining convertible quantity and generation of asset codes via request workflow are custom (EXTENSION).",
+        "Asset-to-equipment synchronisation exists per the equipment pages (S4-2023-SERIAL-NUMBER) but the asset-side page was not fetched.",
+        "ROUND 3: 'Processing a Goods Issue from the Warehouse' and 'Posting Stock Withdrawal' are now read (movement 241 to an asset); see S4-2023-FI-GI-TO-ASSET. Equipment/asset sync: S4-2023-PM-EQUIPMENT-ASSET-SYNC."
+      ]
+    },
+    {
+      "id": "S4-2023-FI-ASSET-DEPRECIATION-NBV",
+      "capability": "Asset valuation: depreciation, net book value, fully depreciated assets",
+      "fitType": "STANDARD",
+      "objects": [
+        "Manage Fixed Assets app",
+        "Asset Balances report",
+        "Asset Accounting Overview",
+        "Depreciation posting run"
+      ],
+      "verification": "VERIFIED",
+      "evidence": [
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/67e323b7117e4c91869c258933f47182/10e6d4619e184e5aa4bf2f939e2374d9.html?version=2023.000",
+          "quote": "Key figures, such as acquisition and production cost (APC), accumulated depreciation and netbook value",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/67e323b7117e4c91869c258933f47182/982e6a57bd390422e10000000a44147b.html?version=2023.000",
+          "quote": "The report enables you to understand the netbook value of fixed assets derived from acquisition and production costs (APC) and depreciation.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/67e323b7117e4c91869c258933f47182/592b3250326543f7bbceba6ae91fc061.html?version=2023.000",
+          "quote": "The system calculates, to a large extent automatically, the values for depreciation, interest and other purposes between these",
+          "release": "2023"
+        }
+      ],
+      "limitations": [
+        "Showing NBV on a rental dashboard needs an integration read of asset values (CDS/API); the apps themselves are finance apps.",
+        "Rule 'never depreciate below zero' and zero-value flag are asset-accounting configuration, not quoted; hire rate independence from asset value is pricing policy.",
+        "Excluding own-asset value from hire-order cost and netting depreciation against margin is a controlling design (EXTENSION/CO-PA)."
+      ]
+    },
+    {
+      "id": "S4-2023-LOG-LETRA-SHIPMENT",
+      "capability": "Transportation in Logistics Execution (LE-TRA shipment document, basic shipping)",
+      "fitType": "LICENSE_DEPENDENT",
+      "objects": [
+        "Shipment document (VT01N)",
+        "Shipment cost document (VI01)",
+        "Transportation planning list",
+        "Compatibility Pack: Basic Shipping (FSD 5.9.1.1)"
+      ],
+      "verification": "VERIFIED",
+      "evidence": [
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/eff06b275ea640c4a827fc099df3b4aa/9c93c95360267214e10000000a174cb4.html?version=2023.000",
+          "quote": "Transportation planning and processing is based on the shipment document.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/eff06b275ea640c4a827fc099df3b4aa/9c93c95360267214e10000000a174cb4.html?version=2023.000",
+          "quote": "Other available functions include: shipment costs calculation and settlement with the service agent, transfer to accounting, credit memo creation and invoice verification.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/doc/e2048712f0ab45e791e6d15ba5e20c68/2023/en-US/FSD_OP2023_latest.pdf",
+          "quote": "The transportation functions can handle planning and execution for both inbound and outbound",
+          "release": "2023"
+        }
+      ],
+      "limitations": [
+        "The 2023 Feature Scope Description lists Basic Shipping as section 5.9.1.1 inside chapter 5 'SAP S/4HANA Compatibility Packs'; usage rights are 'set forth in the Software Use Rights Document' (quote in S4-2023-LOG-TM-EMBEDDED); end of Compatibility Pack usage right was not read here and must be checked before choosing LE-TRA.",
+        "Freight units and consolidation into freight orders are TM concepts, not LE-TRA shipments; shipments consolidate deliveries.",
+        "POD recorded per shipment and carrier invoice matching are not evidenced for LE-TRA by fetched pages."
+      ]
+    },
+    {
+      "id": "S4-2023-LOG-TM-EMBEDDED",
+      "capability": "Embedded Transportation Management (freight units, freight orders, charges, settlement)",
+      "fitType": "LICENSE_DEPENDENT",
+      "objects": [
+        "Freight order / freight unit",
+        "Freight settlement document",
+        "Delivery-based transportation requirement",
+        "FSD 2.12.2.2 Transportation Management; FSD 3.10.1 Advanced Transportation Management"
+      ],
+      "verification": "VERIFIED",
+      "evidence": [
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/e3dc5400c1cc41d1bc0ae0e7fd9aa5a2/3dbac2009df0459da845e03e6802817f.html?version=2023.000",
+          "quote": "Create freight orders and freight bookings (manually or automatically using transportation planning)",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/e3dc5400c1cc41d1bc0ae0e7fd9aa5a2/3dbac2009df0459da845e03e6802817f.html?version=2023.000",
+          "quote": "Calculate the transportation charges for both the ordering party and the supplier side",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/doc/e2048712f0ab45e791e6d15ba5e20c68/2023/en-US/FSD_OP2023_latest.pdf",
+          "quote": "In the logistics integration process, TM uses inbound or outbound deliveries to create freight units.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/doc/e2048712f0ab45e791e6d15ba5e20c68/2023/en-US/FSD_OP2023_latest.pdf",
+          "quote": "Please note that the specific usage rights for SAP S/4HANA Compatibility Packs are set forth in the Software Use Rights Document.",
+          "release": "2023"
+        }
+      ],
+      "limitations": [
+        "The FSD places 'Transportation Management' in the Enterprise Management chapter (2.12.2.2) and 'Advanced Transportation Management' under Enhanced LoB Functions (3.10.1), for which the FSD states 'you might need a separate license'. Which exact capability belongs to the customer's entitlement (basic vs advanced, e.g. consolidation, tendering, carrier invoice) must be confirmed against the contract; this was not verifiable from public pages.",
+        "The help page covers TM generally and does not itself separate basic from advanced; no SAP Note was read.",
+        "Recording the carrier invoice receipt and POD against freight orders was not evidenced by a fetched page."
+      ]
+    },
+    {
+      "id": "S4-2023-LOG-POD-OUTBOUND",
+      "capability": "Proof of delivery for outbound deliveries (worklist, EDI STPPOD)",
+      "fitType": "CONFIGURATION",
+      "objects": [
+        "Proof of delivery worklist after goods issue",
+        "POD relevance of delivery item category",
+        "Message STPPOD (EDI)"
+      ],
+      "verification": "VERIFIED",
+      "evidence": [
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/c7894a248ca14f74aca67f97528e5ad7/cb1fbf53f106b44ce10000000a174cb4.html?version=2023.000",
+          "quote": "A worklist for the proof of delivery is generated",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/c7894a248ca14f74aca67f97528e5ad7/0eedbf53f106b44ce10000000a174cb4.html?version=2023.000",
+          "quote": "Proof of delivery (STPPOD, inbound, EDI)",
+          "release": "2023"
+        }
+      ],
+      "limitations": [
+        "POD relevance must be set per delivery item category (page for inbound POD describes IMG steps; outbound IMG path not fetched).",
+        "POD at freight-order level in TM was not evidenced.",
+        "Release of invoicing on POD confirmation is not evidenced by 2023 on-premise pages."
+      ]
+    },
+    {
+      "id": "S4-2023-OUT-OUTPUT-MGMT",
+      "capability": "Output management for sales and billing documents (print/e-mail forms)",
+      "fitType": "CONFIGURATION",
+      "objects": [
+        "Output determination (SD-BF-OC) or SAP S/4HANA output control (CA-GTF-OC)",
+        "BRF+ output parameter determination (OPD)",
+        "Adobe forms / form templates"
+      ],
+      "verification": "VERIFIED",
+      "evidence": [
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/7b24a64d9d0941bda1afa753263d9e39/d9cc17d1aa404aee9bf2d10599c9a8d1.html?version=2023.000",
+          "quote": "By default, all output-relevant apps use the output determination (SD-BF-OC) framework as their output management framework. However, SAP S/4HANA output control (CA-GTF-OC) can also be used.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/7b24a64d9d0941bda1afa753263d9e39/d9cc17d1aa404aee9bf2d10599c9a8d1.html?version=2023.000",
+          "quote": "You cannot combine the output determination (SD-BF-OC) framework with the SAP S/4HANA output control (CA-GTF-OC) framework.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/74742d945db64478beba8da532dd9291/1251e048456140339354662222b51b73.html?version=2023.000",
+          "quote": "You need to maintain the Output Control Configurations via the IMG path Cross-Application Components -> Output Control.",
+          "release": "2023"
+        }
+      ],
+      "limitations": [
+        "One framework only must be chosen for all apps (page note); decide before building forms.",
+        "Conditional print content (assembly shows only total rate, omit blank hire dates) is form logic (form/BAdI), not output determination.",
+        "Notification by e-mail on document creation is not the same as document output; see S4-2023-NOTIFY-EMAIL.",
+        "The apoc evidence page is the Switzerland localisation page; it is used only for the OPD/IMG path statement."
+      ]
+    },
+    {
+      "id": "S4-2023-ANALYTICS-CDS",
+      "capability": "Embedded analytics: View Browser and Custom Analytical Queries over CDS views",
+      "fitType": "EXTENSION",
+      "objects": [
+        "View Browser app",
+        "Custom Analytical Queries app",
+        "CDS consumption views with analytical annotations"
+      ],
+      "verification": "VERIFIED",
+      "evidence": [
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/6b356c79dea443c4bbeeaf0865e04207/0bde695751505c08e10000000a441470.html?version=2023.000",
+          "quote": "Get a list of all available CDS views and use the artifacts for analyzing the data.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/doc/e2048712f0ab45e791e6d15ba5e20c68/2023/en-US/FSD_OP2023_latest.pdf",
+          "quote": "With this feature, you can search, browse, and tag analytical and non-analytical queries.",
+          "release": "2023"
+        }
+      ],
+      "limitations": [
+        "A rental-assets dashboard that derives status from the latest movement per asset is a custom CDS/Fiori development; the apps only let key users browse/build queries.",
+        "Help searches indicated Custom Analytical Queries may be flagged deprecated for S/4HANA Cloud Public Edition; applicability to 2023 on-premise was not confirmed from an on-premise page. Verify before relying on it.",
+        "Real-time status is a function of the CDS design, not guaranteed by the tool."
+      ]
+    },
+    {
+      "id": "S4-2023-EXT-KEYUSER",
+      "capability": "Key-user extensibility: custom fields, data source extensions, custom logic",
+      "fitType": "EXTENSION",
+      "objects": [
+        "Custom Fields app",
+        "Data source extensions",
+        "Custom Logic (BAdI implementation for key users)",
+        "Developer extensibility (ADT)"
+      ],
+      "verification": "VERIFIED",
+      "evidence": [
+        {
+          "url": "https://help.sap.com/doc/e2048712f0ab45e791e6d15ba5e20c68/2023/en-US/FSD_OP2023_latest.pdf",
+          "quote": "Create your own fields and enhancement implementations",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/doc/e2048712f0ab45e791e6d15ba5e20c68/2023/en-US/FSD_OP2023_latest.pdf",
+          "quote": "You can implement custom logic with ABAP for key users in your enhancement implementation.",
+          "release": "2023"
+        }
+      ],
+      "limitations": [
+        "Only extensible business contexts released by SAP can carry custom fields; each needed business context (sales order item, delivery item) must be checked.",
+        "Custom business objects (transfer request, damage record) with UI are not evidenced by 2023 on-premise pages fetched; developer extensibility or side-by-side (BTP) may be needed.",
+        "No 2023 on-premise page fetched documents a key-user Custom CDS Views app (only Public Edition pages were seen in search, not used) or a BAdI for copy control; see S4-2023-SD-COPY-CONTROL and UNVERIFIED S4-2023-EXT-COPY-BADI.",
+        "ROUND 3: custom business objects with UI/OData and node-level custom logic ARE evidenced for ABAP Platform 2023 and the Feature Scope Description; see S4-2023-EXT-KEYUSER-CUSTOM-BO and, for what the Custom Logic BAdIs can reach in sales and billing, S4-2023-EXT-KEYUSER-SCOPE. Developer extensibility and RAP are S4-2023-EXT-DEV-ABAP-CLOUD and S4-2023-EXT-RAP; classic routines S4-2023-EXT-CLASSIC-ABAP; side-by-side S4-2023-INT-BTP-SIDE-BY-SIDE."
+      ]
+    },
+    {
+      "id": "S4-2023-MASS-CHANGE-JOBS",
+      "capability": "Mass change of sales documents as background jobs",
+      "fitType": "STANDARD",
+      "objects": [
+        "Mass Change of Sales Documents app",
+        "Background job scheduling"
+      ],
+      "verification": "VERIFIED",
+      "evidence": [
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/7b24a64d9d0941bda1afa753263d9e39/315edd1c8c1f4675bc68bee977849198.html?version=2023.000",
+          "quote": "With this app, you can make changes to multiple documents of a sales document category at a time.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/7b24a64d9d0941bda1afa753263d9e39/315edd1c8c1f4675bc68bee977849198.html?version=2023.000",
+          "quote": "The changes are scheduled in the form of a job which runs in the background.",
+          "release": "2023"
+        }
+      ],
+      "limitations": [
+        "Close-with-reason of quotations by criteria is not evidenced as an available change option on the fetched page (the page lists header options for sales orders); validate.",
+        "Expiry-based auto-close needs a scheduled report/job (EXTENSION)."
+      ]
+    },
+    {
+      "id": "S4-2023-SCAN-BARCODE",
+      "capability": "Barcode scanning in Fiori inventory management apps",
+      "fitType": "CONFIGURATION",
+      "objects": [
+        "Define Settings for Scanner Hardware",
+        "Define Barcode Parsing",
+        "Assign Parsing and Hardware",
+        "Selected Inventory Management Fiori apps"
+      ],
+      "verification": "VERIFIED",
+      "evidence": [
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/49d0972a760b4646918ce9fddb034d64/dcc5840b808f4de989a93a02ece18e1b.html?version=2023.000",
+          "quote": "Barcode scanning is an important feature for accelerating your data input and minimizing errors upon data entry.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/49d0972a760b4646918ce9fddb034d64/dcc5840b808f4de989a93a02ece18e1b.html?version=2023.000",
+          "quote": "A composite barcode contains multiple attributes, which can be used in selected Inventory Management Fiori apps to, for example, monitor stocks more effectively.",
+          "release": "2023"
+        }
+      ],
+      "limitations": [
+        "Scope is selected Inventory Management apps; scanning an asset code in a hire-order dispatch or return screen is not covered (custom Fiori/UI5 scan or EWM RF).",
+        "EWM RF framework licensing/availability was not verified from fetched pages (SAP Help search returned the EWM Industry Add-on page, which is a different product)."
+      ]
+    },
+    {
+      "id": "S4-2023-EWM-SERIAL-DELIVERY",
+      "capability": "Serial numbers in outbound delivery with Extended Warehouse Management",
+      "fitType": "LICENSE_DEPENDENT",
+      "objects": [
+        "Embedded EWM outbound delivery order",
+        "Serial number profile in EWM",
+        "Sales order serial number pass-through"
+      ],
+      "verification": "VERIFIED",
+      "evidence": [
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/9832125c23154a179bfa1784cdc9577a/e9c7cb53ad377114e10000000a174cb4.html?version=2023.000",
+          "quote": "If you want to specify serial numbers in the goods issue process, then you must do so in the S/4HANA System in the sales order.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/9832125c23154a179bfa1784cdc9577a/e9c7cb53ad377114e10000000a174cb4.html?version=2023.000",
+          "quote": "EWM copies the serial numbers from the S/4HANA System in both the goods receipt and goods issue processes.",
+          "release": "2023"
+        }
+      ],
+      "limitations": [
+        "Applies when EWM is used; EWM scope and licence (basic vs advanced) were NOT confirmed from fetched sources.",
+        "If EWM is not used, serial number assignment in the standard LE-SHP delivery is used instead and was not separately evidenced."
+      ]
+    },
+    {
+      "id": "S4-2023-NOTIFY-EMAIL",
+      "capability": "E-mail/launchpad notification on document creation (event/situation based)",
+      "fitType": "CONFIGURATION",
+      "objects": [
+        "Situation Handling",
+        "Flexible workflow notifications",
+        "Output channel EMAIL"
+      ],
+      "verification": "UNVERIFIED",
+      "evidence": [
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/af9ef57f504840d2b81be8667206d485/b33a97f3014f43c488ec798633824081.html?version=2023.000",
+          "quote": "Approvers receive notifications about new work items in the SAP Fiori launchpad. If required, you can also configure e-mail notifications to be sent to them.",
+          "release": "2023"
+        }
+      ],
+      "limitations": [
+        "UNVERIFIED: the cited quote supports e-mail/launchpad notification only for approval work items on purchase orders. A generic notification on creation of quotations/hire orders to a named user group was not located on a fetched 2023 page.",
+        "Possible realisations (situation framework, output channel e-mail to a distribution list, custom event) are proposals only."
+      ]
+    },
+    {
+      "id": "S4-2023-AUDIT-CHANGE-LOG",
+      "capability": "Change history of item dates (who, when, old and new value)",
+      "fitType": "STANDARD",
+      "objects": [
+        "Change documents (CDHDR/CDPOS)",
+        "VA05/VA03 environment change documents"
+      ],
+      "verification": "UNVERIFIED",
+      "evidence": [
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/9905622a5c1f49ba84e9076fc83a9c2c/1b877f544b1a033de10000000a441470.html?version=2023.000",
+          "quote": "Alternatively, you can use the transaction CS80 for material BOM and CS82 for sales order BOM to display change documents.",
+          "release": "2023"
+        }
+      ],
+      "limitations": [
+        "UNVERIFIED: the only fetched change-document page is for BOMs. Whether sales order item hire dates are change-document-relevant fields with display of user, time, old and new value was not confirmed on a 2023 page.",
+        "Fields that are not change-document-enabled need a custom log (EXTENSION)."
+      ]
+    },
+    {
+      "id": "S4-2023-ATP-TPO-TAB-SUBITEMS",
+      "capability": "Advanced ATP third-party subitems: TAS (supplier delivers to customer) versus TAB (supplier delivers to your plant, then you deliver)",
+      "fitType": "CONFIGURATION",
+      "objects": [
+        "Advanced Available-to-Promise (aATP) sourcing profile",
+        "Third-party shipment type in sourcing profile",
+        "Sales order subitem item category TAS / TAB; standard item TAN",
+        "Scope items 1JW, BDN, BD3 (as listed on the page)"
+      ],
+      "verification": "VERIFIED",
+      "evidence": [
+        {
+          "url": "https://help.sap.com/docs/PRODUCTS/f5d3e1005efd4e86acf9a65abf428082/9d0892c724704826920390934f19f332.html?version=2023.002",
+          "quote": "The third-party supplier delivers the product to the customer directly.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/PRODUCTS/f5d3e1005efd4e86acf9a65abf428082/9d0892c724704826920390934f19f332.html?version=2023.002",
+          "quote": "In this case, the generated sales order subitems have the item category TAS.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/PRODUCTS/f5d3e1005efd4e86acf9a65abf428082/9d0892c724704826920390934f19f332.html?version=2023.002",
+          "quote": "The third-party supplier delivers the product to your plants or subsidiaries. Then, your company delivers the product to the customer.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/PRODUCTS/f5d3e1005efd4e86acf9a65abf428082/9d0892c724704826920390934f19f332.html?version=2023.002",
+          "quote": "In this case, the generated sales order subitems have the item category TAB.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/PRODUCTS/f5d3e1005efd4e86acf9a65abf428082/9d0892c724704826920390934f19f332.html?version=2023.002",
+          "quote": "When the system combines items for standard and third-party order processing, it initially tries to fulfill the requested order quantity with standard items (with the item category TAN).",
+          "release": "2023"
+        }
+      ],
+      "limitations": [
+        "Page is the 2023 FPS02 What's New topic ('Valid as of 2023 FPS02'); it is not in the base 2023 (Oct 2023) documentation, so the target must be FPS02 or later. The catalog release label stays '2023'.",
+        "TAB is evidenced only for subitems generated by aATP from a sourcing profile; the page does not say what stock type, goods-receipt posting, valuation or return handling follows for TAB.",
+        "Does not make a hire unit rentable twice, track the supplier unit by serial number, or return it to the supplier; those need S4-2023-PROC-RETURN-VENDOR and design work.",
+        "Requires aATP configuration (sourcing profile with third-party shipment type); the page does not state aATP licensing.",
+        "Reviewer N2: use TAB (receive then deliver) rather than TAS for a unit received into EMM's warehouse, but confirm it end to end on the target FPS before design commits."
+      ]
+    },
+    {
+      "id": "S4-2023-INV-VENDOR-CONSIGNMENT",
+      "capability": "Vendor consignment (special stock K): supplier-owned stock held at your site, settled on withdrawal, returned through settlement credit memo",
+      "fitType": "STANDARD",
+      "objects": [
+        "Special stock K (vendor consignment), purchase order item category K",
+        "Consignment settlement (MRKO) with invoices and credit memos",
+        "Goods issue from consignment stock (vendor due net value of issue)",
+        "Material documents cancelled then consignment settlement run"
+      ],
+      "verification": "VERIFIED",
+      "evidence": [
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/91b21005dded4984bcccf4a69ae1300c/a361bd534f22b44ce10000000a174cb4.html?version=2023.000",
+          "quote": "This type of stock comprises consignment material belonging to the vendor that is stored on your premises.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/9905622a5c1f49ba84e9076fc83a9c2c/8ce4c353b677b44ce10000000a174cb4.html?version=2023.000",
+          "quote": "You carry the goods in the supplier consignment stock in your site and therefore they remain the property of the external supplier (special stock manager) and do not belong to your valuated stock.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/af9ef57f504840d2b81be8667206d485/1e6fb6531de6b64ce10000000a174cb4.html?version=2023.000",
+          "quote": "Only when you have withdrawn stock does payment become due for the quantities used.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/91b21005dded4984bcccf4a69ae1300c/ba61bd534f22b44ce10000000a174cb4.html?version=2023.000",
+          "quote": "After the goods issue, the vendor is due the net value of the goods issue.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/af9ef57f504840d2b81be8667206d485/1e6fb6531de6b64ce10000000a174cb4.html?version=2023.000",
+          "quote": "Cancel the documents in Inventory Management and start consignment settlement. The system generates a credit memo for the returned document.",
+          "release": "2023"
+        }
+      ],
+      "limitations": [
+        "Supplier-owned and outside valuated stock until WITHDRAWN. Withdrawal (goods issue, including to a customer delivery) makes the vendor due the net value of the issue, i.e. a purchase-price liability, not a rental charge. A hire unit that goes out on rent would trigger that payment unless it is returned before issue; consignment does not model supplier rent per day.",
+        "The valuation sentence ('do not belong to your valuated stock') is on the SAP Retail supplier consignment page (article/site wording); the MM-IM page only says the stock belongs to the vendor. No 2023 page fetched states that the goods receipt into K stock posts no accounting document; confirm FI effect in the system.",
+        "The vendor consignment goods receipt page seen for 2023 is Brazil-specific (movement type 821); that page was not used.",
+        "Return of non-withdrawn consignment stock to the supplier (return delivery from K stock) and the movement types were not evidenced; only the cancellation-plus-settlement credit memo is.",
+        "Supplier-owned rental where the supplier charges time-based rent is better matched by a rental PO with invoicing plan (S4-2023-PROC-RENTAL-INVOICING-PLAN) plus a non-valuated own-stock or service route; PROCURE-S2 'supplier owner, no carrying value' still needs a configuration decision (reviewer N3)."
+      ]
+    },
+    {
+      "id": "S4-2023-INV-GR-NONVALUATED",
+      "capability": "Goods receipt of non-valuated (quantity-managed) materials",
+      "fitType": "STANDARD",
+      "objects": [
+        "Material managed on quantity basis only (no value update)",
+        "Purchase order with account assignment",
+        "Goods receipt to warehouse stock then goods issue to consumption"
+      ],
+      "verification": "VERIFIED",
+      "evidence": [
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/91b21005dded4984bcccf4a69ae1300c/cd63bd534f22b44ce10000000a174cb4.html?version=2023.000",
+          "quote": "If the stock of a given material is only managed on a quantity basis, an account assignment must be defined in the purchase order.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/91b21005dded4984bcccf4a69ae1300c/cd63bd534f22b44ce10000000a174cb4.html?version=2023.000",
+          "quote": "However, this account assignment does not result in the goods receipt being posted to consumption/usage. Instead, it results in the costs being debited to the account assignment object.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/91b21005dded4984bcccf4a69ae1300c/cd63bd534f22b44ce10000000a174cb4.html?version=2023.000",
+          "quote": "The goods receipt is posted to the warehouse stock, thus increasing the unrestricted-use stock of the material.",
+          "release": "2023"
+        }
+      ],
+      "limitations": [
+        "Describes quantity-only management of YOUR OWN material: the PO account assignment still debits cost to the account assignment object, so it is not a supplier-owned, no-cost custody record.",
+        "Does not provide supplier ownership, supplier-owned flag, or separation from own unrestricted stock.",
+        "Direct posting into consumption is not possible: receipt to warehouse first, then goods issue (page quote).",
+        "Reviewer N3 conclusion: for a genuine no-cost, supplier-owned receipt the evidenced route is vendor consignment (S4-2023-INV-VENDOR-CONSIGNMENT); this entry is the quantity-only alternative with its cost debit."
+      ]
+    },
+    {
+      "id": "S4-2023-INV-RETURNS-INSPECT-RELEASE",
+      "capability": "Customer return: returns order, returns delivery to returns stock, inspection, decision (return to stock, scrap, forward to supplier)",
+      "fitType": "CONFIGURATION",
+      "objects": [
+        "Returns order and returns delivery",
+        "Blocked stock returns (category R)",
+        "Advanced Returns Management: Inspection and Logistical Follow Up, Returns Overview (MSR_CRD)",
+        "Business functions OPS_ADVRETURNS_1, OPS_ADVRETURNS_2 (and prerequisites listed on the QM page)",
+        "Quality notification Q1 action box: Create Returns Order",
+        "FSD 2.9.2.10 Claims, Returns, and Refund Management"
+      ],
+      "verification": "VERIFIED",
+      "evidence": [
+        {
+          "url": "https://help.sap.com/doc/e2048712f0ab45e791e6d15ba5e20c68/2023/en-US/FSD_OP2023_latest.pdf",
+          "quote": "a returns delivery is created with reference to the returns order, and the product (that is, material) is received into returns stock.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/doc/e2048712f0ab45e791e6d15ba5e20c68/2023/en-US/FSD_OP2023_latest.pdf",
+          "quote": "The goods are inspected and either selected for return to stock, for scrapping, or for other logistical processing (for example, for forwarding to the supplier).",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/9905622a5c1f49ba84e9076fc83a9c2c/466a5a926ccb429387891e0ffc800c07.html?version=2023.000",
+          "quote": "Inspection and Logistical Follow Up: To enter results of an inspection performed on returned goods and subsequently decide what is to happen to the goods",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/b2dee5e83e2446149294f9860a7c08f0/4c5bc4530b29b44ce10000000a174cb4.html?version=2023.000",
+          "quote": "When delivered goods are returned by a customer, they are first posted in the system to \"blocked stock returns\" with a stock category of \"R\"",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/2bc3ee8d1c83404e8cf62418640004f2/127e0a550eacf957e10000000a441470.html?version=2023.000",
+          "quote": "For example, if goods are returned by a customer for repair or replacement because of a technical defect, you can use a quality notification to process the return delivery.",
+          "release": "2023"
+        }
+      ],
+      "limitations": [
+        "Evidences the path return receipt -> returns stock -> inspection -> follow-up decision (to stock / scrap / supplier) as standard capability. The specific posting that moves a unit from returns/QI stock to unrestricted stock (movement types) and a QM inspection lot with usage decision for returns stock were NOT evidenced on a 2023 page.",
+        "Advanced Returns Management needs business functions OPS_ADVRETURNS_1/2 and settings (AdvRets document-type flag, segmentation); its licensing is unconfirmed: the Feature Scope Description lists returns management in 2.9.2.10 (Enterprise Management) and a different feature set in 5.7.2.6 (Service chapter).",
+        "The FSD sentence about 'customer returns inspection with integration into Advanced Returns Management' sits in the EWM quality section and was not used.",
+        "Does not set the returned unit's rental status, match an unmatched return to a hire order, preserve the billing end date separately from the physical receipt date, or release the unit as allocatable to dispatch; those are design/extension (reviewer N7).",
+        "Damaged-return routing to a repair/maintenance order is not described (see S4-2023-PM-ORDER-SETTLEMENT)."
+      ]
+    },
+    {
+      "id": "S4-2023-SD-CMR-BILLING-BLOCK",
+      "capability": "Credit memo request / returns with default billing block, review, release or rejection, approval",
+      "fitType": "STANDARD",
+      "objects": [
+        "Sales document types CR, RE, DR, RK with default billing block (08 check credit memo, 09 check debit memo)",
+        "Manage Credit Memo Requests app (set/remove billing block, reject all items)",
+        "Rejection reason per document or item",
+        "FSD: Credit memo request approval processing"
+      ],
+      "verification": "VERIFIED",
+      "evidence": [
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/7b24a64d9d0941bda1afa753263d9e39/ad65b65334e6b54ce10000000a174cb4.html?version=2023.000",
+          "quote": "The system can automatically propose a delivery or billing block when you enter a complaint.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/7b24a64d9d0941bda1afa753263d9e39/ad65b65334e6b54ce10000000a174cb4.html?version=2023.000",
+          "quote": "Once the complaint has been reviewed, either you need to remove the delivery or billing block so that it can be processed, or you enter a reason for rejection.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/7b24a64d9d0941bda1afa753263d9e39/37a25cdcf6f04c638a2f7f63c84c8479.html?version=2023.000",
+          "quote": "You can set a billing block.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/7b24a64d9d0941bda1afa753263d9e39/37a25cdcf6f04c638a2f7f63c84c8479.html?version=2023.000",
+          "quote": "You can remove a billing block.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/doc/e2048712f0ab45e791e6d15ba5e20c68/2023/en-US/FSD_OP2023_latest.pdf",
+          "quote": "You can set up approval processes for credit memo requests.",
+          "release": "2023"
+        }
+      ],
+      "limitations": [
+        "Covers the credit memo request document and its billing block; cancellation of an issued invoice is a billing-document function (S4-2023-SD-BILLING), not a credit memo request.",
+        "The FSD line says approval processes can be set up for credit memo requests but does not name the mechanism; the BAdI-triggered workflow is evidenced in S4-2023-WF-SD-APPROVAL.",
+        "Default billing blocks are Customizing values per document type (page lists them); they are not rental-specific rules.",
+        "Does not evidence a rental-specific over-billing correction (rebilling of a period after a corrected return date) or linking the credit memo to the original billing-plan period (BILL-S4 design)."
+      ]
+    },
+    {
+      "id": "S4-2023-SD-BILLPLAN-DATES-FINAL",
+      "capability": "Billing plan dates generate billing due list entries; milestone plan has a final invoice date; periodic plan takes start/end from the contract",
+      "fitType": "CONFIGURATION",
+      "objects": [
+        "Milestone billing plan (order-related billing only)",
+        "Periodic billing plan: start/end dates, period, horizon",
+        "Billing due list (Create Billing Documents app)",
+        "Billing rules 4/5 for down payment dates"
+      ],
+      "verification": "VERIFIED",
+      "evidence": [
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/7b24a64d9d0941bda1afa753263d9e39/ce6eb6535fe6b74ce10000000a174cb4.html?version=2023.000",
+          "quote": "The corresponding down payment requests are represented as deadlines (billing dates) in the milestone billing plan of an item.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/7b24a64d9d0941bda1afa753263d9e39/ce6eb6535fe6b74ce10000000a174cb4.html?version=2023.000",
+          "quote": "When you save the sales order, billing due list items are created for the individual dates.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/7b24a64d9d0941bda1afa753263d9e39/ce6eb6535fe6b74ce10000000a174cb4.html?version=2023.000",
+          "quote": "The billing plan can only be used for order-related billing and not for delivery-related billing.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/7b24a64d9d0941bda1afa753263d9e39/ce6eb6535fe6b74ce10000000a174cb4.html?version=2023.000",
+          "quote": "Note how a partial (that is, milestone) invoice is planned for some time before the final invoice, for example, for the date on which the goods are delivered.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/7b24a64d9d0941bda1afa753263d9e39/ba6fb6535fe6b74ce10000000a174cb4.html?version=2023.000",
+          "quote": "Start and end dates define the duration of the billing plan and, whenever possible, are copied from the start and end dates of the corresponding rental contract.",
+          "release": "2023"
+        }
+      ],
+      "limitations": [
+        "A 'final invoice' appears only as the last date of a milestone billing plan in an example figure caption; no standard flag, status or event that tells another process (such as freight closure) that the final invoice has been issued was found. The final-invoice marker and trigger in reviewer N5 is a design/extension item.",
+        "A billing block on an individual billing plan date is NOT evidenced on any fetched 2023 page; blocks are documented at header and item level (S4-2023-SD-BLOCKS). Hold-until-billable-start (reviewer N1) is therefore an extension or a billing block set by custom logic on the item.",
+        "Plan dates carry values or percentages, not billable days derived from an actual return date; the periodic plan only supports monthly/quarterly/annual periodicity on the quoted page (see S4-2023-SD-RENTAL-BILLPLAN limitations).",
+        "Order-related billing only for milestone plans: it does not follow delivery quantities.",
+        "ROUND 3 CORRECTION: the limitation above that a billing block on an individual billing plan date is not evidenced is superseded. The 2023 Billing Plan Functions page says 'A billing block can be set for each date in a billing plan.' See S4-2023-SD-BILLPLAN-ITEM-CONTROL (also per-date billing status C and manual final settlement)."
+      ]
+    },
+    {
+      "id": "S4-2023-SD-RESOURCE-BILLING",
+      "capability": "Resource-related billing: bill actual costs and activities of an internal/production order or project against a sales order item",
+      "fitType": "CONFIGURATION",
+      "objects": [
+        "Resource-related billing request (Expenditure View / Sales Price View)",
+        "DP90/DP91 resource-related billing",
+        "Sales order item with controlling object, WBS element, production order or internal order",
+        "Integration with milestone billing plan"
+      ],
+      "verification": "VERIFIED",
+      "evidence": [
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/7b24a64d9d0941bda1afa753263d9e39/20abb853dcfcb44ce10000000a174cb4.html?version=2023.000",
+          "quote": "The prices for customer-specific services are not always defined in a contract as fixed prices, nor can they always be determined using standard pricing.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/7b24a64d9d0941bda1afa753263d9e39/20abb853dcfcb44ce10000000a174cb4.html?version=2023.000",
+          "quote": "The customer receives a billing document verifying individual materials, internal activities, and costs.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/7b24a64d9d0941bda1afa753263d9e39/20abb853dcfcb44ce10000000a174cb4.html?version=2023.000",
+          "quote": "Items of an SD document with relation to a production order or internal order",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/7b24a64d9d0941bda1afa753263d9e39/f88cb6535fe6b74ce10000000a174cb4.html?version=2023.000",
+          "quote": "With this function you can integrate the resource-related billing document into the milestone billing plan (milestone billing).",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/7b24a64d9d0941bda1afa753263d9e39/f88cb6535fe6b74ce10000000a174cb4.html?version=2023.000",
+          "quote": "Resource-related using transaction DP90/DP91",
+          "release": "2023"
+        }
+      ],
+      "limitations": [
+        "Bills ACTUAL COSTS posted to a controlling object (materials, internal activities, costs); it is not a time-based charge by hire days and does not price actual-period rental from a return date. At best it supports re-billing repair/damage cost from an internal order.",
+        "Page names typical uses as make-to-order production, external plant maintenance and consulting, and requires a controlling object on the sales item; customer-damage re-billing flow and approval were not described.",
+        "Static billing is no longer available (page); older Project System billing must be converted.",
+        "Pricing for later billing requests comes from the pricing procedure by quantity and material, so the rental rate logic remains S4-2023-SD-PRICING."
+      ]
+    },
+    {
+      "id": "S4-2023-FIN-CREDIT-SD-INTEGRATION",
+      "capability": "SAP Credit Management integration with SD: where checks and exposure updates run (order, delivery, billing)",
+      "fitType": "CONFIGURATION",
+      "objects": [
+        "SAP Credit Management Configuration Guide, Integration with Accounts Receivable Accounting and Sales and Distribution",
+        "Define Credit Groups (OVAK), Assign Sales Documents and Delivery Documents",
+        "Define Automatic Credit Control (OVA8), Define Risk Categories",
+        "Check of blocked credit management account"
+      ],
+      "verification": "VERIFIED",
+      "evidence": [
+        {
+          "url": "https://help.sap.com/doc/792426924faa44698c76733bd0b88072/2023.000/en-US/loiobb4c195466432b18e10000000a174cb4_PDF_EN.pdf",
+          "quote": "Credit limit check on creating or changing sales documents, deliveries and service orders",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/doc/792426924faa44698c76733bd0b88072/2023.000/en-US/loiobb4c195466432b18e10000000a174cb4_PDF_EN.pdf",
+          "quote": "Credit exposure report on saving a sales document",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/doc/792426924faa44698c76733bd0b88072/2023.000/en-US/loiobb4c195466432b18e10000000a174cb4_PDF_EN.pdf",
+          "quote": "Credit exposure report on saving a delivery",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/doc/792426924faa44698c76733bd0b88072/2023.000/en-US/loiobb4c195466432b18e10000000a174cb4_PDF_EN.pdf",
+          "quote": "Credit exposure report on creating a billing document",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/doc/792426924faa44698c76733bd0b88072/2023.000/en-US/loiobb4c195466432b18e10000000a174cb4_PDF_EN.pdf",
+          "quote": "you can still create new sales documents in the event of such technical problems, and then perform the credit check later.",
+          "release": "2023"
+        }
+      ],
+      "limitations": [
+        "Evidence is the 2023 SAP Credit Management Configuration Guide integration list: check on creating/changing sales documents and deliveries; exposure updates on saving a sales document, saving a delivery, creating a billing document. Billing creation is an exposure update, not a block point.",
+        "A credit check at post goods issue and any suppression of mail/print/output for credit-blocked documents are NOT evidenced (see UNVERIFIED S4-2023-FIN-CREDIT-GI-OUTPUT).",
+        "Which action warns versus blocks, and which document types or item categories are relevant, is Customizing; whether rental quotations and future billing-plan values count as exposure is not evidenced.",
+        "The guide was a PDF text extraction; page wording relates to SAP Credit Management in FSCM, not to any rental-specific rule."
+      ]
+    },
+    {
+      "id": "S4-2023-FIN-CREDIT-GI-OUTPUT",
+      "capability": "Credit check at post goods issue and output suppression for credit-blocked documents",
+      "fitType": "CONFIGURATION",
+      "objects": [
+        "Credit group per document level (order, delivery, post goods issue)",
+        "Output determination / message conditions for blocked documents"
+      ],
+      "verification": "UNVERIFIED",
+      "evidence": [
+        {
+          "url": "https://help.sap.com/doc/792426924faa44698c76733bd0b88072/2023.000/en-US/loiobb4c195466432b18e10000000a174cb4_PDF_EN.pdf",
+          "quote": "Credit limit check on creating or changing sales documents, deliveries and service orders",
+          "release": "2023"
+        }
+      ],
+      "limitations": [
+        "UNVERIFIED: no 2023 page fetched documents a credit check at post goods issue or a standard way to block or suppress output, mail or print for a credit-blocked document. The only credit-check points evidenced are sales documents and deliveries (S4-2023-FIN-CREDIT-SD-INTEGRATION).",
+        "The 'Settings for Credit Check' and 'Credit Block Release and Recheck' pages returned 'Page Not Found' for version 2023.000, so any statement from later releases was not used.",
+        "Treat output suppression as output-condition configuration or an extension to be validated (CTRL-S5)."
+      ]
+    },
+    {
+      "id": "S4-2023-LOG-TM-FREIGHT-SETTLEMENT",
+      "capability": "Embedded TM freight settlement: freight settlement document, MM posting, invoice verification, freight cost distribution to the sales order",
+      "fitType": "LICENSE_DEPENDENT",
+      "objects": [
+        "Freight settlement document (individual or collective)",
+        "Posting creates purchase order for services and service entry sheet in MM",
+        "Logistics invoice verification against the freight settlement document",
+        "Freight cost distribution to order/delivery items (WLFLTM/WLFLTM2)"
+      ],
+      "verification": "VERIFIED",
+      "evidence": [
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/e3dc5400c1cc41d1bc0ae0e7fd9aa5a2/2f90ba3c7a8540e59f5ca0959d82e994.html?version=2023.000",
+          "quote": "A freight settlement document is a document that is used for posting the freight cost accruals, and that forms the basis of invoice verification in Materials Management (MM) for freight documents such as freight orders, freight bookings, and service orders.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/e3dc5400c1cc41d1bc0ae0e7fd9aa5a2/2f90ba3c7a8540e59f5ca0959d82e994.html?version=2023.000",
+          "quote": "You can create a collective freight settlement document for multiple freight orders or freight bookings.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/e3dc5400c1cc41d1bc0ae0e7fd9aa5a2/2f90ba3c7a8540e59f5ca0959d82e994.html?version=2023.000",
+          "quote": "When the invoice is received, logistics invoice verification in MM checks it against the data replicated in MM from the freight settlement document.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/25a41481f62e469ba0e61015a0d39d20/c85eaf55b3295c47e10000000a44147b.html?version=2023.000",
+          "quote": "TM transfers the distributed freight cost to Materials Management (MM) when it posts a freight settlement document.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/25a41481f62e469ba0e61015a0d39d20/c85eaf55b3295c47e10000000a44147b.html?version=2023.000",
+          "quote": "You can also post the distributed freight cost in the profitability segment in the sales order for the item.",
+          "release": "2023"
+        }
+      ],
+      "limitations": [
+        "Licence-dependent: the Feature Scope Description places Transportation Management in Enterprise Management and Advanced Transportation Management under Enhanced LoB Functions ('you might need a separate license', see S4-2023-LOG-TM-EMBEDDED); entitlement not verifiable from public pages.",
+        "Evidences settlement of charges to MM and cost distribution to the sales order; it does not evidence carrier POD, a carrier-invoice receipt object on the freight order, or a closure gate that waits for a customer final invoice (FREIGHT-S3/S4, reviewer N5).",
+        "Freight settlement is a COST-side settlement (purchase order for services); billing the customer for freight is separate (SD pricing or LE-TRA customer freight billing).",
+        "Requires TM-to-MM invoice-integration Customizing (page prerequisites); it was not shown to handle a transport PO booked later than the freight order.",
+        "ROUND 3: the quote that the settlement document creates the MM purchase order for services and service entry sheet is in S4-2023-LOG-TM-FREIGHT-SETTLEMENT-MM-PO, with changed-charge and reversal handling."
+      ]
+    },
+    {
+      "id": "S4-2023-LOG-LETRA-SHIPMENT-COST",
+      "capability": "LE-TRA shipment cost documents: calculation by condition technique, worklist creation, settlement with the service agent",
+      "fitType": "LICENSE_DEPENDENT",
+      "objects": [
+        "Shipment cost document (VI01), shipment cost worklists",
+        "Shipment cost types and item categories",
+        "Pricing procedure for shipment costs",
+        "Compatibility Pack: Basic Shipping (FSD 5.9.1.1)"
+      ],
+      "verification": "VERIFIED",
+      "evidence": [
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/0f4ab800d01c4366b0c9aaff06a64320/9b94c95360267214e10000000a174cb4.html?version=2023.000",
+          "quote": "This component contains the functions for calculating and settling shipment costs in transportation.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/0f4ab800d01c4366b0c9aaff06a64320/9b94c95360267214e10000000a174cb4.html?version=2023.000",
+          "quote": "Calculation of shipment costs is carried out using the condition technique in SAP pricing.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/eff06b275ea640c4a827fc099df3b4aa/b994c95360267214e10000000a174cb4.html?version=2023.000",
+          "quote": "The work list allows you to create several shipment cost documents simultaneously.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/eff06b275ea640c4a827fc099df3b4aa/9c93c95360267214e10000000a174cb4.html?version=2023.000",
+          "quote": "Billing of customer freight",
+          "release": "2023"
+        }
+      ],
+      "limitations": [
+        "Compatibility Pack scope (S4-2023-LOG-LETRA-SHIPMENT limitations): usage rights and end-of-use date must be checked before choosing LE-TRA over TM.",
+        "'Billing of customer freight' is a feature-list item on the LE-TRA overview, not an explained process; how freight is charged to a hire customer was not evidenced.",
+        "Shipment costs attach to shipments (consolidating deliveries), not freight orders; the two models should not be mixed in one design.",
+        "No carrier POD, no final-invoice closure gate and no unbooked-transport-PO handling are evidenced."
+      ]
+    },
+    {
+      "id": "S4-2023-ATP-ALLOCATION-RESERVATION",
+      "capability": "Product allocation for a time period and goods-issue reservations",
+      "fitType": "CONFIGURATION",
+      "objects": [
+        "Product allocation (quantities per time period and characteristic combination, checked by ATP)",
+        "Reservation for goods issue (MB21-type, account assignment objects)",
+        "FSD 2.9 availability check and product allocation"
+      ],
+      "verification": "VERIFIED",
+      "evidence": [
+        {
+          "url": "https://help.sap.com/doc/e2048712f0ab45e791e6d15ba5e20c68/2023/en-US/FSD_OP2023_latest.pdf",
+          "quote": "You use this feature to allocate product quantities (that is, material quantities) for a specific time period and to a combination of characteristic values for sales orders and stock transport orders, against which availability checks can be run.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/doc/e2048712f0ab45e791e6d15ba5e20c68/2023/en-US/FSD_OP2023_latest.pdf",
+          "quote": "The purpose of a reservation is to ensure that a material will be available when it is needed.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/doc/e2048712f0ab45e791e6d15ba5e20c68/2023/en-US/FSD_OP2023_latest.pdf",
+          "quote": "A reservation for goods issue can be requested by various departments for various account assignment objects (such as cost center, order, asset, etc.).",
+          "release": "2023"
+        }
+      ],
+      "limitations": [
+        "Allocates MATERIAL QUANTITIES per period to characteristic combinations (for example customer group); it is not a per-unit calendar and does not know when a hired unit returns.",
+        "A reservation for goods issue is a warehouse request against an account assignment object (cost center, order, asset), not a customer booking for a hire period.",
+        "No automatic release of availability on a return date, no overlapping-booking check and no serial-number-level date range.",
+        "Hire-period availability remains an extension (S4-2023-ATP-RENTAL-PERIOD)."
+      ]
+    },
+    {
+      "id": "S4-2023-ATP-RENTAL-PERIOD",
+      "capability": "Time-based equipment availability and reservation for a hire period",
+      "fitType": "EXTENSION",
+      "objects": [
+        "Custom availability service over serial/equipment records and hire dates",
+        "Custom CDS availability view (EXTENSION)"
+      ],
+      "verification": "UNVERIFIED",
+      "evidence": [
+        {
+          "url": "https://help.sap.com/doc/e2048712f0ab45e791e6d15ba5e20c68/2023/en-US/FSD_OP2023_latest.pdf",
+          "quote": "You use this feature to allocate product quantities (that is, material quantities) for a specific time period and to a combination of characteristic values for sales orders and stock transport orders, against which availability checks can be run.",
+          "release": "2023"
+        }
+      ],
+      "limitations": [
+        "UNVERIFIED and honest gap: searches across the 2023 help and Feature Scope Description found no standard equipment-hire period availability, no unit-level date-range reservation and no equipment-booking calendar for private cloud / on-premise 2023.",
+        "Real-estate rental objects (pooled spaces, rental spaces, rental units in the Feature Scope Description) are RE-FX objects for property, not equipment, and are not cited.",
+        "A search summary mentioned equipment installation history with usage periods; no page was fetched or quoted, so it is not evidence.",
+        "Treat period availability, return-date release and overlap checks as custom design (CDS plus app logic) and state that in the design."
+      ]
+    },
+    {
+      "id": "S4-2023-WF-INVENTORY-TRANSFER",
+      "capability": "Flexible-workflow approval for inventory-to-rental-asset transfer (plant head)",
+      "fitType": "EXTENSION",
+      "objects": [
+        "Custom approval (BAdI-triggered SAP Business Workflow or custom business object)",
+        "My Inbox task for plant head"
+      ],
+      "verification": "UNVERIFIED",
+      "evidence": [
+        {
+          "url": "https://help.sap.com/doc/e2048712f0ab45e791e6d15ba5e20c68/2023/en-US/FSD_OP2023_latest.pdf",
+          "quote": "The flexible workflow allows you to define one or more approvers and to use either the automatic, one-step, or multi-step approval.",
+          "release": "2023"
+        }
+      ],
+      "limitations": [
+        "UNVERIFIED: no flexible-workflow scenario for stock transfer, transfer posting, material document or asset transfer was found on the 2023 pages or in the Feature Scope Description (workflow lines mentioning stock, transfer, asset, inventory or goods: none).",
+        "Scenarios found: purchase requisitions, centrally managed purchase orders, purchase contracts, scheduling agreements, supplier invoices, service entry sheets, change records; plus approval processes for customer returns and credit memo requests (FSD).",
+        "Approval for ASSET-S4 must be built (own workflow, BAdI or custom business object) or reframed around an approvable document that does have a scenario; My Inbox (S4-2023-WF-MYINBOX) can host the task."
+      ]
+    },
+    {
+      "id": "S4-2023-SD-COPY-CONTROL",
+      "capability": "Copy control between sales documents: allowed reference document types and data copied",
+      "fitType": "CONFIGURATION",
+      "objects": [
+        "Copying control: sales document to sales document (Customizing)",
+        "Quotation from inquiry, order from quotation, returns and credit memo request from order",
+        "Copying requirements and data transfer routines"
+      ],
+      "verification": "VERIFIED",
+      "evidence": [
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/7b24a64d9d0941bda1afa753263d9e39/c966b65334e6b54ce10000000a174cb4.html?version=2023.000",
+          "quote": "You can define which sales document types can be used as reference documents.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/7b24a64d9d0941bda1afa753263d9e39/c966b65334e6b54ce10000000a174cb4.html?version=2023.000",
+          "quote": "You can also control which data you wish to be copied, for example, the following:",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/7b24a64d9d0941bda1afa753263d9e39/c966b65334e6b54ce10000000a174cb4.html?version=2023.000",
+          "quote": "For example, if you want to submit a quotation on the basis of an inquiry, you can create the quotation with reference to the inquiry.",
+          "release": "2023"
+        }
+      ],
+      "limitations": [
+        "Configuration of which document types and which data copy. Splitting one quantity line into one-unit lines and a rental period carried on the copy are not described (ORDER-S1/S2 design).",
+        "Custom data transfer routines/copying requirements are ABAP in Customizing; the on-premise 2023 BAdI name for copy control was not evidenced (UNVERIFIED S4-2023-EXT-COPY-BADI).",
+        "Table on the page also shows sales order to credit memo request and to returns, supporting the return and correction flows, but not the billing logic of them."
+      ]
+    },
+    {
+      "id": "S4-2023-EXT-COPY-BADI",
+      "capability": "BAdI or custom routine to influence copy control from quotation to order",
+      "fitType": "EXTENSION",
+      "objects": [
+        "Data transfer routine / copying requirement (Customizing)",
+        "BAdI (name not evidenced for on-premise 2023)"
+      ],
+      "verification": "UNVERIFIED",
+      "evidence": [
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/7b24a64d9d0941bda1afa753263d9e39/c966b65334e6b54ce10000000a174cb4.html?version=2023.000",
+          "quote": "You can also control which data you wish to be copied, for example, the following:",
+          "release": "2023"
+        }
+      ],
+      "limitations": [
+        "UNVERIFIED: the 2023 on-premise page fetched documents copy control as configuration; no 2023 page naming a BAdI for quotation-to-order data transfer was retrieved. A billing-document BAdI (SD_BIL_DATA_TRANSFER) appeared only on Cloud pages and was not used.",
+        "Label any copy-control logic EXTENSION (ABAP routine or custom logic) and confirm the enhancement point in the target system.",
+        "ROUND 3: the 2023 on-premise page 'Business Add-Ins (BAdIs) for Sales Billing' lists only flexible billing document numbering, approval request reasons for preliminary billing documents, and billing output/EDI field modification; no billing data-transfer BAdI. Own copying requirements/data transfer routines in billing copy control are evidenced as classic Customizing (S4-2023-EXT-CLASSIC-ABAP). This entry stays UNVERIFIED."
+      ]
+    },
+    {
+      "id": "S4-2023-EXT-KEYUSER-SCOPE",
+      "capability": "Key-user Custom Logic and Custom Fields: what the 2023 on-premise apps can hook into for sales documents and billing (and what they cannot)",
+      "fitType": "EXTENSION",
+      "objects": [
+        "Custom Fields app (business contexts Sales: Sales Document / Billing Document and their items)",
+        "Custom Logic app, ABAP for key users, filter conditions, publish to test system",
+        "Sales document BAdIs: SD_SLS_CHECK_HEAD, SD_SLS_CHECK_ITEM, SD_SLS_CHECK_BEFORE_SAVE, SD_SLS_MODIFY_*, SD_SLS_CHECK_DELETE_ITEM",
+        "Billing BAdIs: SD_BIL_FLEX_NUMBERING, SD_BIL_APM_SET_APPROVAL_REASON, SD_BIL_PRINT_STANDARD_HEAD/ITEM, SD_BIL_EDI_INV_REQ_HEAD/ITEM",
+        "Process extensibility business scenarios (sales document to billing document to billing due list)"
+      ],
+      "verification": "VERIFIED",
+      "evidence": [
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/7b24a64d9d0941bda1afa753263d9e39/3aa57e5b9a9f46218ef8cc38d703c8f4.html?version=2023.000",
+          "quote": "Write custom code by using ABAP for key users",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/7b24a64d9d0941bda1afa753263d9e39/3714184b72b54dad819a7c398a701152.html?version=2023.000",
+          "quote": "You can create custom logic for billing by implementing the following Business Add-Ins (BAdIs) in the Custom Logic app:",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/7b24a64d9d0941bda1afa753263d9e39/66a2f4107e754be68a458408eb332d91.html?version=2023.000",
+          "quote": "Check sales document data or sales document item data before saving, or cancel sales document saving.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/7b24a64d9d0941bda1afa753263d9e39/2fd40c62975b495fa56c3b1667caa1c8.html?version=2023.000",
+          "quote": "After enabling a custom field for a business scenario in a specific business context, the value of this field is copied from the first document that contains it to the subsequent documents.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/ABAP_PLATFORM_NEW/b5670aaaa2364a29935f40b16499972d/3ccb50e724b045508fea8b2cf1774b2b.html?version=202310.000",
+          "quote": "You can extend applications and their UIs, reports, email templates, and form templates only if the applications that you want to extend are extensible.",
+          "release": "2023"
+        }
+      ],
+      "limitations": [
+        "SCOPE (evidenced): custom fields that propagate sales document to billing document to billing due list; small enhancement implementations at the listed sales-document BAdIs (check header/item/before-save, modify item values, prevent item deletion, tax and requested-date modification) and the listed billing BAdIs (flexible billing document numbering, approval request reasons for preliminary billing documents, output/EDI field modification). Sales documents allow at most 170 extension fields (Process Extensibility page, Restrictions).",
+        "NOT IN SCOPE (the 2023 on-premise lists fetched name no such hook): billing data transfer / copy control, billable-day or period amount derivation, goods issue or any MM/FI-AA posting, equipment or serial changes, TM freight settlement, retry/idempotency handling. Anything the review attributes to key-user logic beyond these hooks (atomic issued-charge ledger, stored-result goods-issue retry, transfer-request workflow) is not supported by this entry; see S4-2023-EXT-KEYUSER-CUSTOM-BO for persistence and S4-2023-EXT-DEV-ABAP-CLOUD / S4-2023-EXT-CLASSIC-ABAP for transactional code.",
+        "ABAP for key users is a restricted language: the ABAP Platform 2023 page 'Statements in ABAP for Key Users' lists a limited statement table (55 entries shown as 'Showing 1-10 of 55'); it is not full ABAP.",
+        "Each business context must itself be extensible; check the Extensibility Inventory/cockpit per context (equipment, goods movement, asset, TM were not checked). The Custom Logic page also carries a caution that the framework should not be used for personal data under data-protection legislation.",
+        "Evidence pages for the extensibility framework are SAP S/4HANA 2023 sales/billing pages plus ABAP Platform 2023 (Oct 2023) pages; the ABAP Platform is the basis of S/4HANA 2023."
+      ]
+    },
+    {
+      "id": "S4-2023-EXT-KEYUSER-CUSTOM-BO",
+      "capability": "Key-user Custom Business Objects: own tables, OData service and node-level custom logic without developer tools",
+      "fitType": "EXTENSION",
+      "objects": [
+        "Custom Business Objects app",
+        "Custom business object nodes, subnodes, associations, code lists",
+        "Generated OData service for external access",
+        "Custom logic on node level (ABAP for key users)"
+      ],
+      "verification": "VERIFIED",
+      "evidence": [
+        {
+          "url": "https://help.sap.com/docs/ABAP_PLATFORM_NEW/b5670aaaa2364a29935f40b16499972d/a0ebe3ead4bd4ed7ab8f92ab76ee184f.html?version=202310.000",
+          "quote": "Custom Business Objects is a tool used to create your own business objects for use in database tables or as the basis for custom applications.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/ABAP_PLATFORM_NEW/b5670aaaa2364a29935f40b16499972d/a0ebe3ead4bd4ed7ab8f92ab76ee184f.html?version=202310.000",
+          "quote": "Implement custom logic on node level",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/ABAP_PLATFORM_NEW/b5670aaaa2364a29935f40b16499972d/a0ebe3ead4bd4ed7ab8f92ab76ee184f.html?version=202310.000",
+          "quote": "No instance based authorization is provided for customer business objects.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/ABAP_PLATFORM_NEW/b5670aaaa2364a29935f40b16499972d/a0ebe3ead4bd4ed7ab8f92ab76ee184f.html?version=202310.000",
+          "quote": "Custom business object cannot be marked as relevant for Data Protection & Privacy (DP&P).",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/ABAP_PLATFORM_NEW/b5670aaaa2364a29935f40b16499972d/3ccb50e724b045508fea8b2cf1774b2b.html?version=202310.000",
+          "quote": "You can thus create your own applications based on custom business objects.",
+          "release": "2023"
+        }
+      ],
+      "limitations": [
+        "Corrects the earlier statement in S4-2023-EXT-KEYUSER that custom business objects were not evidenced: they ARE evidenced for ABAP Platform 2023 and the S/4HANA 2023 Feature Scope Description ('Create custom business objects', OData services, subnodes, custom logic with ABAP for key users).",
+        "Suitable for a persisted rental ledger-like record (instruction record, issued-charge record, transfer request) with its own UI/OData, but custom logic is node-level and in the restricted ABAP-for-key-users subset: no evidence that it can call goods movement, FI-AA or TM posting APIs, so posting orchestration still needs developer extensibility or side-by-side.",
+        "Page limits: no instance-based authorization, no read access logging, and custom business objects cannot be marked for Data Protection & Privacy, blocked or deleted; the framework should not process personal data under data-protection legislation (customer contacts/addresses must stay in standard objects).",
+        "Atomicity, locking and idempotency guarantees of custom logic across several nodes or against standard documents are not described on the fetched pages; test with concurrent saves and retries.",
+        "System requirements refer to SAP Note 2283716 (not fetched)."
+      ]
+    },
+    {
+      "id": "S4-2023-EXT-DEV-ABAP-CLOUD",
+      "capability": "Developer extensibility (on-stack, cloud-ready ABAP using released objects and RAP) on S/4HANA 2023 on-premise and private cloud",
+      "fitType": "EXTENSION",
+      "objects": [
+        "ABAP Development Tools (Eclipse) with ABAP language version ABAP for Cloud Development",
+        "Released objects (data definitions, classes, interfaces, behavior definitions, enhancement spots, authorization objects)",
+        "Separate software component and restricted package structure",
+        "ATC checks for cloud-ready development, authorization objects S_DEVELOP and S_ABPLNGVS"
+      ],
+      "verification": "VERIFIED",
+      "evidence": [
+        {
+          "url": "https://help.sap.com/docs/ABAP_PLATFORM_NEW/b5670aaaa2364a29935f40b16499972d/155909e3569941e08831c78cf4c2d495.html?version=202310.000",
+          "quote": "Developer extensibility enables you to develop custom ABAP code and partner extensions in an upgrade-stable, cloud-ready programming model.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/ABAP_PLATFORM_NEW/b5670aaaa2364a29935f40b16499972d/155909e3569941e08831c78cf4c2d495.html?version=202310.000",
+          "quote": "Developer extensibility enables you to develop tightly-coupled applications and extensions that go beyond the scope of key user extensions and require full access to development capabilities.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/ABAP_PLATFORM_NEW/b5670aaaa2364a29935f40b16499972d/31367ef6c3e947059e0d7c1cbfcaae93.html?version=202310.000",
+          "quote": "Create development packages and cloud-ready custom development in ABAP language version ABAP for Cloud Development below the structure package.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/ABAP_PLATFORM_NEW/b5670aaaa2364a29935f40b16499972d/7e27832a2d494e0b98359a7f1c6edefe.html?version=202310.000",
+          "quote": "Developer extensibility includes a specific set of released objects.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/ABAP_PLATFORM_NEW/b5670aaaa2364a29935f40b16499972d/a8864629e452409184098b95a792a0b6.html?version=202310.000",
+          "quote": "Therefore, you can now use the upgrade-stable and Cloud-ready developer extensibility model for on-premise and private Cloud solutions.",
+          "release": "2023"
+        }
+      ],
+      "limitations": [
+        "Evidence pages are ABAP Platform 2023 (Oct 2023), the platform under S/4HANA 2023, not S/4HANA business-area pages. Which SAP objects in SD billing, goods movement (MIGO/BAPI), FI-AA, PM and TM are RELEASED for this model must be read from ADT 'Released Objects' in the target system; none of those releases was verified here.",
+        "Object types that can be released include behavior definitions, data definitions, classes, interfaces and enhancement spots (Released Development Objects page); that a particular goods-issue-to-asset or billing-creation API is among them is NOT evidenced.",
+        "Needs a separate software component to run in parallel with classic extensibility, restricted language version and authorizations; classic extensibility remains available on-premise ('even allows you to modify SAP code') with higher upgrade effort, so a design must state which model each object uses.",
+        "Release contract tiers (C0/C1/C2) and tier numbering appeared only in post-2023 or cloud pages and are not asserted for 2023."
+      ]
+    },
+    {
+      "id": "S4-2023-EXT-RAP",
+      "capability": "ABAP RESTful Application Programming Model: custom transactional business objects, OData services, draft, RAP business events",
+      "fitType": "EXTENSION",
+      "objects": [
+        "CDS data model, behavior definition (managed or unmanaged), behavior implementation",
+        "Service definition and service binding (OData V2/V4)",
+        "Draft handling",
+        "RAP business events"
+      ],
+      "verification": "VERIFIED",
+      "evidence": [
+        {
+          "url": "https://help.sap.com/doc/e2048712f0ab45e791e6d15ba5e20c68/2023/en-US/FSD_OP2023_latest.pdf",
+          "quote": "The ABAP RESTful Application Programming Model (RAP) supports the model-driven development of transactional enterprise SAP Fiori applications and Web APIs that are intrinsically optimized for SAP HANA.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/doc/e2048712f0ab45e791e6d15ba5e20c68/2023/en-US/FSD_OP2023_latest.pdf",
+          "quote": "Develop OData services (V2 or V4) from scratch with the managed implementation type based on determinations/validations. Draft handling is supported.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/doc/e2048712f0ab45e791e6d15ba5e20c68/2023/en-US/FSD_OP2023_latest.pdf",
+          "quote": "Develop OData services (V2 or V4) using existing code with the unmanaged implementation type. Draft handling is supported.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/doc/e2048712f0ab45e791e6d15ba5e20c68/2023/en-US/FSD_OP2023_latest.pdf",
+          "quote": "Define and raise RAP Business Events in a business object.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/doc/e2048712f0ab45e791e6d15ba5e20c68/2023/en-US/FSD_OP2023_latest.pdf",
+          "quote": "New applications shall be implemented using the ABAP RESTful Application Programming Model (RAP).",
+          "release": "2023"
+        }
+      ],
+      "limitations": [
+        "The Feature Scope Description lists RAP capabilities only; it does not state that SAP Fiori elements custom apps can be generated on 2023 on-premise, nor give object names. Treat 'Fiori elements custom app' as to be validated in the target system.",
+        "RAP is the programming model; it does not itself deliver rental objects. Every rental business object, posting integration (goods movement, billing document creation, FI-AA) and authorization must be built (EXTENSION) against released APIs; see S4-2023-EXT-DEV-ABAP-CLOUD.",
+        "RAP business events need an event channel (S4-2023-INT-EVENT-ENABLEMENT), which may need an additional licence.",
+        "Unmanaged type wraps existing code, so transactional consistency with standard documents depends on the wrapped code, not on RAP."
+      ]
+    },
+    {
+      "id": "S4-2023-EXT-CLASSIC-ABAP",
+      "capability": "Classic ABAP extension points in billing copy control: own copying requirements and data transfer routines, plus classic extensibility trade-offs",
+      "fitType": "EXTENSION",
+      "objects": [
+        "Billing copying control (Customizing: reference documents, data flow, billing quantity, copying requirements, pricing)",
+        "Own copying requirements / data transport routines (Data VBRK/VBRP field)",
+        "Classic ABAP custom code (all SAP development objects usable)"
+      ],
+      "verification": "VERIFIED",
+      "evidence": [
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/7b24a64d9d0941bda1afa753263d9e39/eb6fb6535fe6b74ce10000000a174cb4.html?version=2023.000",
+          "quote": "You can also specify your own requirements as data transport routines.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/7b24a64d9d0941bda1afa753263d9e39/eb6fb6535fe6b74ce10000000a174cb4.html?version=2023.000",
+          "quote": "If you want to define a copying requirement as a data transfer routine on item level, fill the Data VBRK/VBRP field as required.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/7b24a64d9d0941bda1afa753263d9e39/dc6fb6535fe6b74ce10000000a174cb4.html?version=2023.000",
+          "quote": "Which data is to be copied to the billing document from the reference document?",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/ABAP_PLATFORM_NEW/b5670aaaa2364a29935f40b16499972d/a8864629e452409184098b95a792a0b6.html?version=202310.000",
+          "quote": "This classic custom model technically allows that you can reuse all SAP development objects in your custom ABAP code.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/ABAP_PLATFORM_NEW/b5670aaaa2364a29935f40b16499972d/a8864629e452409184098b95a792a0b6.html?version=202310.000",
+          "quote": "On the drawback side, classic extensibility can lead to higher upgrade efforts.",
+          "release": "2023"
+        }
+      ],
+      "limitations": [
+        "Copying control for billing is Customizing with optional own routines; the pages do not name VOFM or the routine numbering, and no 2023 on-premise page lists a key-user BAdI for billing data transfer (the billing BAdI list in S4-2023-EXT-KEYUSER-SCOPE has none), so S4-2023-EXT-COPY-BADI stays UNVERIFIED.",
+        "Routines decide whether and what to copy for billing (for example billing status, billing block, completeness) and order versus delivery quantity; they are not a place to compute hire days unless written as ABAP.",
+        "Classic code can modify SAP code and interleave with it, which raises upgrade effort; prefer released-object extensions where available (S4-2023-EXT-DEV-ABAP-CLOUD)."
+      ]
+    },
+    {
+      "id": "S4-2023-INT-EVENT-ENABLEMENT",
+      "capability": "Event-driven integration: Enterprise Event Enablement publishes S/4HANA events to SAP Event Mesh; legacy Business Event Handling is licence-limited",
+      "fitType": "LICENSE_DEPENDENT",
+      "objects": [
+        "Enterprise Event Enablement: channels, outbound bindings, topic bindings (SM59 destination and OAuth 2.0)",
+        "SAP Event Mesh (SAP BTP)",
+        "Business Event Handling (legacy)",
+        "RAP business events"
+      ],
+      "verification": "VERIFIED",
+      "evidence": [
+        {
+          "url": "https://help.sap.com/doc/e2048712f0ab45e791e6d15ba5e20c68/2023/en-US/FSD_OP2023_latest.pdf",
+          "quote": "The Enterprise Event Enablement framework enables the exchange of events across different platforms for seamless event-driven communication.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/doc/e2048712f0ab45e791e6d15ba5e20c68/2023/en-US/FSD_OP2023_latest.pdf",
+          "quote": "You can publish events triggered from business applications and consume these events in the messaging infrastructure.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/8308e6d301d54584a33cd04a9861bc52/c128459eb1164a4bb3eb95ef523b8496.html?version=2023.000",
+          "quote": "Events from SAP S/4HANA are sent to the SAP Event Mesh, where they can be used by any recipient.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/8308e6d301d54584a33cd04a9861bc52/c128459eb1164a4bb3eb95ef523b8496.html?version=2023.000",
+          "quote": "This explicit step of maintaining an outbound binding is necessary to publish events by an SAP S/4HANA system.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/doc/e2048712f0ab45e791e6d15ba5e20c68/2023/en-US/FSD_OP2023_latest.pdf",
+          "quote": "Comparable successor functionality is provided by Enterprise Event Enablement, which might require additional licenses.",
+          "release": "2023"
+        }
+      ],
+      "limitations": [
+        "Licence: legacy Business Event Handling is only for customers who licensed it before S/4HANA 2022; Enterprise Event Enablement 'might require additional licenses' and the consumer side (SAP Event Mesh / BTP) is a separate service. Confirm entitlement with SAP.",
+        "Events must be explicitly bound to a channel; the pages fetched do not list which standard business objects (billing document, goods movement, equipment, freight order) emit events on 2023, so event availability per rental trigger is unverified.",
+        "Delivery guarantees, ordering and duplicate delivery semantics are not described on the fetched pages; consumers must be idempotent by design."
+      ]
+    },
+    {
+      "id": "S4-2023-INT-BTP-SIDE-BY-SIDE",
+      "capability": "Side-by-side extension on SAP BTP using released APIs and events; external approval workflow for sales documents via API",
+      "fitType": "INTEGRATION",
+      "objects": [
+        "SAP BTP side-by-side applications",
+        "Remote APIs and business events released by SAP",
+        "External approval workflow: API_SALES_ORDER_SRV, API_SALES_QUOTATION_SRV, API_CUSTOMER_RETURN_SRV, API_CREDIT_MEMO_REQUEST_SRV, API_SALES_CONTRACT_SRV",
+        "BAdI SD_APM_SET_APPROVAL_REASON (Custom Logic app)"
+      ],
+      "verification": "VERIFIED",
+      "evidence": [
+        {
+          "url": "https://help.sap.com/docs/ABAP_PLATFORM_NEW/b5670aaaa2364a29935f40b16499972d/12354e1b9ec04cfd97b99e1402a741f6.html?version=202310.000",
+          "quote": "Side-by-side extensibility allows you to develop dependent extensions, develop your own custom applications, or consume existing apps.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/ABAP_PLATFORM_NEW/b5670aaaa2364a29935f40b16499972d/12354e1b9ec04cfd97b99e1402a741f6.html?version=202310.000",
+          "quote": "The SAP Business Technology Platform (BTP) is the accepted choice for building a side-by-side extension for any SAP solution.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/ABAP_PLATFORM_NEW/b5670aaaa2364a29935f40b16499972d/12354e1b9ec04cfd97b99e1402a741f6.html?version=202310.000",
+          "quote": "You can use remote APIs or events released by SAP to connect your extensions with data from SAP S/4HANA.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/7b24a64d9d0941bda1afa753263d9e39/32cbfc031df8468fb422813a2211f6e3.html?version=2023.000",
+          "quote": "External workflows can be set up to establish a connection to an external system using APIs, whereas internal workflows are processed directly in your system.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/7b24a64d9d0941bda1afa753263d9e39/32cbfc031df8468fb422813a2211f6e3.html?version=2023.000",
+          "quote": "Note that these APIs don't allow you to send sales documents back to the internal sales representative or returns and refund clerk for rework.",
+          "release": "2023"
+        }
+      ],
+      "limitations": [
+        "BTP is licensed and operated separately from S/4HANA; connectivity (Cloud Connector, destinations, authorization) was not evidenced on the 2023 pages. Mark everything on BTP INTEGRATION or LICENSE_DEPENDENT in the design.",
+        "External approval is evidenced only for sales quotation, sales order, customer return, credit memo request and sales contract; it also cannot withdraw an approval request. No external-workflow scenario exists on the fetched pages for stock transfer, asset transfer, freight settlement or purchase documents (see UNVERIFIED S4-2023-WF-INVENTORY-TRANSFER).",
+        "The ABAP Platform page says side-by-side extensions can use ABAP or non-ABAP (Java, Node.js); SAP Build Process Automation and CAP are not named on any 2023 page fetched (see UNVERIFIED S4-2023-INT-BTP-SBPA-CAP).",
+        "Side-by-side extensions are loosely coupled: a rental charge ledger kept on BTP must reconcile to S/4HANA billing documents through released APIs or events; two-system atomicity is not provided."
+      ]
+    },
+    {
+      "id": "S4-2023-INT-BTP-SBPA-CAP",
+      "capability": "SAP Build Process Automation (workflow/actions) and SAP Cloud Application Programming Model for rental extensions on S/4HANA 2023",
+      "fitType": "INTEGRATION",
+      "objects": [
+        "SAP Build Process Automation",
+        "SAP Cloud Application Programming Model (CAP)",
+        "SAP BTP destinations / Cloud Connector"
+      ],
+      "verification": "UNVERIFIED",
+      "evidence": [
+        {
+          "url": "https://help.sap.com/docs/ABAP_PLATFORM_NEW/b5670aaaa2364a29935f40b16499972d/12354e1b9ec04cfd97b99e1402a741f6.html?version=202310.000",
+          "quote": "In SAP BTP, you create extensions with the runtime/language that fits best: You can choose to use ABAP or non-ABAP (Java, Node.js) development.",
+          "release": "2023"
+        }
+      ],
+      "limitations": [
+        "UNVERIFIED: neither SAP Build Process Automation nor CAP is named on any SAP S/4HANA 2023 page or in the 2023 Feature Scope Description (searched for 'Build Process Automation', 'Workflow Management', 'SAP Build', 'Cloud Application Programming'). Cloud help pages for those BTP products are not release-2023 evidence and were not used.",
+        "Only the generic statement that BTP side-by-side extensions can be built in a runtime of choice is evidenced (quote). Use S4-2023-INT-BTP-SIDE-BY-SIDE for what is verified, and label any SBPA/CAP use INTEGRATION and LICENSE_DEPENDENT pending contract and product confirmation."
+      ]
+    },
+    {
+      "id": "S4-2023-INV-CUSTOMER-CONSIGNMENT",
+      "capability": "Customer consignment (special stock W): company-owned units held at the customer without sale (fill-up, issue, pick-up, return)",
+      "fitType": "STANDARD",
+      "objects": [
+        "Special stock indicator W (customer consignment stock), managed at plant level per customer or special stock partner (partner function SB)",
+        "Sales documents: consignment fill-up, issue, pick-up, return (order type codes not quoted from a 2023 page)",
+        "Inventory Management movements 561/563 (initial entry), 301, 309",
+        "Stock overview for special stock"
+      ],
+      "verification": "VERIFIED",
+      "evidence": [
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/7b24a64d9d0941bda1afa753263d9e39/da65b65334e6b54ce10000000a174cb4.html?version=2023.000",
+          "quote": "Since consignment stocks still form part of your valuated stock, you must manage this stock in your system.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/7b24a64d9d0941bda1afa753263d9e39/da65b65334e6b54ce10000000a174cb4.html?version=2023.000",
+          "quote": "The transaction is not relevant for billing since the consignment stock remains the property of your company.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/7b24a64d9d0941bda1afa753263d9e39/da65b65334e6b54ce10000000a174cb4.html?version=2023.000",
+          "quote": "The transaction is relevant for billing since the goods now become the property of the customer.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/7b24a64d9d0941bda1afa753263d9e39/da65b65334e6b54ce10000000a174cb4.html?version=2023.000",
+          "quote": "When goods issue is posted, the relevant quantity is deducted from the customer’s special stock and is added back into your regular stock at the plant where the goods are returned.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/91b21005dded4984bcccf4a69ae1300c/a061bd534f22b44ce10000000a174cb4.html?version=2023.000",
+          "quote": "This is consignment material belonging to your company that is stored with the customer. This stock is not available for materials planning.",
+          "release": "2023"
+        }
+      ],
+      "limitations": [
+        "FIT FOR RENTAL, STOCK SIDE ONLY: fill-up and pick-up move company-owned units to and from a customer-specific special stock without billing and without ownership change (stock stays in the company's valuated stock). They give custody-at-customer tracking, not rent.",
+        "LIMIT: the consignment ISSUE is the billable event and passes ownership to the customer (a sale at the item price, not a time-based charge). A consignment RETURN reverses the issue and gives a credit memo, with an automatic billing block in the standard system. Rental charges therefore cannot ride on consignment issue; they need a billing plan/contract item (S4-2023-SD-RENTAL-BILLPLAN, S4-2023-SD-BILLPLAN-ITEM-CONTROL) and a decision not to post an issue.",
+        "Valuation: units remain in valuated company stock (current asset). A unit capitalized in FI-AA (S4-2023-FI-GI-TO-ASSET) must not ALSO sit in valuated consignment stock; choose one route per unit class (reviewer N8). Fleet units for hire that are fixed assets should use equipment install/dismantle without material movement (S4-2023-PM-EQUIPMENT) rather than consignment.",
+        "Special stock is held per customer (or special stock partner) at plant level, not per storage location; stock types are unrestricted or quality inspection only (Company's Own Special Stocks page). Serial-number-level or equipment-level tracking inside special stock W was not evidenced on the fetched pages.",
+        "In Inventory Management only initial entry (561/563), plant-to-plant 301 and material-to-material 309 can be posted for this special stock; all other goods movements are processed in Sales (Company's Own Special Stocks page). The 2023 sales order type codes for the four transactions were not quoted.",
+        "Requirement records for consignment stock are stored as individual requirements, and the availability check uses the customer's consignment stock for issue and pick-up and the own plant stock for fill-up (page text)."
+      ]
+    },
+    {
+      "id": "S4-2023-INV-CUSTOMER-RETURNABLE-PACKAGING",
+      "capability": "Returnable packaging at customer (special stock V): company-owned items shipped to a customer that must come back (shipment, issue, pick-up)",
+      "fitType": "STANDARD",
+      "objects": [
+        "Special stock indicator V (customer returnable packaging stock)",
+        "Sales order types: standard (OR) for shipment, LN issue, LA pick-up, returns delivery LR proposed for pick-up",
+        "Stock overview with special stock indicator V"
+      ],
+      "verification": "VERIFIED",
+      "evidence": [
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/91b21005dded4984bcccf4a69ae1300c/a061bd534f22b44ce10000000a174cb4.html?version=2023.000",
+          "quote": "Stocks belonging to your company that are stored with the vendor or the customer.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/91b21005dded4984bcccf4a69ae1300c/a061bd534f22b44ce10000000a174cb4.html?version=2023.000",
+          "quote": "This is packaging materials or means of transport (for example, pallets or crates) which are supplied by your company to a customer and must be returned.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/91b21005dded4984bcccf4a69ae1300c/a061bd534f22b44ce10000000a174cb4.html?version=2023.000",
+          "quote": "Since these special stocks are not located at your own company, they are managed at plant level and not at storage location level.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/7b24a64d9d0941bda1afa753263d9e39/fe65b65334e6b54ce10000000a174cb4.html?version=2023.000",
+          "quote": "The transaction is completed by the goods issue posting which initiates a transfer posting from the customer's special stock to your plant stock.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/7b24a64d9d0941bda1afa753263d9e39/f265b65334e6b54ce10000000a174cb4.html?version=2023.000",
+          "quote": "The transaction is relevant for billing since the goods have become the property of the customer.",
+          "release": "2023"
+        }
+      ],
+      "limitations": [
+        "Ownership stays with the company while in V (Company's Own Special Stocks definition); pick-up moves the quantity from the customer's special stock to plant stock. Same custody mechanics as consignment (S4-2023-INV-CUSTOMER-CONSIGNMENT) with shipment by ordinary sales order and no billing needed for the shipment.",
+        "Designed for packaging and means of transport (pallets, crates); using it for serial-managed hire equipment is an adaptation. Serial-level or equipment-level tracking in special stock V was not evidenced.",
+        "Returnable packaging ISSUE (order type LN) is billable because ownership passes to the customer, i.e. a sale/loss event, not rent. For time-based fees see S4-2023-SD-RP-RENTAL-FEES.",
+        "The shipment page does not state the movement type or that the goods land in special stock V; that is taken from the special stock definition only. Inventory Management allows only initial entry, 301 and 309 for this stock (Company's Own Special Stocks page)."
+      ]
+    },
+    {
+      "id": "S4-2023-SD-RP-RENTAL-FEES",
+      "capability": "Returnable packaging processing: rental fee calculation (interim and final settlement) for company-owned items loaned to customers",
+      "fitType": "CONFIGURATION",
+      "objects": [
+        "Returnable Packaging Processing Customizing (control parameters, refund percentage of sales value, rental-free times)",
+        "Returnable packaging account (Returnable Packaging Logistics)",
+        "Returnable Packaging Settlement (calculation, credit and debit memo requests)",
+        "Item category group LEIK; material type with mandatory RP logistics; batch-managed, inventory-managed material"
+      ],
+      "verification": "VERIFIED",
+      "evidence": [
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/7b24a64d9d0941bda1afa753263d9e39/00eac353b677b44ce10000000a174cb4.html?version=2023.000",
+          "quote": "The returnable packaging processing function enables you to calculate the rental fees due when returnable packaging is loaned to customers.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/7b24a64d9d0941bda1afa753263d9e39/00eac353b677b44ce10000000a174cb4.html?version=2023.000",
+          "quote": "This is primarily developed for the cable industry.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/7b24a64d9d0941bda1afa753263d9e39/00eac353b677b44ce10000000a174cb4.html?version=2023.000",
+          "quote": "The day- or month-based settlement of rental fees is carried out using defined percentages maintained in Customizing of Returnable Packaging Processing.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/7b24a64d9d0941bda1afa753263d9e39/00eac353b677b44ce10000000a174cb4.html?version=2023.000",
+          "quote": "Returnable packaging must be subject to inventory management and be handled in batches if rental fees are to be calculated.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/7b24a64d9d0941bda1afa753263d9e39/f1e9c353b677b44ce10000000a174cb4.html?version=2023.000",
+          "quote": "In the case of final settlement, a credit memo is generated in accordance with the settings in Customizing if at least 100% of the returnable packaging value has been paid in monthly fees.",
+          "release": "2023"
+        }
+      ],
+      "limitations": [
+        "The ONLY standard SAP time-based rental-fee function found for 2023 on-premise: interim settlement (usually monthly, day basis possible) while the item sits in returnable packaging stock with the customer, then final settlement after return, with rental-free times per sales organization, customer group or customer, and credit/debit memo requests included in the billing due list. The goods issue date is saved at shipment and the goods receipt date at return.",
+        "Fee = defined percentage of the item's sales value per month or day (Refund Percentage of Sales Value), not a rate card by equipment class, duration band or hire contract; for the shipped pricing procedure a value must be found for PR00 (for example a material price). Pricing procedure J1NA01 and order types JGL/JLL are named on the page; whether those objects are country-specific was not determined.",
+        "Material must be batch-managed and inventory-managed; serial-number-level tracking of individual units was not evidenced, so per-unit hire of serialized equipment does not fit without adaptation.",
+        "Built around a refund/credit-memo logic: once at least 100% of the value has been paid in fees a credit memo is generated at final settlement (customer effectively buys the item). That is wrong for equipment that must not become the customer's property; the control table would have to be set so it never triggers, which was not evidenced.",
+        "Canceling credit/debit memo requests does not reset calculated fees; fees must be deleted in the fees report first (Constraints). Retry and duplicate handling must be designed.",
+        "Page says it was 'primarily developed for the cable industry'; treat as a pattern to evaluate in a fit-gap workshop, not as a confirmed rental module."
+      ]
+    },
+    {
+      "id": "S4-2023-PM-EQUIPMENT-ASSET-SYNC",
+      "capability": "Equipment master linked to fixed asset: tangible asset number in equipment, synchronization of asset and equipment master data",
+      "fitType": "CONFIGURATION",
+      "objects": [
+        "Tangible asset number (main asset number and sub-number) in equipment master, Location data screen",
+        "Asset Accounting Customizing: Automatic Creation of Equipment Master Records, Specify Conditions for Synchronization of Master Data",
+        "Asset coupling; SAP Note 370884"
+      ],
+      "verification": "VERIFIED",
+      "evidence": [
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/e98c7c41bbe8439e90daa5c114a7573b/937abb53707db44ce10000000a174cb4.html?version=2023.000",
+          "quote": "You can use the manual assignment of a fixed asset to an equipment master record to ensure the integration of the Asset Accounting (FI-AA) and Plant Maintenance (PM) components through a synchronous creation and changing of equipment and assets.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/e98c7c41bbe8439e90daa5c114a7573b/937abb53707db44ce10000000a174cb4.html?version=2023.000",
+          "quote": "Conversely you can also define that an asset is automatically created when a piece of equipment is created, and that the asset master record is automatically changed when the equipment master record is changed.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/e98c7c41bbe8439e90daa5c114a7573b/f578bb53707db44ce10000000a174cb4.html?version=2023.000",
+          "quote": "In the SAP System, the application components Plant Maintenance (PM) and Asset Accounting (FI-AA) are linked together by the tangible asset number in the equipment master.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/e98c7c41bbe8439e90daa5c114a7573b/f878bb53707db44ce10000000a174cb4.html?version=2023.000",
+          "quote": "You can assign a piece of equipment to a tangible asset when you create or change the equipment master record.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/e98c7c41bbe8439e90daa5c114a7573b/177bbb53707db44ce10000000a174cb4.html?version=2023.000",
+          "quote": "If you use both options, you should ensure that there are not two equipment master records for one and the same object",
+          "release": "2023"
+        }
+      ],
+      "limitations": [
+        "Synchronization covers master data fields (for example company code) per Customizing conditions; the field mapping and the class/category assignment are configured or enhanced, not delivered for a rental fleet.",
+        "Historical changes in the equipment are NOT transferred to asset accounting (Synchronizing Fixed Assets and Equipment, history change page). Backdated equipment history changes can create inconsistencies.",
+        "Two automatic creation paths (equipment from asset, equipment from serial number at goods receipt) can create duplicate equipment records for one object; pick one path per fleet class.",
+        "Master data link only: it does not post stock-to-asset values (S4-2023-FI-GI-TO-ASSET) and does not carry hire status or customer location into FI-AA."
+      ]
+    },
+    {
+      "id": "S4-2023-PM-EQUIPMENT-INSTALL-HISTORY",
+      "capability": "Equipment installation and dismantling at a functional location (customer site) with or without material movement; usage list and equipment history",
+      "fitType": "STANDARD",
+      "objects": [
+        "Installation and Dismantling of Components (Configuration Control), mode Install/Dismantle Equipment with or without Material Movement",
+        "Functional location per customer site (design choice)",
+        "Equipment usage list (Extras > Usage list)",
+        "Change Equipment History (backdated changes)"
+      ],
+      "verification": "VERIFIED",
+      "evidence": [
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/e98c7c41bbe8439e90daa5c114a7573b/a47abb53707db44ce10000000a174cb4.html?version=2023.000",
+          "quote": "You want to remove a piece of equipment from storage and install it in a superordinate piece of equipment or in a functional location.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/e98c7c41bbe8439e90daa5c114a7573b/a47abb53707db44ce10000000a174cb4.html?version=2023.000",
+          "quote": "This function is only possible for equipment with a material number and serial number.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/e98c7c41bbe8439e90daa5c114a7573b/f37abb53707db44ce10000000a174cb4.html?version=2023.000",
+          "quote": "You want to remove a piece of equipment from a superordinate piece of equipment or functional location and put it into storage.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/e98c7c41bbe8439e90daa5c114a7573b/ec78bb53707db44ce10000000a174cb4.html?version=2023.000",
+          "quote": "If you change certain fields defined in the system, the system completes the existing equipment usage period and creates a new one which contains the changed data.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/e98c7c41bbe8439e90daa5c114a7573b/3f7abb53707db44ce10000000a174cb4.html?version=2023.000",
+          "quote": "You can make backdated changes to an equipment history.",
+          "release": "2023"
+        }
+      ],
+      "limitations": [
+        "Install/dismantle WITH material movement requires equipment with a material number and serial number and posts a stock movement (movement types in S4-2023-FI-GI-TO-ASSET); WITHOUT material movement (existing S4-2023-PM-EQUIPMENT quote) installs with no goods issue. The two must not be mixed for the same unit and event, or quantity/value moves twice (reviewer N8).",
+        "The usage list records usage periods that start when defined fields change (location, PM data, account assignment data, sales data); it is a history of field values, not a hire contract with start/end dates. The conditions for creating a new usage period are Customizing.",
+        "Backdated equipment history changes can produce inconsistent master data (Caution on the page) and are processed in phases with a conversion log; do not use them for routine hire corrections.",
+        "No page links installation at a customer site to a sales order item or billing; that link (hire order reference on equipment) needs a custom field/logic (S4-2023-EXT-KEYUSER-SCOPE) or a custom object."
+      ]
+    },
+    {
+      "id": "S4-2023-PM-EQUIPMENT-STATUS",
+      "capability": "Equipment status management: system status and user status profile restricting permitted transactions",
+      "fitType": "CONFIGURATION",
+      "objects": [
+        "System status (equipment, notifications, orders)",
+        "User status profile (Customizing for Plant Maintenance): statuses with and without status number",
+        "Transaction control per status (allowed, allowed with warning, not allowed)"
+      ],
+      "verification": "VERIFIED",
+      "evidence": [
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/e98c7c41bbe8439e90daa5c114a7573b/3c78ba53422bb54ce10000000a174cb4.html?version=2023.000",
+          "quote": "You can use status management to describe and recognize whether particular business transactions can be performed for an object.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/e98c7c41bbe8439e90daa5c114a7573b/3c78ba53422bb54ce10000000a174cb4.html?version=2023.000",
+          "quote": "Several system statuses are available for equipment, notifications and orders.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/e98c7c41bbe8439e90daa5c114a7573b/06edba538c95b54ce10000000a174cb4.html?version=2023.000",
+          "quote": "You can use them to further limit the business transactions allowed by the various system statuses.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/e98c7c41bbe8439e90daa5c114a7573b/06edba538c95b54ce10000000a174cb4.html?version=2023.000",
+          "quote": "Only one user status with status number can be active at any one time.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/e98c7c41bbe8439e90daa5c114a7573b/06edba538c95b54ce10000000a174cb4.html?version=2023.000",
+          "quote": "A status profile that has been assigned once can no longer be changed.",
+          "release": "2023"
+        }
+      ],
+      "limitations": [
+        "A rental status model (available, reserved, on hire, in inspection, damaged) can be expressed as a user status profile with status numbers and follow-on statuses, plus parallel statuses without number; this is configuration but the profile is assigned to the object type and cannot be changed after assignment, so design it before loading the fleet.",
+        "Statuses restrict PM transactions (for example dismantling an equipment with status 'Equipment in production'); the page's example of blocking billing is for an order. No evidence that an equipment user status blocks SD delivery, MM goods issue or billing for the unit; that coupling needs custom logic (S4-2023-EXT-KEYUSER-SCOPE/EXT-DEV-ABAP-CLOUD).",
+        "Status is not time-bound: it has no hire start/end date; combine with the usage list and sales document dates."
+      ]
+    },
+    {
+      "id": "S4-2023-FI-GI-TO-ASSET",
+      "capability": "Goods issue from stock to a fixed asset (movement 241 'usage for asset from storage') and settlement of an asset under construction",
+      "fitType": "CONFIGURATION",
+      "objects": [
+        "Inventory Management goods issue with movement 241 and account assignment to an asset (reversal 242)",
+        "Asset Accounting integration with MM; Posting Stock Withdrawal",
+        "Asset under construction and settlement (AIAB/AIBU)"
+      ],
+      "verification": "VERIFIED",
+      "evidence": [
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/67e323b7117e4c91869c258933f47182/233fde531ed3424de10000000a174cb4.html?version=2023.000",
+          "quote": "The system then capitalizes the acquisition or production costs of the material on the asset you specify.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/67e323b7117e4c91869c258933f47182/233fde531ed3424de10000000a174cb4.html?version=2023.000",
+          "quote": "This is essentially a transfer from current assets to non-current assets.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/67e323b7117e4c91869c258933f47182/263fde531ed3424de10000000a174cb4.html?version=2023.000",
+          "quote": "Use the transaction type for \"consumption of warehouse goods for assets\" (241).",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/e98c7c41bbe8439e90daa5c114a7573b/167abb53707db44ce10000000a174cb4.html?version=2023.000",
+          "quote": "Usage for asset from storage 241 242",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/67e323b7117e4c91869c258933f47182/5da0a3519aa05f72e10000000a423f68.html?version=2023.000",
+          "quote": "You must settle those parts of the asset under construction that require capitalization to capitalized assets.",
+          "release": "2023"
+        }
+      ],
+      "limitations": [
+        "Replaces the 'page not fetched' limitation of S4-2023-FI-ASSET-ACQ-FROM-STOCK: the Processing a Goods Issue from the Warehouse and Posting Stock Withdrawal pages are now read. Movement 241 posts the issue and capitalizes the material value on the named asset in one posting.",
+        "Page scenario is replacement parts capitalized to an existing asset. Using it to turn a stocked rental unit into its own fixed asset (new asset master per unit, asset class, depreciation start) is an adaptation; asset creation, class, and inventory-plant-head approval are not described (see UNVERIFIED S4-2023-WF-INVENTORY-TRANSFER).",
+        "STOCK AND SERIAL EFFECT: the issue removes the quantity from valuated stock (current asset to non-current asset). Whether the serial number status becomes 'issued', whether an equipment master is created or linked, and whether the serial can be received again after retirement is NOT evidenced; equipment synchronization is separate (S4-2023-PM-EQUIPMENT-ASSET-SYNC).",
+        "After this posting the unit is a fixed asset and no longer valuated stock: subsequent physical moves to and from customers should be equipment install/dismantle WITHOUT material movement (S4-2023-PM-EQUIPMENT-INSTALL-HISTORY, S4-2023-PM-EQUIPMENT), not goods issue to customer or consignment fill-up, or the unit's quantity and value are moved twice (reviewer N8). A return to stock-keeping (retirement/transfer back to inventory) is not described.",
+        "The movement-type table appears on the equipment installation page for install/dismantle with material movement (241 for removal from storage, 242 for dismantling back to stock).",
+        "Assets under construction can be collected per asset and settled later (AIAB distribution rules, AIBU settlement); collective AuC records carry a sequential-retirement restriction (Assets under Construction page)."
+      ]
+    },
+    {
+      "id": "S4-2023-SD-SALES-ORDER-STOCK-TRANSFER",
+      "capability": "Sales order stock (special stock E): transfer into own stock (411), transfer between sales order stocks, returns posted to sales order stock",
+      "fitType": "STANDARD",
+      "objects": [
+        "Special stock indicator E with sales order number and item",
+        "Movement 411 (transfer sales order stock to own stock, material may change)",
+        "Transfer posting from one sales order stock to another",
+        "Valuated or non-valuated sales order stock"
+      ],
+      "verification": "VERIFIED",
+      "evidence": [
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/91b21005dded4984bcccf4a69ae1300c/6362bd534f22b44ce10000000a174cb4.html?version=2023.000",
+          "quote": "From the viewpoint of MRP, the sales order stock is available for the sales order only.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/91b21005dded4984bcccf4a69ae1300c/6362bd534f22b44ce10000000a174cb4.html?version=2023.000",
+          "quote": "Transfer posting from one sales order stock to another sales order stock",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/91b21005dded4984bcccf4a69ae1300c/6362bd534f22b44ce10000000a174cb4.html?version=2023.000",
+          "quote": "enter movement type 411 and the special stock indicator E",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/91b21005dded4984bcccf4a69ae1300c/6362bd534f22b44ce10000000a174cb4.html?version=2023.000",
+          "quote": "The quantity is posted directly to the sales order stock and not to the blocked stock returns.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/7b24a64d9d0941bda1afa753263d9e39/4866b65334e6b54ce10000000a174cb4.html?version=2023.000",
+          "quote": "While the goods are part of your inventory, you manage them as part of the sales order stock.",
+          "release": "2023"
+        }
+      ],
+      "limitations": [
+        "Supports reuse of a unit bought through an individual purchase order (S4-2023-PROC-3P-INDIVIDUAL-PO) beyond its first order: after the hire ends, post a transfer into own stock (411) or a transfer to another sales order's stock. The unit is then YOUR inventory, which for a supplier-rented unit is a purchase (individual PO) by construction, valued as the system determines (value not evidenced); it does not model a supplier-owned unit that stays supplier property.",
+        "Customer returns for sales order stock via returns delivery are posted directly to sales order stock (not blocked returns stock), then 411 to own stock is possible; this bypasses the blocked-returns inspection route of S4-2023-INV-RETURNS-INSPECT-RELEASE, so the inspection gate (reviewer N7) must be re-created by transfers or status.",
+        "Valuated sales order stock shows value in FI immediately; non-valuated stock is carried on a cost collector and value is visible only at settlement. Which applies, and the value used by 411, were not evidenced for rental.",
+        "For supplier-owned units that must go back to the supplier after the hire, vendor consignment or non-valuated receipt (S4-2023-INV-VENDOR-CONSIGNMENT, S4-2023-INV-GR-NONVALUATED) or a return delivery to the vendor (S4-2023-PROC-RETURN-VENDOR) are the other routes; none provides a reusable supplier-owned stock without payment on withdrawal."
+      ]
+    },
+    {
+      "id": "S4-2023-SD-BILLPLAN-ITEM-CONTROL",
+      "capability": "Billing plan per sales document item: per-date billing block, per-date billing status, manual final settlement, document flow",
+      "fitType": "CONFIGURATION",
+      "objects": [
+        "Billing plan (item level or header level), billing plan type, date categories",
+        "Billing block per billing date; billing status per date; billing index",
+        "Billing rule for milestone billing; final settlement entered manually",
+        "Billing due list"
+      ],
+      "verification": "VERIFIED",
+      "evidence": [
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/7b24a64d9d0941bda1afa753263d9e39/b46fb6535fe6b74ce10000000a174cb4.html?version=2023.000",
+          "quote": "A billing block can be set for each date in a billing plan.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/7b24a64d9d0941bda1afa753263d9e39/b46fb6535fe6b74ce10000000a174cb4.html?version=2023.000",
+          "quote": "The block prevents processing for a particular billing date but does not necessarily affect any of the other dates in the plan.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/7b24a64d9d0941bda1afa753263d9e39/b46fb6535fe6b74ce10000000a174cb4.html?version=2023.000",
+          "quote": "After billing has been carried out successfully, the billing status is automatically set to ‘C’. This prevents a billed date from being billed again.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/7b24a64d9d0941bda1afa753263d9e39/b46fb6535fe6b74ce10000000a174cb4.html?version=2023.000",
+          "quote": "Final settlement is not automatically proposed in the billing plan by the system; you must enter it manually during processing.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/7b24a64d9d0941bda1afa753263d9e39/b46fb6535fe6b74ce10000000a174cb4.html?version=2023.000",
+          "quote": "Sales document items are billed as each billing date in the plan becomes due.",
+          "release": "2023"
+        }
+      ],
+      "limitations": [
+        "CORRECTS S4-2023-SD-BILLPLAN-DATES-FINAL: a billing block per billing date IS evidenced for the 2023 on-premise Billing Plan Functions page. The system sets the date block automatically only for milestone billing (released when the project milestone is completed); for a periodic rental plan the block would be set by a user or custom logic (not evidenced).",
+        "Duplicate prevention at date level is evidenced: a billed date gets status C and 'prevents a billed date from being billed again'. That protects one billing plan date, not an external-reference check across systems; no billing-document external-reference duplicate check was found.",
+        "Final settlement is manual: no automatic final-invoice marker or event that other processes (such as freight closure) can read was found; a custom field or status is required (S4-2023-EXT-KEYUSER-SCOPE).",
+        "Amounts per date come from condition records or values entered on the plan; amounts derived from actual return date or billable days are not described (see S4-2023-SD-RENTAL-BILLPLAN and S4-2023-SD-RP-RENTAL-FEES for the only date-driven fee function found)."
+      ]
+    },
+    {
+      "id": "S4-2023-SD-BILLING-CANCEL-RERUN",
+      "capability": "Billing due list selection and simulation, billing document cancellation (S1/S2) and re-billing of the reference document",
+      "fitType": "STANDARD",
+      "objects": [
+        "Billing due list (VF04 / SDBILLDL), simulation, billing run log",
+        "Cancellation billing types (for example F2 with S1)",
+        "Manage Billing Documents / Change Billing Documents cancel function",
+        "Posting status E for documents canceled before accounting posting"
+      ],
+      "verification": "VERIFIED",
+      "evidence": [
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/7b24a64d9d0941bda1afa753263d9e39/ff6fb6535fe6b74ce10000000a174cb4.html?version=2023.000",
+          "quote": "The system lists the documents to be invoiced on the basis of the selection criteria you enter.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/7b24a64d9d0941bda1afa753263d9e39/ff6fb6535fe6b74ce10000000a174cb4.html?version=2023.000",
+          "quote": "It is possible to process the billing due list as a simulation ‘trial run’.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/7b24a64d9d0941bda1afa753263d9e39/2a70b6535fe6b74ce10000000a174cb4.html?version=2023.000",
+          "quote": "The cancellation causes the billed reference document (for example, the delivery) to be open for billing again, meaning that the correct billing document can now be created.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/7b24a64d9d0941bda1afa753263d9e39/2a70b6535fe6b74ce10000000a174cb4.html?version=2023.000",
+          "quote": "Each billing type that can be canceled (for example, the F2 invoice) has a corresponding cancellation billing type (for example, the S1 invoice cancellation) assigned to it.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/7b24a64d9d0941bda1afa753263d9e39/2a70b6535fe6b74ce10000000a174cb4.html?version=2023.000",
+          "quote": "If the system has not yet posted the canceled billing document to financial accounting, both the canceled billing document and the cancellation billing document receive posting status E (billing document canceled).",
+          "release": "2023"
+        }
+      ],
+      "limitations": [
+        "Cancellation re-opens the reference document for billing: for a rental billing-plan date, the page does not say whether the date status returns to open; test cancel-and-rebill against a billing plan date (S4-2023-SD-BILLPLAN-ITEM-CONTROL status C).",
+        "Corrections of an issued invoice can be cancel-and-rebill (S1 plus new F2) or credit memo; which is correct for a changed hire period is a design decision. Credit memo request billing block is in S4-2023-SD-CMR-BILLING-BLOCK.",
+        "Individual item cancellation is possible in Change Billing Documents but not for rebate agreements, payment-card transactions or documents not yet forwarded to financial accounting.",
+        "Billing run log for a billing due list is available; an external-reference duplicate check (same hire period billed twice from different sources) is not described and must be designed."
+      ]
+    },
+    {
+      "id": "S4-2023-LOG-TM-FREIGHT-SETTLEMENT-MM-PO",
+      "capability": "Embedded TM freight settlement document creates the MM purchase order and service entry sheet; changed-charge handling and reversal",
+      "fitType": "LICENSE_DEPENDENT",
+      "objects": [
+        "Freight settlement document (FSD) from freight order, service order or freight booking",
+        "MM purchase order for services and service entry sheet (SES) created at FSD posting; accruals",
+        "Settlement profile: change process 'Create New FSD for Delta Amount' or 'Reverse and Repost with New FSD'",
+        "FSD reversal: SES with returns flag; MRRL credit memo for the invoice",
+        "Programs /SCMTMS/SFIR_CREATE_BATCH and /SCMTMS/SFIR_TRANSFER_BATCH"
+      ],
+      "verification": "VERIFIED",
+      "evidence": [
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/e3dc5400c1cc41d1bc0ae0e7fd9aa5a2/2f90ba3c7a8540e59f5ca0959d82e994.html?version=2023.000",
+          "quote": "The freight settlement document also integrates with MM to create the purchase order (PO) and service entry sheet (SES) to post accruals, and to be the basis for invoice verification.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/e3dc5400c1cc41d1bc0ae0e7fd9aa5a2/2f90ba3c7a8540e59f5ca0959d82e994.html?version=2023.000",
+          "quote": "You can start the generation of a freight settlement document from a freight order, service order, or freight booking.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/e3dc5400c1cc41d1bc0ae0e7fd9aa5a2/10438f80857c4291a1951346ae7242d4.html?version=2023.000",
+          "quote": "You can enable the automatic change process in the relevant settlement profile by specifying a freight settlement document change process of either Create New FSD for Delta Amount or Reverse and Repost with New FSD.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/e3dc5400c1cc41d1bc0ae0e7fd9aa5a2/ada84a7923534f219a9b08f7cbe9bcff.html?version=2023.000",
+          "quote": "TM initiates the reversal process. The system creates an SES with a returns flag, for the complete value of the freight settlement document.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/e3dc5400c1cc41d1bc0ae0e7fd9aa5a2/ada84a7923534f219a9b08f7cbe9bcff.html?version=2023.000",
+          "quote": "TM updates the invoicing status of the relevant freight order to Not Invoiced, and you can create a new freight settlement document for the freight order.",
+          "release": "2023"
+        }
+      ],
+      "limitations": [
+        "ANSWER TO THE DOUBLE-COMMITMENT QUESTION (reviewer N10): in embedded TM the PO and SES are CREATED BY the FSD posting. A transport PO booked separately in MM (purchase order created by purchasing for the same freight) is a second commitment unless the design suppresses one; no fetched page says an FSD can post against, reference or consume an existing PO. Use one commitment: the FSD-generated PO/SES (accrual at FSD posting), with the freight order as the planning document.",
+        "Changed charges are handled by the settlement profile (new FSD for delta amount, or reverse and repost): reverse creates an SES with returns flag for the full value and, after the MRRL credit memo, the freight order returns to 'Not Invoiced' so a new FSD can be created. Retry safety for a failed posting is shown by FSD status/application log (SES creation failure messages), not by an idempotency key.",
+        "Requires the TM-to-MM invoice-integration Customizing (default plant per company code or Assign Purchasing Information for Posting, company code and plant determination page); plant and company code for the posting are determined by the rules on the Company Code and Plant in Posting Freight Settlements page.",
+        "Licence: embedded TM and its settlement scope are licence-dependent (see S4-2023-LOG-TM-EMBEDDED, S4-2023-LOG-TM-FREIGHT-SETTLEMENT). For LE-TRA shipment costs see S4-2023-LOG-LETRA-SHIPMENT-COST, which is a different, non-TM route.",
+        "Cost side only: charging the customer for freight is separate (pricing or LE-TRA freight billing)."
+      ]
+    },
+    {
+      "id": "S4-2023-EXT-PARTNER-RENTAL",
+      "capability": "SAP Store / sap.com partner rental-management solutions for S/4HANA (partner, not SAP standard)",
+      "fitType": "LICENSE_DEPENDENT",
+      "objects": [
+        "FIT-Rent Public Cloud Rental Management for SAP BTP (FIT Group B.V., SAP Store)",
+        "ETMnext / BearingPoint rental listings (not read)"
+      ],
+      "verification": "UNVERIFIED",
+      "evidence": [
+        {
+          "url": "https://store.sap.com/dcp/en/product/display-2001012772_live_v1/fit-rent-public-cloud-rental-management-for-sap-btp/",
+          "quote": "A SaaS solution integrated with SAP S/4HANA Public Cloud which leverages BTP services such as SAP Credential Store and SAP HANA Cloud, that manages your rental operations from end-to-end.",
+          "release": "not release-specific (SAP Store listing)"
+        }
+      ],
+      "limitations": [
+        "UNVERIFIED for S/4HANA 2023 private cloud/on-premise: the SAP Store FIT-Rent listing says 'Works With: SAP Business Technology Platform, SAP S/4HANA Cloud Public Edition' and is a licensed partner SaaS product, not SAP standard. No SAP Store or help page stating compatibility with S/4HANA 2023 private edition/on-premise was read.",
+        "A search also surfaced sap.com partner pages for ETMnext (BearingPoint, equipment and tools rental) and BearingPoint Leasing and Rental; the sap.com partner page for ETMnext returned 'Access Denied' to the headless browser, so its supported editions are not evidenced.",
+        "SAP's own 2023 Feature Scope Description contains no equipment-rental-out feature. Related but different: Field Logistics 'Supplier Owned Item logistics' manages the forward and return logistics of rental and third-party items received from suppliers (oil and gas style remote locations), and Real Estate (RE-FX) rental units are property rentals."
+      ]
+    }
+  ]
+}

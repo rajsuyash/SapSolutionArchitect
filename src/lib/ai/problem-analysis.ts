@@ -28,7 +28,7 @@ export const ProblemAnalysisInputSchema = z.object({
     code: identifier, title: text, summary: text })).max(50).default([]),
 });
 export type ProblemAnalysisInput = z.infer<typeof ProblemAnalysisInputSchema>;
-export type ValidationIssue = { path: string; code: string };
+export type ValidationIssue = { path: string; code: string; detail?: string };
 export function schemaIssues(issues: z.core.$ZodIssue[]): ValidationIssue[] {
   // Never return Zod messages, received values, or model-controlled property names.
   return issues.slice(0, 30).map((issue) => ({ path: issue.path.filter((part) => typeof part === "number" ||

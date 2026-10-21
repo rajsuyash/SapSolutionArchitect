@@ -1,0 +1,66 @@
+# SAP S/4HANA 2023 reference catalog
+
+Target: SAP S/4HANA 2023 (private cloud / on-premise). Loaded by `src/lib/ai/sap-references.ts` from `reference-catalog.json` (strict schema; only `VERIFIED` entries become trusted references).
+
+## Scope
+73 capability entries (53 from passes 1 and 2, 20 from pass 3) for an equipment hire business: quotation and order handling, rental billing plans, pricing, sales BOM, credit management and release, approvals (BAdI workflow, My Inbox, flexible workflow), cross-hire sourcing, supplier returns, stock types, goods issue, customer returns, serial numbers and equipment, maintenance order settlement, availability check, stock-to-asset transfer and depreciation, shipping (LE-TRA and embedded TM, licence dependent), proof of delivery, output management, CDS analytics, key-user extensibility, mass change, barcode scanning, EWM serials, notifications, change history.
+
+Added in the second pass (2026-10-21, after an independent review of a rental To-Be design): aATP third-party subitems TAS/TAB, vendor consignment and non-valuated receipt, customer return inspection and follow-up, credit memo request billing block, billing plan dates, resource-related billing, per-action credit checks, embedded TM freight settlement and LE-TRA shipment costs, product allocation and reservations, copy control, and four honest-gap entries (UNVERIFIED).
+
+Added in the third pass (2026-10-21, after the v8 To-Be review scored SAP specificity 4/10 and found key-user extensibility used for 38 of 45 EXTENSION steps): realization mechanisms beyond key-user extensibility. Key-user Custom Logic scope and custom business objects, developer extensibility (ABAP Platform 2023), RAP, classic billing routines, Enterprise Event Enablement, side-by-side on BTP, customer consignment (W) and returnable packaging (V) at customer, returnable packaging rental fees, equipment/asset synchronization, install/dismantle and status, goods issue to asset (241), sales order stock transfer, per-item billing plan control, billing cancellation, TM freight settlement creating the MM PO and SES, and two UNVERIFIED entries (SBPA/CAP; partner rental solutions).
+
+## Method
+- Capability list derived from the 41 steps of the local rental design, not copied from it. No customer text is in the catalog.
+- Pages found with web search restricted to help.sap.com, then rendered with a headless browser at `?version=2023.000` (help.sap.com is a JavaScript app, so plain fetch returns an empty shell). Each cited page showed `Version: 2023 (Oct 2023)` in its header.
+- The SAP Feature Scope Description for SAP S/4HANA 2023 (Document Version 7.0, 2026-08-05, PDF) was downloaded and text-extracted for licensing and chapter placement evidence.
+- Every quote was checked programmatically as a verbatim substring (whitespace normalised) of the fetched text before the file was written. A build that had any missing quote was refused.
+- Second pass (2026-10-21): same method. Pages rendered with `domcontentloaded` plus a 6 s wait and at most three pages in parallel (full `networkidle` with eight parallel pages timed out). Rendered `document.body.innerText` was matched after whitespace normalisation. Two PDFs were text-extracted (raw and layout) and matched the same way: the Feature Scope Description (2023, Document Version 7.0) and the SAP Credit Management Configuration Guide for SAP S/4HANA 2023 (October 2023, 2023-10-06). Pages that returned "Page Not Found" for `version=2023.000` (Settings for Credit Check, Credit Block Release and Recheck, CMR approval workflow guide) were not used.
+- One cited page is the 2023 FPS02 What's New topic (`version=2023.002`, 'Valid as of 2023 FPS02'); its entry says so. The catalog release label stays `2023` for the schema.
+- Third pass (2026-10-21): same method (`domcontentloaded` plus 6 s wait, three pages in parallel, whitespace-normalised verbatim substring). Section titles and sibling pages were found by dumping the table-of-contents links of rendered pages, not from web-search snippets. The Feature Scope Description PDF was matched on `pdftotext` raw and layout text. Pages from the ABAP Platform 2023 documentation (`ABAP_PLATFORM_NEW`, `version=202310.000`, header 'Version: 2023 (Oct 2023)') are used for key-user/developer/side-by-side extensibility because the S/4HANA 2023 help only links to them; the ABAP Platform is the basis of S/4HANA 2023, and the catalog `release` stays `2023`.
+- A negative control was run: the verifier was fed a corrupted quote and a non-existent sentence and reported both missing (8 of 10 found).
+- Page fetched: 2026-10-21 (all three passes).
+
+## Counts
+- Entries: 73; VERIFIED: 65; UNVERIFIED: 8 (`NOTIFY-EMAIL`, `AUDIT-CHANGE-LOG`, `FIN-CREDIT-GI-OUTPUT`, `ATP-RENTAL-PERIOD`, `WF-INVENTORY-TRANSFER`, `EXT-COPY-BADI`, `INT-BTP-SBPA-CAP`, `EXT-PARTNER-RENTAL`).
+- Evidence items: 231 across 111 distinct SAP URLs, all https on sap.com (one SAP Store listing, `store.sap.com`, carries release label 'not release-specific (SAP Store listing)' and is UNVERIFIED).
+- Re-fetch check, first pass: sample of 10 quotes from 5 random VERIFIED entries, 10 of 10 found. Second pass: all evidence items of the 16 new entries and the rewritten `PROC-3P-INDIVIDUAL-PO` re-rendered from scratch (fresh browser, freshly downloaded PDFs); result in the changelog. Third pass: all 92 evidence items of the 20 new entries re-rendered after the file was written (fresh browser, fresh PDF download): 92 of 92 found.
+
+## Changelog (2026-10-21, second pass)
+Why: an independent review of a rental To-Be design (findings N1, N2, N3, N5, N6, N7 and SAP-fit gaps) found catalog objects or gaps that mislead design.
+- Corrected `PROC-3P-INDIVIDUAL-PO`: the old object list gave TAS / BANS for a unit received then delivered. TAS/BANS is supplier ships to customer. Individual PO (supplier ships to you, goods held as sales order stock) is now a separate object; TAB is not asserted for individual PO. Evidence replaced (5 quotes).
+- New `ATP-TPO-TAB-SUBITEMS`: the only 2023 evidence for TAB (aATP sourcing-profile subitems, FPS02).
+- New `INV-VENDOR-CONSIGNMENT`, `INV-GR-NONVALUATED`: supplier-owned receipt routes. Key limit: consignment withdrawal makes the vendor due the net value, so it does not model supplier rent.
+- New `INV-RETURNS-INSPECT-RELEASE`: return receipt, returns stock, inspection, follow-up decision. Movement type to unrestricted and QM usage decision for returns not evidenced.
+- New `SD-CMR-BILLING-BLOCK`, `SD-BILLPLAN-DATES-FINAL`, `SD-RESOURCE-BILLING`: billing control. No date-level billing block and no final-invoice marker found.
+- New `FIN-CREDIT-SD-INTEGRATION` (VERIFIED) and `FIN-CREDIT-GI-OUTPUT` (UNVERIFIED): credit check at sales document and delivery; post goods issue and output suppression not evidenced.
+- New `LOG-TM-FREIGHT-SETTLEMENT`, `LOG-LETRA-SHIPMENT-COST`: freight cost settlement in embedded TM and LE-TRA; carrier POD and closure gate not evidenced.
+- New `ATP-ALLOCATION-RESERVATION` (VERIFIED) and `ATP-RENTAL-PERIOD` (UNVERIFIED, EXTENSION): no standard hire-period availability found.
+- New `WF-INVENTORY-TRANSFER` (UNVERIFIED, EXTENSION): no flexible-workflow scenario for stock or asset transfer found.
+- New `SD-COPY-CONTROL` (VERIFIED) and `EXT-COPY-BADI` (UNVERIFIED, EXTENSION).
+- Limitations appended (ids unchanged) to `INV-STOCK-TYPES`, `INV-RETURNS-CUSTOMER`, `WF-FLEXIBLE`, `FIN-CREDIT-CHECK`, `ATP-CHECK`, `EXT-KEYUSER`, `SD-BLOCKS`.
+
+## Changelog (2026-10-21, third pass)
+Why: the v8 review (N8, N9, N10, N13) needs evidenced realization mechanisms beyond key-user extensibility. 20 new entries, ids of the 53 existing entries unchanged.
+- Extensibility tiers: `EXT-KEYUSER-SCOPE` (what Custom Logic BAdIs reach in sales and billing: check/modify sales document header and item, flexible billing document numbering, approval reasons, output/EDI; custom fields flow sales document to billing document to billing due list; 170-field limit; no billing data-transfer or posting hook), `EXT-KEYUSER-CUSTOM-BO` (key-user custom business objects with OData and node-level logic; limits: no instance-based authorization, no read access logging, no personal data), `EXT-DEV-ABAP-CLOUD` (developer extensibility on-stack, released objects only), `EXT-RAP` (Feature Scope Description), `EXT-CLASSIC-ABAP` (own copying requirements/data transfer routines in billing copy control), `INT-EVENT-ENABLEMENT` (LICENSE_DEPENDENT), `INT-BTP-SIDE-BY-SIDE` (INTEGRATION, includes external approval workflow API for sales documents), `INT-BTP-SBPA-CAP` (UNVERIFIED).
+- Units at customer: `INV-CUSTOMER-CONSIGNMENT` (W) and `INV-CUSTOMER-RETURNABLE-PACKAGING` (V): company ownership and valuation retained; consignment issue and packaging issue are sales; `SD-RP-RENTAL-FEES`: the only time-based rental fee function found (returnable packaging processing, percentage of value, batch-managed items, 100 percent credit-memo rule).
+- Equipment and assets: `PM-EQUIPMENT-ASSET-SYNC`, `PM-EQUIPMENT-INSTALL-HISTORY`, `PM-EQUIPMENT-STATUS`, `FI-GI-TO-ASSET` (movement 241, AuC settlement; serial/stock effect not evidenced).
+- Stock reuse: `SD-SALES-ORDER-STOCK-TRANSFER` (411 transfer to own stock, transfer between sales order stocks; makes the unit own stock).
+- Billing: `SD-BILLPLAN-ITEM-CONTROL` (CORRECTS `SD-BILLPLAN-DATES-FINAL`: a billing block per billing plan date and a per-date billing status ARE evidenced), `SD-BILLING-CANCEL-RERUN`.
+- Freight commitment: `LOG-TM-FREIGHT-SETTLEMENT-MM-PO` (the freight settlement document posting creates the MM purchase order and service entry sheet; change process and reversal).
+- Partner: `EXT-PARTNER-RENTAL` (UNVERIFIED).
+- Limitations appended (ids unchanged) to `EXT-KEYUSER`, `SD-BILLPLAN-DATES-FINAL`, `EXT-COPY-BADI`, `INV-STOCK-TYPES`, `FI-ASSET-ACQ-FROM-STOCK`, `LOG-TM-FREIGHT-SETTLEMENT`, `PROC-3P-INDIVIDUAL-PO`, `PM-EQUIPMENT`, `SD-RENTAL-BILLPLAN`.
+- Partner and SAP-endorsed rental solutions: none found for S/4HANA 2023 private cloud/on-premise on SAP pages. The SAP Store lists FIT-Rent (for S/4HANA Cloud Public Edition and BTP). A sap.com partner page for ETMnext (BearingPoint) and a BearingPoint Leasing and Rental listing surfaced in search but the ETMnext page returned Access Denied to the headless browser. The 2023 Feature Scope Description has no equipment-rental-out feature (Field Logistics handles renting items IN from suppliers).
+
+## What VERIFIED means
+The quoted text appears on the cited 2023 page and supports the headline behaviour. It does not prove the full rental design fits. Each entry lists limitations: the parts of the rental behaviour the quote does NOT cover (period-based availability, billable-day amounts, approval gates, custom status, and similar). Treat those as extensions or validation items.
+
+## Known weaknesses
+- `objects` (transaction codes, app names, IMG paths) are orientation labels from SAP knowledge; only the quotes are verified.
+- Credit Block Release and Recheck was not available as release 2023 (only 2025 FPS02), so it is not cited.
+- Licensing: TM basic versus advanced and Compatibility Pack usage rights were evidenced only from FSD chapter placement and its licence note, not from a contract or SAP Note. Confirm with SAP before relying on LE-TRA or TM scope.
+- Fiori apps reference library (fioriappslibrary.hana.ondemand.com) is not on sap.com, so app IDs are not evidenced here.
+- No standard hire-period equipment availability, no date-level billing block, no final-invoice marker, no credit check at post goods issue, no flexible workflow for stock or asset transfer were found in 2023 documentation; these are recorded as UNVERIFIED or as limitations, not as gaps in the search.
+- Customer return release to unrestricted stock (movement types) and a QM inspection lot with usage decision for returns stock were not evidenced.
+- Custom Analytical Queries may be deprecated in Cloud Public Edition; 2023 on-premise status not confirmed.
+- Third pass gaps: SAP Build Process Automation and CAP are not named on any 2023 page (UNVERIFIED); released objects/APIs per business area (goods movement, billing creation, FI-AA, TM) must be read in ADT in the target system; serial-number-level tracking inside special stock W/V and the effect of goods issue 241 on serial/equipment status are not evidenced; no external-reference duplicate check for billing documents was found; consignment and returnable packaging 2023 sales order type codes were not quoted from a 2023 page; the ABAP Platform pages (Oct 2023) stand in for S/4HANA product pages on extensibility.
+- JSON schema forbids extra fields, so doc version, fetch date and notes live only in this file.
