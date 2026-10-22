@@ -83,7 +83,7 @@ pnpm test:browser:synthetic
 
 The Playwright harness creates and removes an isolated local database, serves the production build over HTTPS, and tests all three fictional journeys with a deterministic worker. It covers progress after reload, retry, persisted scope review, and tenant isolation; it does not evaluate real AI quality. Local evidence is saved under ignored `playwright-report/` and `test-results/`. Live checks and screenshots are under `test-results/live-demo/`.
 
-For an explicitly authorized audit of the live demo:
+For an explicitly authorized audit of the live demo (https://sap-web-965411321011.europe-west1.run.app):
 
 ```sh
 node --import tsx scripts/test-live-demo.ts --create-synthetic-data
