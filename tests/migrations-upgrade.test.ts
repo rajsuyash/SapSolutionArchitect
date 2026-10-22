@@ -25,9 +25,12 @@ describe.skipIf(process.env.RUN_DB_TESTS !== "1")("migration upgrade path 0004 -
   let connected = false;
   const ids = Object.fromEntries(["org", "lead", "member", "project", "job", "analysis"].map((k) => [k, randomUUID()])) as Record<string, string>;
   const dataTables = ["organizations", "users", "projects", "project_memberships", "jobs", "problem_analyses"];
+  // Columns added by later migrations: row preservation is judged on the pre-existing columns only.
+  const addedColumns = new Set(["trial_ends_at", "daily_ai_job_quota", "suspended_at", "last_login_at"]);
+  const withoutAdded = (row: Record<string, unknown>) => Object.fromEntries(Object.entries(row).filter(([key]) => !addedColumns.has(key)));
   const snapshot = async () => {
     const out: Record<string, unknown[]> = {};
-    for (const t of dataTables) out[t] = (await db.query(`SELECT * FROM ${t} ORDER BY 1,2`)).rows;
+    for (const t of dataTables) out[t] = (await db.query(`SELECT * FROM ${t} ORDER BY 1,2`)).rows.map(withoutAdded);
     return out;
   };
   const ledger = async () => (await db.query<{ version: string; checksum: string; applied_at: Date }>(
@@ -108,4 +111,58 @@ describe.skipIf(process.env.RUN_DB_TESTS !== "1")("migration upgrade path 0004 -
   it("refuses to run when an applied migration file was edited (checksum guard)", async () => {
     await expect(applyMigration(db, files[0]!, "-- tampered\n")).rejects.toThrow(/checksum mismatch/i);
   });
+});
+
+describe.skipIf(process.env.RUN_DB_TESTS !== "1")("migration 0008 on a database already at 0007", () => {
+  const latest = files.at(-1)!;
+  const database = `sap_upgrade8_${randomUUID().replaceAll("-", "")}`;
+  const url = new URL(parseEnv(readFileSync(new URL("../.env.example", import.meta.url), "utf8")).DATABASE_URL!);
+  const admin = new Client({ connectionString: url.href, connectionTimeoutMillis: 3000 });
+  url.pathname = `/${database}`;
+  const db = new Client({ connectionString: url.href, connectionTimeoutMillis: 3000 });
+  let created = false;
+  let connected = false;
+  const [org, user] = [randomUUID(), randomUUID()];
+
+  beforeAll(async () => {
+    await admin.connect();
+    await admin.query(`CREATE DATABASE ${database}`); created = true;
+    await db.connect(); connected = true;
+    await db.query("BEGIN");
+    await db.query("SELECT pg_advisory_xact_lock(71399201)");
+    await db.query(`CREATE TABLE IF NOT EXISTS sap_pm_migrations(
+      version text PRIMARY KEY, checksum text NOT NULL, applied_at timestamptz NOT NULL DEFAULT now())`);
+    for (const name of files.slice(0, -1)) await applyMigration(db, name, readFileSync(new URL(name, migrationsDir), "utf8"));
+    await db.query("COMMIT");
+    await db.query("INSERT INTO organizations(id,name) VALUES($1,'Pre-0008 Org')", [org]);
+    await db.query("INSERT INTO users(id,org_id,email,name,org_role,password_hash) VALUES($1,$2,$3,'Legacy','ADMIN','x')",
+      [user, org, `legacy-${randomUUID()}@test.local`]);
+  }, 40000);
+  afterAll(async () => {
+    if (connected) await db.end();
+    try { if (created) await admin.query(`DROP DATABASE ${database}`); }
+    finally { await admin.end(); }
+  }, 15000);
+
+  it("adds trial/quota/suspension columns, leaving existing organizations without expiry", async () => {
+    expect(latest).toBe("0008_saas_trials_google.sql"); // precondition: the slice above really stops at 0007
+    expect((await db.query("SELECT version FROM sap_pm_migrations ORDER BY version")).rows.at(-1)!.version).toBe(files.at(-2));
+    expect((await db.query("SELECT 1 FROM information_schema.columns WHERE table_name='organizations' AND column_name='trial_ends_at'")).rowCount).toBe(0);
+
+    await run(process.execPath, ["--import", "tsx", "scripts/seed.ts", "--migrate-only"],
+      { env: { ...process.env, NODE_ENV: "test", DATABASE_URL: url.href }, timeout: 30000 });
+
+    expect((await db.query("SELECT version FROM sap_pm_migrations ORDER BY version")).rows.at(-1)!.version).toBe(latest);
+    const existing = (await db.query("SELECT trial_ends_at,daily_ai_job_quota,suspended_at FROM organizations WHERE id=$1", [org])).rows[0];
+    expect(existing).toEqual({ trial_ends_at: null, daily_ai_job_quota: 10, suspended_at: null });
+    const fresh = (await db.query(`INSERT INTO organizations(id,name) VALUES($1,'Fresh') RETURNING
+      extract(epoch FROM trial_ends_at-clock_timestamp()) AS seconds`, [randomUUID()])).rows[0];
+    // "14 days" is calendar arithmetic in the session time zone, so a DST change adds or removes an hour.
+    expect(Math.abs(Number(fresh.seconds) - 14 * 86400)).toBeLessThan(2 * 3600);
+    await expect(db.query("UPDATE organizations SET daily_ai_job_quota=0 WHERE id=$1", [org])).rejects.toMatchObject({ code: "23514" });
+    // Legacy password user untouched; password_hash is now nullable; identity table exists.
+    expect((await db.query("SELECT password_hash,last_login_at FROM users WHERE id=$1", [user])).rows[0]).toEqual({ password_hash: "x", last_login_at: null });
+    await db.query("UPDATE users SET password_hash=NULL WHERE id=$1", [user]);
+    expect((await db.query("SELECT count(*)::int AS n FROM auth.oauth_identities")).rows[0].n).toBe(0);
+  }, 60000);
 });

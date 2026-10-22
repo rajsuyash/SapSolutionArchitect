@@ -4,6 +4,7 @@ import { AuthForm, WorkspaceLink as Link } from "../auth-ui";
 import { getPageSession, loginDestination, requirePageSession } from "../../lib/page-auth";
 import { isAuthError } from "../../lib/auth";
 import { getRuntime } from "../../lib/runtime";
+import { googleEnabled } from "../../lib/google-oauth";
 import { ProjectForm } from "../project-form";
 import { AnalysisPanel } from "../analysis-panel";
 import { DiscoveryPanel, type Variant } from "../discovery-panel";
@@ -37,7 +38,7 @@ export default async function WorkspacePage({ params }: Props) {
     return <section className="access-panel access-placeholder" aria-labelledby="signup-heading">
       <h1 id="signup-heading">Create account</h1>
       <p className="panel-description">Create a workspace for your organisation and start your first transformation project.</p>
-      <AuthForm mode="signup" />
+      <AuthForm mode="signup" google={googleEnabled(getRuntime().config)} />
     </section>;
   }
   if (path.length === 2 && path[0] === "invite") return <Panel title="Join your project">

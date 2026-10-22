@@ -28,7 +28,7 @@ describe("project validation", () => {
 
 const origin = "https://sap-http.test";
 function mockRuntime() {
-  return { config: { APP_URL: origin }, auth: { signup: vi.fn(), login: vi.fn(), logout: vi.fn(),
+  return { config: { APP_URL: origin }, auth: { signup: vi.fn(), login: vi.fn(), googleSignIn: vi.fn(), logout: vi.fn(),
     authenticate: vi.fn(), resolveSession: vi.fn() }, projects: { list: vi.fn(), get: vi.fn(), create: vi.fn() },
     jobs: { latest: vi.fn(), enqueue: vi.fn(), get: vi.fn(), retry: vi.fn(), initialize: vi.fn(), execute: vi.fn(), recover: vi.fn() } } satisfies HttpRuntime;
 }

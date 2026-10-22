@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { NextResponse } from "next/server";
-import { AuthError, assertSameOrigin, isAuthError, sessionCookie, type AuthService } from "./auth";
+import { AuthError, applySessionCookie, assertSameOrigin, isAuthError, sessionCookie, type AuthService } from "./auth";
 import type { createProjectRepository } from "./tenant";
 import type { createJobService } from "./jobs";
 import type { createDiscoveryRepository } from "./discovery";
@@ -115,8 +115,7 @@ export function handleAuth(request: Request, action: string, load: LoadRuntime):
     const input = await readJson(request);
     const result = action === "signup" ? await auth.signup(input) : await auth.login(input);
     const response = success({ user: result.user }, action === "signup" ? 201 : 200);
-    const cookie = sessionCookie(result.token, config.APP_URL);
-    response.cookies.set(cookie.name, cookie.value, { ...cookie.options, expires: result.expiresAt });
+    applySessionCookie(response, result, config.APP_URL);
     return response;
   });
 }

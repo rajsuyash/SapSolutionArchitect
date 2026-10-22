@@ -126,6 +126,79 @@ describe.skipIf(process.env.RUN_DB_TESTS !== "1")("auth services on isolated Pos
     expect(await differentSecret.authenticate(current.token)).toBeNull();
   });
 
+  describe("Google sign-in", () => {
+    const profile = (overrides: Record<string, string> = {}) => ({ sub: `sub-${randomUUID()}`, email: `g-${randomUUID()}@test.local`, name: "Gita Rao", ...overrides });
+    const row = async (sql: string, params: unknown[]) => (await pool.query(sql, params)).rows[0];
+
+    it("creates a workspace, ADMIN user, 14-day trial and quota 10, then reuses the identity", async () => {
+      const input = profile();
+      const first = await auth.googleSignIn(input);
+      expect(first.user).toMatchObject({ email: input.email, name: "Gita Rao", orgRole: "ADMIN" });
+      expect(first.token).toMatch(/^[A-Za-z0-9_-]{43}$/);
+      expect(await auth.authenticate(first.token)).toEqual(first.user);
+      const org = await row(`SELECT name,daily_ai_job_quota AS quota,suspended_at,
+        extract(epoch FROM trial_ends_at-clock_timestamp()) AS trial FROM organizations WHERE id=$1`, [first.user.orgId]);
+      expect(org).toMatchObject({ name: "Gita Rao's workspace", quota: 10, suspended_at: null });
+      expect(Math.abs(Number(org.trial) - 14 * 86400)).toBeLessThan(2 * 3600); // calendar days: DST may shift an hour
+      const stored = await row("SELECT password_hash,last_login_at FROM users WHERE id=$1", [first.user.id]);
+      expect(stored.password_hash).toBeNull();
+      expect(stored.last_login_at).toBeInstanceOf(Date);
+      const orgs = (await pool.query("SELECT count(*) FROM organizations")).rows[0].count;
+      const again = await auth.googleSignIn({ ...input, email: `changed-${randomUUID()}@test.local` });
+      expect(again.user.id).toBe(first.user.id);
+      expect(again.token).not.toBe(first.token);
+      expect((await pool.query("SELECT count(*) FROM organizations")).rows[0].count).toBe(orgs);
+    });
+
+    it("serializes concurrent first sign-ins for one subject into a single account", async () => {
+      const input = profile();
+      const results = await Promise.all([auth.googleSignIn(input), auth.googleSignIn(input), auth.googleSignIn(input)]);
+      expect(new Set(results.map((result) => result.user.id)).size).toBe(1);
+      expect((await pool.query("SELECT count(*) FROM auth.oauth_identities WHERE subject=$1", [input.sub])).rows[0].count).toBe("1");
+    });
+
+    it("links to an existing password account by verified email without creating an organization", async () => {
+      const orgs = (await pool.query("SELECT count(*) FROM organizations")).rows[0].count;
+      const result = await auth.googleSignIn(profile({ sub: "sub-seeded-lead", email: "LEAD@test.local" }));
+      expect(result.user.id).toBe(fixtureId("lead"));
+      expect((await pool.query("SELECT count(*) FROM organizations")).rows[0].count).toBe(orgs);
+      expect((await pool.query("SELECT user_id FROM auth.oauth_identities WHERE subject='sub-seeded-lead'")).rows)
+        .toEqual([{ user_id: fixtureId("lead") }]);
+      // The password still works and the account is not downgraded.
+      await expect(auth.login({ email: "lead@test.local", password: "LocalSeed123!" })).resolves.toMatchObject({ user: { id: fixtureId("lead") } });
+    });
+
+    it("rejects every password for a passwordless account with the generic error", async () => {
+      const input = profile();
+      await auth.googleSignIn(input);
+      for (const password of ["", "LocalSeed123!", "StrongPassword123!", "null", "undefined"]) {
+        await expect(auth.login({ email: input.email, password })).rejects.toMatchObject({ code: "INVALID_CREDENTIALS", status: 401, message: "Email or password is incorrect" });
+      }
+    }, 15000);
+
+    it("sets last_login_at on password login", async () => {
+      await pool.query("UPDATE users SET last_login_at=NULL WHERE id=$1", [fixtureId("lead")]);
+      await auth.login({ email: "lead@test.local", password: "LocalSeed123!" });
+      expect((await row("SELECT last_login_at FROM users WHERE id=$1", [fixtureId("lead")])).last_login_at).toBeInstanceOf(Date);
+    });
+
+    it("keeps oauth identities and trial/quota columns away from the tenant role", async () => {
+      const client = await pool.connect();
+      try {
+        for (const sql of ["SELECT * FROM auth.oauth_identities", "SELECT trial_ends_at FROM organizations",
+          "SELECT daily_ai_job_quota FROM organizations", "SELECT suspended_at FROM organizations", "SELECT last_login_at FROM users"]) {
+          await client.query("BEGIN");
+          await client.query("SET LOCAL ROLE sap_pm_tenant");
+          await expect(client.query(sql), sql).rejects.toMatchObject({ code: "42501" });
+          await client.query("ROLLBACK");
+        }
+        await client.query("BEGIN");
+        await client.query("SET LOCAL ROLE sap_pm_tenant");
+        await expect(client.query("SELECT id,name,created_at FROM organizations")).resolves.toBeDefined();
+      } finally { await client.query("ROLLBACK").catch(() => undefined); client.release(); }
+    });
+  });
+
   it.each([false, true])("limits concurrent failures (existing account: %s) across instances and resets after ten minutes", async (existing) => {
     const email = existing ? "other@test.local" : `missing-${randomUUID()}@test.local`;
     const otherInstance = createAuthService(pool, options);

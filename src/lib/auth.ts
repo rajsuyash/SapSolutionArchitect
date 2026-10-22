@@ -19,6 +19,7 @@ export type SessionUser = { id: string; orgId: string; email: string; name: stri
 const emailSchema = z.email().max(254);
 const passwordSchema = z.string().min(10).regex(/[A-Za-z]/).regex(/[0-9]/)
   .refine((password) => !bcrypt.truncates(password));
+const googleProfileSchema = z.object({ sub: z.string().min(1).max(255), email: emailSchema, name: z.string().optional() });
 const signupSchema = z.object({ name: z.string().min(1).max(120), email: emailSchema,
   password: passwordSchema, orgName: z.string().min(1).max(160) });
 const SESSION_SECONDS = 7 * 24 * 60 * 60; // Absolute seven-day expiry; logout revokes immediately.
@@ -60,6 +61,13 @@ export function sessionCookie(token: string | null, appUrl: string) {
   if (token !== null && !TOKEN.test(token)) throw new Error("Invalid session token");
   return { name: secure ? "__Host-sap_pm_session" : "sap_pm_session", value: token ?? "",
     options: { httpOnly: true, secure, sameSite: "lax" as const, path: "/", maxAge: token ? SESSION_SECONDS : 0 } };
+}
+
+/** Sets the session cookie on a response; the one place its attributes and expiry are applied. */
+export function applySessionCookie(response: { cookies: { set(name: string, value: string, options: object): unknown } },
+  session: { token: string; expiresAt: Date }, appUrl: string): void {
+  const cookie = sessionCookie(session.token, appUrl);
+  response.cookies.set(cookie.name, cookie.value, { ...cookie.options, expires: session.expiresAt });
 }
 
 /** Server-internal transaction primitive. Failed rollback destroys the connection. */
@@ -131,21 +139,49 @@ export function createAuthService(pool: Pool, config: { secret: string; appUrl: 
         greatest(1,ceil(extract(epoch FROM min(failed_at)+interval '10 minutes'-clock_timestamp())))::int AS retry
         FROM auth.login_failures WHERE email_hash=$1`, [key])).rows[0]!;
       if (failures.count >= 5) return new AuthError("RATE_LIMITED", 429, "Try again later", undefined, failures.retry);
-      const found = (await client.query<SessionUser & { password_hash: string }>(
+      const found = (await client.query<SessionUser & { password_hash: string | null }>(
         `SELECT ${userColumns},u.password_hash FROM users u WHERE email=$1`, [email])).rows[0];
-      // Unknown accounts perform the same expensive bcrypt operation. Reject
-      // overlong input explicitly: bcrypt otherwise accepts truncated passwords.
+      // Unknown and passwordless (Google-only) accounts perform the same expensive bcrypt
+      // operation against a dummy hash and are rejected below regardless of the result.
+      // Reject overlong input explicitly: bcrypt otherwise accepts truncated passwords.
       const matches = await bcrypt.compare(password, found?.password_hash ?? DUMMY_HASH);
-      if (!found || !matches || bcrypt.truncates(password)) {
+      if (!found?.password_hash || !matches || bcrypt.truncates(password)) {
         await client.query("INSERT INTO auth.login_failures(email_hash) VALUES($1)", [key]);
         return invalidCredentials(); // Return, then commit the failure; do not roll it back.
       }
       await client.query("DELETE FROM auth.login_failures WHERE email_hash=$1", [key]);
+      await client.query("UPDATE users SET last_login_at=clock_timestamp() WHERE id=$1", [found.id]);
       const user: SessionUser = { id: found.id, orgId: found.orgId, email: found.email, name: found.name, orgRole: found.orgRole };
       return issueSession(client, user);
     });
     if (result instanceof AuthError) throw result;
     return result;
+  }
+
+  /** Trusted bootstrap for a Google-verified profile: existing identity, else link by verified
+   * email, else a new workspace. Serialized per Google subject across web processes. */
+  async function googleSignIn(input: { sub: string; email: string; name?: string }) {
+    const parsed = googleProfileSchema.safeParse({ ...input, email: input.email.trim().toLowerCase() });
+    if (!parsed.success) throw new AuthError("INVALID_FIELD", 400, "Check this field", "email");
+    const { sub, email } = parsed.data;
+    const name = parsed.data.name?.trim().slice(0, 120) || email.split("@")[0]!;
+    return transaction(pool, async (client) => {
+      await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))", [`sap-pm-oauth:google:${sub}`]);
+      const lookup = (sql: string, params: string[]) => client.query<SessionUser>(sql, params).then((result) => result.rows[0]);
+      let user = await lookup(`SELECT ${userColumns} FROM auth.oauth_identities i JOIN users u ON u.id=i.user_id
+        WHERE i.provider='google' AND i.subject=$1`, [sub]);
+      user ??= await lookup(`SELECT ${userColumns} FROM users u WHERE u.email=$1`, [email]);
+      if (!user) {
+        const orgId = randomUUID();
+        await client.query("INSERT INTO organizations(id,name) VALUES($1,$2)", [orgId, `${name}'s workspace`]);
+        user = (await client.query<SessionUser>(`INSERT INTO users AS u(id,org_id,email,name,password_hash,org_role)
+          VALUES($1,$2,$3,$4,NULL,'ADMIN') RETURNING ${userColumns}`, [randomUUID(), orgId, email, name])).rows[0]!;
+      }
+      await client.query(`INSERT INTO auth.oauth_identities(provider,subject,user_id,email) VALUES('google',$1,$2,$3)
+        ON CONFLICT (provider,subject) DO NOTHING`, [sub, user.id, email]);
+      await client.query("UPDATE users SET last_login_at=clock_timestamp() WHERE id=$1", [user.id]);
+      return issueSession(client, user);
+    });
   }
 
   // Lock identity/session during a repository transaction so logout/role edits
@@ -161,6 +197,6 @@ export function createAuthService(pool: Pool, config: { secret: string; appUrl: 
   async function logout(token: string | null): Promise<void> {
     if (token && TOKEN.test(token)) await pool.query("DELETE FROM auth.sessions WHERE token_hash=$1", [digest("session", token)]);
   }
-  return { signup, login, authenticate, logout, resolveSession };
+  return { signup, login, googleSignIn, authenticate, logout, resolveSession };
 }
 export type AuthService = ReturnType<typeof createAuthService>;

@@ -2,11 +2,13 @@ import type { Metadata } from "next";
 import { redirect } from "next/navigation";
 import { AuthForm } from "../auth-ui";
 import { getPageSession, loginDestination } from "../../lib/page-auth";
+import { googleEnabled } from "../../lib/google-oauth";
+import { getRuntime } from "../../lib/runtime";
 
 export const metadata: Metadata = { title: "Sign in" };
 
-export default async function LoginPage({ searchParams }: { searchParams: Promise<{ next?: string | string[] }> }) {
-  const { next } = await searchParams;
+export default async function LoginPage({ searchParams }: { searchParams: Promise<{ next?: string | string[]; error?: string | string[] }> }) {
+  const { next, error } = await searchParams;
   const { user } = await getPageSession();
   const destination = loginDestination(next, user?.orgRole);
   if (user) redirect(destination);
@@ -26,7 +28,7 @@ export default async function LoginPage({ searchParams }: { searchParams: Promis
       <section className="access-panel" aria-labelledby="login-heading">
         <h1 id="login-heading">Sign in to your workspace</h1>
         <p className="panel-description">Access your projects and process reviews.</p>
-        <AuthForm mode="login" destination={destination} />
+        <AuthForm mode="login" destination={destination} google={googleEnabled(getRuntime().config)} googleFailed={error === "google"} />
       </section>
     </div>
   );

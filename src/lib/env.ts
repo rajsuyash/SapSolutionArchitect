@@ -25,10 +25,16 @@ const schema = z.object({
   S3_ACCESS_KEY_ID: required,
   S3_SECRET_ACCESS_KEY: required,
   DEMO_ACCESS_PASSWORD: z.string().min(24).optional(),
+  GOOGLE_CLIENT_ID: z.string().optional(),
+  GOOGLE_CLIENT_SECRET: z.string().optional(),
 }).superRefine((config, context) => {
   const invalid = (name: string) => context.addIssue({ code: "custom", path: [name], message: "Invalid configuration" });
   if (config.AI_PROVIDER === "anthropic" && !config.ANTHROPIC_API_KEY?.trim()) invalid("ANTHROPIC_API_KEY");
   if (config.EMAIL_PROVIDER === "resend" && !config.EMAIL_API_KEY?.trim()) invalid("EMAIL_API_KEY");
+  // Google sign-in needs both halves of the client credential, or neither.
+  if (!config.GOOGLE_CLIENT_ID?.trim() !== !config.GOOGLE_CLIENT_SECRET?.trim()) {
+    invalid(config.GOOGLE_CLIENT_ID?.trim() ? "GOOGLE_CLIENT_SECRET" : "GOOGLE_CLIENT_ID");
+  }
   if (config.NODE_ENV === "production") {
     if (config.AUTH_SECRET.startsWith("local-dev-only")) invalid("AUTH_SECRET");
     if (!config.APP_URL.startsWith("https://")) invalid("APP_URL");

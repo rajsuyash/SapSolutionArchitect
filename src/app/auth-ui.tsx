@@ -16,7 +16,8 @@ export function WorkspaceLink(props: ComponentProps<"a"> & { href: string }) {
   return <a {...props} />;
 }
 
-export function AuthForm({ mode, destination = "/projects" }: { mode: "login" | "signup"; destination?: string }) {
+export function AuthForm({ mode, destination = "/projects", google = false, googleFailed = false }:
+{ mode: "login" | "signup"; destination?: string; google?: boolean; googleFailed?: boolean }) {
   const signup = mode === "signup";
   const form = useRef<HTMLFormElement>(null);
   const sending = useRef(false);
@@ -88,6 +89,8 @@ export function AuthForm({ mode, destination = "/projects" }: { mode: "login" | 
         {pending ? signup ? "Creating account…" : "Signing in…" : signup ? "Create account" : "Sign in"}
       </button>
     </fieldset>
+    {googleFailed && <p role="alert" style={errorStyle}>Google sign-in didn&apos;t complete. Try again, or use your email and password.</p>}
+    {google && <WorkspaceLink className="primary-button google-button" href="/api/auth/google/start" data-action="google">Continue with Google</WorkspaceLink>}
     <p className="signup-link">{signup ? <Link href="/login">Back to sign in</Link>
       : <>New here? <Link href="/signup">Create account</Link></>}</p>
   </form>;
