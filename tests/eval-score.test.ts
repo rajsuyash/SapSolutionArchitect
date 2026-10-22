@@ -28,7 +28,7 @@ function step(i: number, title: string, detail: string, requirementKey: string, 
 const turn = (index: number, gapKeys: string[], extra: Partial<Transcript["turns"][number]> = {}): Transcript["turns"][number] => ({
   index, userMessage: `message ${index}`, gapsAvailable: 5,
   questions: gapKeys.map(k => ({ gapKey: k, fieldId: k.slice(2), question: `Distinct question about ${k.slice(2)} topic number ${index}` })),
-  proposals: 1, attempts: 1, validationErrors: 0, error: null, inputTokens: 100, outputTokens: 50, latencyMs: 10, ...extra });
+  proposals: 1, attempts: 1, validationErrors: 0, issues: [], error: null, inputTokens: 100, outputTokens: 50, latencyMs: 10, ...extra });
 
 /** A passing run; each test mutates a private copy. */
 function goodTranscript(): Transcript {
@@ -170,5 +170,33 @@ describe("scoreRun", () => {
     t.toBe!.design!.steps[10]!.acceptanceTests.pop();
     expect(score(t).kpis.find(k => k.id === "close")!.met).toBe(false);
     expect(check(t, "kpis").pass).toBe(false);
+  });
+});
+
+describe("validation detail", () => {
+  const issue = (attempt: number, path: string, code: string) => ({ attempt, path, code });
+  const failing = () => {
+    const t = goodTranscript();
+    t.turns[1] = turn(2, [], { attempts: 2, validationErrors: 3, error: "AI_INVALID_OUTPUT",
+      issues: [issue(1, "questions.0.gapKey", "inactive_gap"), issue(1, "questions.2.gapKey", "inactive_gap"), issue(2, "reply", "too_big")] });
+    return t;
+  };
+  it("computes firstAttemptValid from the recorded attempts: attempts 0 (not captured) never counts as valid", () => {
+    const t = goodTranscript();
+    t.turns[0] = turn(1, ["g_a"], { attempts: 0 });
+    t.turns[1] = turn(2, ["g_b"], { attempts: 2, validationErrors: 1 });
+    expect(score(t).firstAttemptValidRate).toBe(0.333);
+  });
+  it("histograms issues per error code and per index-collapsed path", () => {
+    const s = score(failing());
+    expect(s.validationErrorCodes).toEqual({ inactive_gap: 2, too_big: 1 });
+    expect(s.validationErrorPaths).toEqual({ "questions.*.gapKey|inactive_gap": 2, "reply|too_big": 1 });
+    expect(summarize(s)).toContain("validation error codes: inactive_gap x2, too_big x1");
+  });
+  it("leaves the histograms empty for transcripts recorded before issues existed", () => {
+    const legacy: Record<string, unknown> = turn(1, ["g_a"]);
+    delete legacy.issues;
+    const t = { ...goodTranscript(), turns: [legacy] };
+    expect(scoreRun(t, evalCase).validationErrorCodes).toEqual({});
   });
 });

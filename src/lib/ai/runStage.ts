@@ -13,7 +13,9 @@ type Stage = "problem_analysis" | "to_be" | "interview_turn";
 type Payloads = { problem_analysis: ProblemAnalysis; to_be: ToBeOutput; interview_turn: InterviewTurn };
 type Code = "AI_INPUT_INVALID" | "AI_INPUT_TOO_LARGE" | "AI_INVALID_OUTPUT" | "AI_PROVIDER_ERROR" | "AI_TIMEOUT" | "AI_CANCELLED";
 export type StageMetrics = { stage: Stage; provider: Provider; model: string; inputTokens: number;
-  outputTokens: number; latencyMs: number; attempts: number; validationErrors: ValidationIssue[] };
+  outputTokens: number; latencyMs: number; attempts: number; validationErrors: ValidationIssue[];
+  /** The same issues grouped per failed attempt (validationErrors is their flat concatenation). */
+  attemptIssues?: ValidationIssue[][] };
 export class AIStageError extends Error {
   constructor(public readonly code: Code, public readonly metrics: StageMetrics) {
     super(code); this.name = "AIStageError";
@@ -24,7 +26,9 @@ type Config = Pick<Environment, "NODE_ENV" | "AI_PROVIDER" | "ANTHROPIC_API_KEY"
 const SDK_TIMEOUT_MARGIN_MS = 5000;
 /** The long design stages: the only place that decides which stages use the design timeout and AI_MODEL_DESIGN. */
 const DESIGN_STAGES: ReadonlySet<Stage> = new Set<Stage>(["to_be"]);
-type Options = { fetch?: typeof fetch; sapCatalogDir?: string };
+/** issueDetail: eval harness only. Adds the schema's own message (never the received value) to interview_turn issues
+ * recorded in metrics; the issues sent back to the model and the production default are unchanged. */
+type Options = { fetch?: typeof fetch; sapCatalogDir?: string; issueDetail?: boolean };
 
 function pause(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -87,7 +91,7 @@ export function createStageRunner(config: Config, options: Options = {}) {
     const isDesign = DESIGN_STAGES.has(stage);
     const model = isDesign ? config.AI_MODEL_DESIGN ?? config.AI_MODEL : config.AI_MODEL;
     const metrics: StageMetrics = { stage, provider, model, inputTokens: 0, outputTokens: 0,
-      latencyMs: 0, attempts: 0, validationErrors: [] };
+      latencyMs: 0, attempts: 0, validationErrors: [], attemptIssues: [] };
     const fail = (code: Code) => new AIStageError(code, metrics);
     const deadline = new AbortController();
     const timer = setTimeout(() => deadline.abort(fail("AI_TIMEOUT")), stageBudget);
@@ -248,6 +252,9 @@ export function createStageRunner(config: Config, options: Options = {}) {
           if (result.success && !errors.length) return { payload: { ...result.data, inputTruncated } as Payloads[S], metrics };
         }
         metrics.validationErrors.push(...errors);
+        const schema = options.issueDetail && interviewInput ? InterviewTurnSchema.safeParse(output) : null;
+        metrics.attemptIssues!.push(schema && !schema.success
+          ? schemaIssues(schema.error.issues).map((issue, i) => ({ ...issue, detail: schema.error.issues[i]!.message })) : errors);
       }
       throw fail("AI_INVALID_OUTPUT");
     } catch (error) {

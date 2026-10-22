@@ -13,6 +13,10 @@ export const TurnRecordSchema = z.object({
   /** Provider calls made by runStage for this turn; 1 means the first attempt validated. */
   attempts: count,
   validationErrors: count,
+  /** Model reported by runStage for this turn (absent in older transcripts). */
+  model: z.string().optional(),
+  /** Every validation issue runStage produced, tagged with the 1-based attempt it came from (absent in older transcripts). */
+  issues: z.array(z.object({ attempt: z.number().int().positive(), path: z.string(), code: z.string(), detail: z.string().optional() })).default([]),
   /** Stage error code when the turn failed (AI_INVALID_OUTPUT, AI_PROVIDER_ERROR, ...). */
   error: z.string().nullable(),
   inputTokens: count, outputTokens: count, latencyMs: count,
@@ -39,6 +43,8 @@ export const TranscriptSchema = z.object({
     requirements: z.array(z.object({ id: z.string(), statement: z.string(), evidence: z.string().optional() })),
     design: z.object({ steps: z.array(StepRecordSchema) }).nullable(),
   }).nullable(),
+  /** Active interviewer gaps left when the run ended (absent in older transcripts). */
+  gapsRemaining: count.optional(),
   aborted: z.string().nullable(),
 });
 export type Transcript = z.infer<typeof TranscriptSchema>;
@@ -93,7 +99,16 @@ export function scoreRun(rawTranscript: unknown, rawCase: unknown) {
       b: { turn: questions[j]!.turn, question: questions[j]!.question }, jaccard: Number(score.toFixed(3)) });
   }
 
+  // attempts === 1 is the recorded provider-call count; 0 means "not captured" and must never count as valid.
   const validTurns = turns.filter(t => t.error === null && t.attempts === 1 && t.validationErrors === 0).length;
+  const histogram = (key: (i: Transcript["turns"][number]["issues"][number]) => string) => {
+    const counts: Record<string, number> = {};
+    for (const issue of turns.flatMap(t => t.issues)) counts[key(issue)] = (counts[key(issue)] ?? 0) + 1;
+    return Object.fromEntries(Object.entries(counts).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])));
+  };
+  const validationErrorCodes = histogram(i => i.code);
+  // Array indices are collapsed so questions.3.gapKey and questions.0.gapKey count as one rule.
+  const validationErrorPaths = histogram(i => `${i.path.replace(/\.\d+(?=\.|$)/g, ".*")}|${i.code}`);
   const firstAttemptValidRate = turns.length ? validTurns / turns.length : 0;
   const turnsToReadiness = transcript.readiness.reached ? transcript.readiness.atTurn : null;
 
@@ -145,6 +160,7 @@ export function scoreRun(rawTranscript: unknown, rawCase: unknown) {
       failedTurns: turns.filter(t => t.error !== null).map(t => ({ turn: t.index, error: t.error })),
     },
     repeatedGapKeys, nearDuplicateCount: nearDuplicates.length, nearDuplicates: nearDuplicates.slice(0, 20), // sample only
+    validationErrorCodes, validationErrorPaths,
     firstAttemptValidRate: Number(firstAttemptValidRate.toFixed(3)),
     toBeValid, capabilities, capabilityCount, kpis, kpiCount, salesforce,
     outputTokens: turns.reduce((n, t) => n + t.outputTokens, 0) + (toBe?.outputTokens ?? 0),
@@ -162,6 +178,10 @@ export function summarize(score: Score): string {
     lines.push(`  turns with 0 questions while gaps remained: ${score.turns.zeroQuestionTurnsWithGapsRemaining.join(", ")}`);
   }
   if (score.turns.forcedCompletion) lines.push(`  note: template completed by direct entry after the turn cap (${score.turns.directEdits} edits)`);
+  const top = (h: Record<string, number>) => Object.entries(h).slice(0, 8).map(([k, n]) => `${k} x${n}`).join(", ");
+  if (Object.keys(score.validationErrorCodes).length) {
+    lines.push(`  validation error codes: ${top(score.validationErrorCodes)}`, `  validation error paths: ${top(score.validationErrorPaths)}`);
+  }
   if (score.aborted) lines.push(`  aborted: ${score.aborted}`);
   return lines.join("\n");
 }

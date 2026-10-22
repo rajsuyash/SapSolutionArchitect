@@ -1,10 +1,12 @@
 // Phase-0 evaluation harness for the discovery interviewer and To-Be generator.
 //
 //   node --import tsx --env-file-if-exists=.env scripts/eval-consultant.ts --replay <transcript.json> [--case fixtures/eval/pump-o2c.json]
-//   node --import tsx --env-file-if-exists=.env scripts/eval-consultant.ts --live --provider <anthropic|deepinfra> --model <id> [--runs N] [--max-turns 25] [--no-force-complete]
+//   node --import tsx --env-file-if-exists=.env scripts/eval-consultant.ts --live --provider <anthropic|deepinfra> --model <id> [--runs N] [--max-turns 25] [--no-force-complete] [--no-tobe]
 //
 // --live --provider stub --model stub [--fake-model] is the offline dry run: plain stub stops at the first model call
 // (runStage has no stub interviewer); --fake-model swaps in a scripted model to exercise the whole driver at zero cost.
+//
+// --no-tobe makes the run interview-only: no forced completion, no CONFIRM, no To-Be (a diagnostic of the interviewer alone).
 //
 // --replay scores a saved transcript: no network, no database.
 // --live drives the REAL production path (workspace repositories, buildInterviewInput, runStage, persistWorkspaceTurn,
@@ -20,8 +22,9 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { parseEnv, promisify } from "node:util";
 import { Client, Pool } from "pg";
-import { AIStageError, runStage } from "../src/lib/ai/runStage";
+import { AIStageError, createStageRunner, runStage, type StageMetrics } from "../src/lib/ai/runStage";
 import { validateInterviewTurn } from "../src/lib/ai/discovery-interview";
+import { parseEnvironment } from "../src/lib/env";
 import { loadToBeReferences, parseToBeInput, validateToBeOutput } from "../src/lib/ai/to-be";
 import { createAuthService, transaction } from "../src/lib/auth";
 import { createProjectRepository } from "../src/lib/tenant";
@@ -110,9 +113,17 @@ function scriptedStage(fixture: Fixture, getState: () => WorkspaceState): typeof
   }) as unknown as typeof runStage;
 }
 
+/** Per-turn fields taken from runStage metrics; identical for the success and the AIStageError path. */
+function metricsRecord(m: StageMetrics) {
+  const groups = m.attemptIssues ?? (m.validationErrors.length ? [m.validationErrors] : []);
+  return { model: m.model, attempts: m.attempts, validationErrors: m.validationErrors.length,
+    issues: groups.flatMap((group, i) => group.map(issue => ({ attempt: i + 1, ...issue }))),
+    inputTokens: m.inputTokens, outputTokens: m.outputTokens, latencyMs: m.latencyMs };
+}
+
 // --- one live run -----------------------------------------------------------------------------------------------
 
-async function runOnce(fixture: Fixture, deps: { pool: Pool; provider: string; model: string; maxTurns: number; forceComplete: boolean; fake: boolean }) {
+async function runOnce(fixture: Fixture, deps: { pool: Pool; provider: string; model: string; maxTurns: number; forceComplete: boolean; fake: boolean; toBe: boolean }) {
   const { pool, maxTurns } = deps;
   const auth = createAuthService(pool, { secret: process.env.AUTH_SECRET!, appUrl: process.env.APP_URL! });
   const workspaces = createDiscoveryWorkspaceRepository(pool, auth);
@@ -126,12 +137,14 @@ async function runOnce(fixture: Fixture, deps: { pool: Pool; provider: string; m
     current = await workspaces.command(owner.token, project.id, variant, state.revision, randomUUID(), command);
     state = current.state;
   };
-  const stage = deps.fake ? scriptedStage(fixture, () => state) : runStage;
+  // A private runner (not the production singleton) so issue messages are recorded in the eval transcript only.
+  const stage = deps.fake ? scriptedStage(fixture, () => state) : createStageRunner(parseEnvironment(), { issueDetail: true }) as typeof runStage;
 
   const transcript: Transcript = { schemaVersion: 1, caseId: fixture.caseId, provider: deps.provider, model: deps.model,
     startedAt: new Date().toISOString(), turns: [],
     readiness: { reached: false, atTurn: null, forcedCompletion: false, directEdits: 0, blockers: [] }, toBe: null, aborted: null };
   let outputTokens = 0, failures = 0, directEdits = 0;
+  let structureAdded = false;
   const capExceeded = () => outputTokens > OUTPUT_TOKEN_CAP;
   const resolvePending = async () => {
     for (const proposal of state.proposals.filter(p => p.status === "PENDING")) {
@@ -154,15 +167,13 @@ async function runOnce(fixture: Fixture, deps: { pool: Pool; provider: string; m
       }
       const input = buildInterviewInput(state, messageId!);
       const record: Transcript["turns"][number] = { index, userMessage: state.messages.find(m => m.id === messageId)!.text,
-        gapsAvailable: input.activeGaps.length, questions: [], proposals: 0, attempts: 0, validationErrors: 0, error: null,
+        gapsAvailable: input.activeGaps.length, questions: [], proposals: 0, attempts: 0, validationErrors: 0, issues: [], error: null,
         inputTokens: 0, outputTokens: 0, latencyMs: 0 };
       transcript.turns.push(record);
       try {
         const generated = await stage("interview_turn", input);
-        const m = generated.metrics;
-        Object.assign(record, { attempts: m.attempts, validationErrors: m.validationErrors.length,
-          inputTokens: m.inputTokens, outputTokens: m.outputTokens, latencyMs: m.latencyMs });
-        outputTokens += m.outputTokens;
+        Object.assign(record, metricsRecord(generated.metrics));
+        outputTokens += generated.metrics.outputTokens;
         if (!validateInterviewTurn(input, generated.payload).success) throw new Error("DRIVER_REVALIDATION_FAILED");
         await transaction(pool, client => persistWorkspaceTurn(client, { orgId: owner.user.orgId, projectId: project.id,
           variantCode: variant, requestedBy: owner.user.id, expectedRevision: state.revision, currentMessageId: messageId!,
@@ -173,11 +184,11 @@ async function runOnce(fixture: Fixture, deps: { pool: Pool; provider: string; m
         record.proposals = generated.payload.proposedUpdates.length;
         retryMessageId = null; failures = 0;
       } catch (error) {
-        const stage = error instanceof AIStageError ? error : null;
-        if (stage) Object.assign(record, { attempts: stage.metrics.attempts, validationErrors: stage.metrics.validationErrors.length,
-          inputTokens: stage.metrics.inputTokens, outputTokens: stage.metrics.outputTokens, latencyMs: stage.metrics.latencyMs });
+        const stageError = error instanceof AIStageError ? error : null;
+        // runStage hands the same metrics object to every thrown AIStageError, so failures carry attempts and issues too.
+        if (stageError) Object.assign(record, metricsRecord(stageError.metrics));
         outputTokens += record.outputTokens;
-        record.error = stage ? stage.code : `DRIVER_ERROR:${message(error).slice(0, 80)}`;
+        record.error = stageError ? stageError.code : `DRIVER_ERROR:${message(error).slice(0, 80)}`;
         retryMessageId = messageId; // the user's message stands; the interviewer failed to answer it
         if (++failures >= MAX_CONSECUTIVE_FAILURES) { transcript.aborted = `${failures} consecutive failed turns (${record.error})`; break; }
         if (capExceeded()) { transcript.aborted = `output token cap ${OUTPUT_TOKEN_CAP} exceeded`; break; }
@@ -190,7 +201,8 @@ async function runOnce(fixture: Fixture, deps: { pool: Pool; provider: string; m
         const value = answerFor(fixture, state, fieldId);
         if (value && factStatus(state, fieldId) === "EMPTY") { await run(fieldCommand(state, fieldId, value)); directEdits++; }
       }
-      if (index === 1) {
+      if (!structureAdded) { // first SUCCESSFUL turn, not turn 1: a failed turn 1 is retried as a later index
+        structureAdded = true;
         // Known limitation: the interviewer cannot create steps/requirements, so the user adds them now.
         for (let n = 0; n < fixture.steps.length; n++) await run({ type: "START_STEP_DRAFT" });
         for (const r of fixture.requirements) await run({ type: "START_REQUIREMENT_DRAFT",
@@ -217,7 +229,9 @@ async function runOnce(fixture: Fixture, deps: { pool: Pool; provider: string; m
       for (const fieldId of unknown) await run(fieldCommand(state, fieldId, null));
     }
 
-    if (!transcript.readiness.reached && !transcript.aborted && deps.forceComplete) {
+    const lastUser = state.messages.findLast(m => m.role === "user");
+    transcript.gapsRemaining = lastUser ? buildInterviewInput(state, lastUser.id).activeGaps.length : 0;
+    if (!transcript.readiness.reached && !transcript.aborted && deps.forceComplete && deps.toBe) {
       // Turn cap reached: complete the template by direct entry so the To-Be can still be measured (flagged in the score).
       transcript.readiness.forcedCompletion = true;
       await resolvePending();
@@ -231,7 +245,7 @@ async function runOnce(fixture: Fixture, deps: { pool: Pool; provider: string; m
     transcript.readiness.directEdits = directEdits;
     transcript.readiness.blockers = (current.readiness?.blockers ?? []).map(b => b.code);
 
-    const canGenerate = !!current.readiness?.ready && (transcript.readiness.reached || transcript.readiness.forcedCompletion);
+    const canGenerate = deps.toBe && !!current.readiness?.ready && (transcript.readiness.reached || transcript.readiness.forcedCompletion);
     if (canGenerate && !capExceeded()) {
       await run({ type: "CONFIRM" });
       transcript.toBe = await generateToBe(pool, current.confirmedSnapshotId!, stage);
@@ -334,7 +348,7 @@ async function main() {
   let allPassed = true;
   await withDisposableDatabase(async pool => {
     for (let run = 1; run <= runs; run++) {
-      const transcript = await runOnce(fixture, { pool, provider, model, maxTurns, forceComplete: !has("no-force-complete"), fake: has("fake-model") });
+      const transcript = await runOnce(fixture, { pool, provider, model, maxTurns, forceComplete: !has("no-force-complete"), toBe: !has("no-tobe"), fake: has("fake-model") });
       const { score, summary } = report(transcript, fixture, `Run ${run}/${runs}`);
       const file = `test-results/eval/${stamp}-${provider}-${model.replace(/[^A-Za-z0-9._-]+/g, "_")}${runs > 1 ? `-run${run}` : ""}.json`;
       writeFileSync(file, JSON.stringify({ transcript, score, summary }, null, 2));

@@ -138,7 +138,11 @@ describe("interview stage transport", () => {
   });
   it("repairs an invalid proposal once without echoing model text or changing context", async () => {
     const h = harness(attempt => response(attempt === 1 ? { ...proposal(), approved: "private-invalid-output" } : proposal()));
-    expect((await h.run(fixture())).payload).toEqual(proposal());
+    const result = await h.run(fixture());
+    expect(result.payload).toEqual(proposal());
+    expect(result.metrics).toMatchObject({ attempts: 2, inputTokens: 200, outputTokens: 400 });
+    expect(result.metrics.attemptIssues).toHaveLength(1); // success path keeps the failed first attempt's issues
+    expect(result.metrics.attemptIssues![0]).toEqual(result.metrics.validationErrors);
     expect(h.sent).toHaveLength(2);
     expect(JSON.parse(h.sent[1]!.messages[0]!.content).input).toEqual(fixture());
     expect(h.sent[1]!.messages[0]!.content).not.toContain("private-invalid-output");
