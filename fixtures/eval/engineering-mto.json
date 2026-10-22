@@ -1,0 +1,217 @@
+{
+  "schemaVersion": 1,
+  "caseId": "engineering-mto",
+  "synthetic": "Entirely fictional company and numbers. Contains no real customer data.",
+  "company": "Halden Precision Engineering Ltd (fictional)",
+  "project": {
+    "name": "Halden plan-to-produce eval",
+    "clientName": "Halden Precision Engineering Ltd (fictional)",
+    "problemStatement": "Plan-to-produce at Halden Precision Engineering runs on CAD exports, spreadsheets and a basic job-tracking tool, so engineering changes do not reach the shop floor, material shortages stop projects, project costs are known only after delivery and quality records are paper.",
+    "targetProduct": "S4HANA_CLOUD_PRIVATE",
+    "startingLandscape": "NON_SAP",
+    "modules": ["PP", "PS", "MM", "QM", "CO", "SD"],
+    "orgUnits": [
+      { "type": "COMPANY_CODE", "code": "4000", "name": "Halden Precision Engineering Ltd (fictional)" },
+      { "type": "PLANT", "code": "4100", "name": "Sheffield fabrication works (fictional)" },
+      { "type": "PLANT", "code": "4200", "name": "Bristol assembly and test (fictional)" },
+      { "type": "SALES_ORG", "code": "4000", "name": "Halden Sales UK (fictional)" }
+    ],
+    "variantCode": "P2PROD",
+    "variantName": "Engineer to order to delivery"
+  },
+  "opening": "We are Halden Precision Engineering (fictional), a UK maker of custom industrial presses and handling systems with about £95 million revenue, a fabrication works in Sheffield and an assembly and test site in Bristol. Most of our business is engineer-to-order: each machine is a project of 4 to 14 months with its own bill of materials. Engineers design in Aurora PLM and export parts lists to Excel, planners build material requirements by hand, purchasing chases long-lead castings and drives by email, and the shop floor works from printed routings and paper job cards in a basic job-tracking tool. Engineering changes reach the shop late, projects regularly stop for missing parts, and we only learn the true cost of a project after delivery. Quality records are paper, and customers increasingly ask for inspection certificates. Only 71% of machines ship on the promised date. We want to move to SAP S/4HANA Private Cloud within fourteen months.",
+  "answerBank": {
+    "catalog": {
+      "process_owner": "The Operations Director owns the process from contract to delivery, the Chief Engineer owns bills of materials and engineering changes, and the Finance Controller owns project costing and billing.",
+      "scope_boundary": "The process starts when a customer contract is signed and ends when the machine is delivered, billed and the project is closed with a cost variance review. It covers the Sheffield and Bristol sites, engineered-to-order machines and spare assemblies, and excludes aftermarket service contracts.",
+      "current_trigger": "A customer contract or purchase order is signed, and the project manager opens a project folder and a spreadsheet budget.",
+      "current_systems": "We use Aurora PLM for CAD and engineering bills of materials, Excel for quotes, budgets, material planning and the production schedule, a basic job-tracking tool for shop-floor job cards, paper for inspection records, and a small accounting package for invoicing and ledgers. Parts lists are exported from Aurora PLM and re-keyed.",
+      "current_rules": "Engineering changes need the Chief Engineer's sign-off on a paper form. Purchases above £20,000 need the Operations Director's approval. A machine is invoiced in stages agreed in the contract: 30% on order, 40% at factory acceptance and 30% on delivery.",
+      "current_exceptions": "Engineering changes after release are passed on to the shop by email and often missed. Parts that fail inspection are scrapped or reworked on a paper non-conformance note. Supplier delays are handled by phone and the schedule is not updated.",
+      "current_financial": "Project budgets are Excel files. Costs are collected from supplier invoices and timesheets and compared with the budget only at project close. Work in progress is estimated each quarter. Staged invoices are raised by hand from the contract.",
+      "desired_outcome": "On-time delivery of at least 92%, project cost variance under 5% against budget with margin visible during the project, material shortages stopping production reduced by half, and inspection certificates produced from the system.",
+      "desired_controls": "We need engineering change control that updates the bill of materials and open production orders, project-based costing with work in progress and settlement, material requirements planning that respects project stock, quality inspection with certificates and non-conformance records, and approval workflow for purchases. Aurora PLM stays as the engineering system and must be integrated, and we prefer standard SAP over custom development."
+    }
+  },
+  "steps": [
+    {
+      "n": 1,
+      "name": "Estimate and quote the machine",
+      "actor": "Sales engineer",
+      "system": "Excel and Aurora PLM",
+      "trigger": "A customer enquiry is received.",
+      "description": "The sales engineer sketches the machine in Aurora PLM, estimates material, labour and test hours in an Excel template and issues a quote with a delivery date based on experience.",
+      "inputs": "Customer specification; previous project costs; supplier quotes",
+      "outputs": "Quote PDF; Excel estimate",
+      "controls": "The Operations Director approves quotes above £250,000",
+      "exceptions": "When the specification changes the estimate is rebuilt and the quoted margin is rarely revisited."
+    },
+    {
+      "n": 2,
+      "name": "Create contract and project budget",
+      "actor": "Project manager",
+      "system": "Excel and shared folder",
+      "trigger": "The customer signs the contract.",
+      "description": "The project manager copies the estimate into a budget spreadsheet by work package, opens a project folder and agrees the milestone billing plan with finance. There is no project number in any system.",
+      "inputs": "Signed contract; estimate; milestone billing plan",
+      "outputs": "Project budget spreadsheet; project folder",
+      "controls": "The Finance Controller reviews the budget for projects above £500,000",
+      "exceptions": "Scope changes agreed with the customer are added to the budget by hand and sometimes not billed."
+    },
+    {
+      "n": 3,
+      "name": "Release engineering bill of materials",
+      "actor": "Design engineer",
+      "system": "Aurora PLM",
+      "trigger": "The design is approved by the Chief Engineer.",
+      "description": "The engineer completes the design in Aurora PLM, exports the engineering parts list to Excel and sends it to production planning. Revisions are tracked inside Aurora PLM only.",
+      "inputs": "Approved design; part library; revision history",
+      "outputs": "Engineering parts list export",
+      "controls": "The Chief Engineer signs off the release on a paper form",
+      "exceptions": "A change after release is emailed to planning and the old parts list stays in use until someone notices."
+    },
+    {
+      "n": 4,
+      "name": "Build manufacturing bill of materials and routing",
+      "actor": "Production planner",
+      "system": "Excel and printed routings",
+      "trigger": "The engineering parts list is received.",
+      "description": "The planner turns the parts list into a manufacturing structure in Excel, adds make or buy decisions, and writes routings with operations, work centres and standard hours on printed sheets.",
+      "inputs": "Engineering parts list; routing templates; work centre list",
+      "outputs": "Manufacturing structure spreadsheet; printed routings",
+      "controls": "The production manager reviews routings for large projects",
+      "exceptions": "Parts missing from the export are found when the shop asks for them."
+    },
+    {
+      "n": 5,
+      "name": "Plan material requirements",
+      "actor": "Material planner",
+      "system": "Excel",
+      "trigger": "The manufacturing structure is complete.",
+      "description": "The planner nets requirements against stock by hand in Excel, ignores stock reserved for other projects and creates a list of items to buy. Lead times come from a supplier sheet that is rarely updated.",
+      "inputs": "Manufacturing structure; stock list; supplier lead time sheet",
+      "outputs": "Purchase list per project",
+      "controls": "None, it depends on the planner's judgement",
+      "exceptions": "Stock meant for one project is used for another, so the first project later stops for missing parts."
+    },
+    {
+      "n": 6,
+      "name": "Buy long-lead and standard parts",
+      "actor": "Buyer",
+      "system": "Accounting package and email",
+      "trigger": "The purchase list is released.",
+      "description": "The buyer sends enquiries by email, places orders for castings, drives and bought-in parts, and records them in the accounting package. Order delivery dates are kept in the buyer's own spreadsheet.",
+      "inputs": "Purchase list; supplier quotes; project budget",
+      "outputs": "Purchase orders; delivery date spreadsheet",
+      "controls": "The Operations Director approves purchases above £20,000",
+      "exceptions": "Late deliveries are chased by phone and the production schedule is not updated."
+    },
+    {
+      "n": 7,
+      "name": "Schedule and run production",
+      "actor": "Shop floor supervisor",
+      "system": "Job-tracking tool, printed job cards and Excel schedule",
+      "trigger": "Material is available and the schedule slot is reached.",
+      "description": "The supervisor assigns jobs from the Excel schedule, prints job cards, and operators clock on and off jobs in the job-tracking tool. Capacity per work centre is checked by experience.",
+      "inputs": "Excel schedule; job cards; material issued from stores",
+      "outputs": "Fabricated parts and sub-assemblies; job card hours",
+      "controls": "The supervisor checks material against the printed parts list",
+      "exceptions": "Urgent jobs are slotted in without updating the schedule, and missing parts are discovered at assembly."
+    },
+    {
+      "n": 8,
+      "name": "Inspect and certify",
+      "actor": "Quality inspector",
+      "system": "Paper inspection sheets",
+      "trigger": "A fabricated part or the assembled machine is ready for inspection.",
+      "description": "The inspector measures against the drawing, records results on a paper sheet, signs it and prepares a certificate in Word at final inspection and factory acceptance test.",
+      "inputs": "Drawing; inspection plan; measuring records",
+      "outputs": "Signed inspection sheets; inspection certificate",
+      "controls": "Final inspection is signed by the quality manager",
+      "exceptions": "A failed part is reworked or scrapped on a paper non-conformance note that is not linked to the project cost."
+    },
+    {
+      "n": 9,
+      "name": "Collect project costs and work in progress",
+      "actor": "Project accountant",
+      "system": "Accounting package and Excel",
+      "trigger": "The month ends.",
+      "description": "The accountant allocates supplier invoices and timesheet hours to project budget spreadsheets by hand and estimates work in progress each quarter. Actual margin is known only after delivery.",
+      "inputs": "Supplier invoices; timesheet hours; project budget spreadsheet",
+      "outputs": "Project cost report in Excel; quarterly WIP estimate",
+      "controls": "The Finance Controller reviews the project cost report",
+      "exceptions": "Costs booked to the wrong project are found at project close."
+    },
+    {
+      "n": 10,
+      "name": "Deliver and bill by milestone",
+      "actor": "Project manager",
+      "system": "Accounting package and email",
+      "trigger": "A contract milestone is reached.",
+      "description": "The project manager emails finance when factory acceptance or delivery is reached, finance raises the staged invoice by hand against the contract and logistics books the transport. Customer sign-off is a paper form.",
+      "inputs": "Contract billing plan; acceptance certificate; delivery note",
+      "outputs": "Staged invoice; delivery note; signed acceptance form",
+      "controls": "The Finance Controller approves invoices above £100,000",
+      "exceptions": "Invoices are delayed when the acceptance form arrives late, and scope extras are not billed."
+    },
+    {
+      "n": 11,
+      "name": "Close project and review variances",
+      "actor": "Finance Controller",
+      "system": "Excel",
+      "trigger": "The final invoice is paid and warranty starts.",
+      "description": "The controller compares final cost with the original budget in Excel and writes a lessons-learned note. Estimating templates are rarely updated from actual results.",
+      "inputs": "Final project cost report; budget spreadsheet; non-conformance notes",
+      "outputs": "Variance review note",
+      "controls": "The Operations Director reviews the variance note",
+      "exceptions": "Warranty costs after delivery are not linked to the project."
+    }
+  ],
+  "requirements": [
+    { "key": "plm", "stepN": 3, "kind": "CONTROL", "critical": true, "statement": "Aurora PLM stays as the engineering design system and must be integrated with SAP for the bill of materials and changes, not replaced." },
+    { "key": "ecn", "stepN": 3, "kind": "PAIN_POINT", "critical": true, "statement": "Engineering changes after release are emailed to planning and the old parts list stays in use, so the shop builds to outdated revisions." },
+    { "key": "bom", "stepN": 4, "kind": "PAIN_POINT", "critical": true, "statement": "The manufacturing bill of materials and routings are built by hand in Excel and on printed sheets, and parts are missing from the export." },
+    { "key": "mrp", "stepN": 5, "kind": "PAIN_POINT", "critical": true, "statement": "Material requirements are netted by hand and stock reserved for one project is used for another, so projects stop for missing parts." },
+    { "key": "shortage", "stepN": 5, "kind": "TO_BE_REQUIREMENT", "critical": true, "statement": "Material shortages that stop production must be cut by half through automatic requirements planning per project." },
+    { "key": "longlead", "stepN": 6, "kind": "PAIN_POINT", "critical": false, "statement": "Supplier delivery dates sit in the buyer's own spreadsheet and the production schedule is not updated when castings or drives are late." },
+    { "key": "approval", "stepN": 6, "kind": "CONTROL", "critical": false, "statement": "Purchases above £20,000 must be approved by the Operations Director in the system." },
+    { "key": "capacity", "stepN": 7, "kind": "PAIN_POINT", "critical": false, "statement": "Capacity per work centre is checked by experience, and urgent jobs are slotted in without updating the schedule." },
+    { "key": "quality", "stepN": 8, "kind": "PAIN_POINT", "critical": true, "statement": "Inspection results and non-conformances are on paper and certificates are written in Word, with no link to the project cost." },
+    { "key": "project-cost", "stepN": 9, "kind": "PAIN_POINT", "critical": true, "statement": "Project costs are allocated by hand and margin is known only after delivery, with work in progress estimated quarterly." },
+    { "key": "variance", "stepN": 9, "kind": "TO_BE_REQUIREMENT", "critical": true, "statement": "Project cost variance must stay under 5% against budget with margin visible during the project." },
+    { "key": "billing", "stepN": 10, "kind": "PAIN_POINT", "critical": false, "statement": "Staged invoices are raised by hand from the contract, so milestones are billed late and scope extras are missed." },
+    { "key": "otd", "stepN": 10, "kind": "TO_BE_REQUIREMENT", "critical": true, "statement": "On-time delivery must reach at least 92%, up from 71%." }
+  ],
+  "expected": {
+    "capabilities": [
+      { "id": "ecm", "name": "Engineering change management", "solutionRegex": "engineering change|change number|change master|ECN|revision level", "painRegex": "engineering changes?|outdated revisions" },
+      { "id": "bom", "name": "Bill of materials and routing", "solutionRegex": "bill of materials|\\bBOM\\b|routing|work centre|work center", "painRegex": "bill of materials|routings?" },
+      { "id": "mrp", "name": "Material requirements planning", "solutionRegex": "\\bMRP\\b|material requirements planning|planned order|requirements planning", "painRegex": "material requirements|stock reserved|requirements planning" },
+      { "id": "projectstock", "name": "Project stock and make-to-order", "solutionRegex": "project stock|make-to-order|sales order stock|WBS element|\\bWBS\\b", "painRegex": "reserved for one project|stock reserved|projects stop" },
+      { "id": "projcost", "name": "Project-based costing and WIP", "solutionRegex": "project system|WBS|work in progress|\\bWIP\\b|results analysis|settlement", "painRegex": "project costs?|work in progress" },
+      { "id": "milestone", "name": "Milestone billing", "solutionRegex": "milestone billing|billing plan|milestone", "painRegex": "staged invoices|milestones?" },
+      { "id": "inspection", "name": "Quality inspection and certificates", "solutionRegex": "inspection lot|inspection plan|quality notification|usage decision|certificate", "painRegex": "inspection|non-conformance" },
+      { "id": "capacity", "name": "Capacity planning and scheduling", "solutionRegex": "capacity (planning|leveling|levelling)|capacity requirements|production scheduling|scheduling", "painRegex": "capacity|schedule" },
+      { "id": "purchase", "name": "Purchasing with approval and delivery tracking", "solutionRegex": "release strategy|purchase order approval|confirmation|delivery date|supplier confirmation", "painRegex": "above £20,000|delivery dates|late" }
+    ],
+    "kpis": [
+      { "id": "otd", "regex": "(on-time delivery|OTD)[^.\\n]{0,80}\\b(9[2-9])\\s*%|\\b(9[2-9])\\s*%[^.\\n]{0,80}(on-time delivery|OTD)" },
+      { "id": "variance", "regex": "(cost )?variance[^.\\n]{0,80}\\b([1-4]|5)\\s*%|\\b([1-4]|5)\\s*%[^.\\n]{0,80}variance" },
+      { "id": "shortage", "regex": "shortage[^.\\n]{0,80}\\b(50|half)\\b|\\b(50\\s*%|half)[^.\\n]{0,80}shortage" }
+    ],
+    "salesforce": {
+      "mentionRegex": "aurora",
+      "replaceRegex": "(replace|retire|decommission|migrate off|sunset)[^.\\n]{0,40}aurora|aurora[^.\\n]{0,40}(replaced|retired|decommissioned)"
+    }
+  },
+  "passBar": {
+    "maxTurnsToReadiness": 15,
+    "maxRepeatedGapKeys": 0,
+    "maxNearDuplicates": 0,
+    "minFirstAttemptValidRate": 0.9,
+    "requireToBeValid": true,
+    "minCapabilities": 8,
+    "minKpis": 3,
+    "requireSalesforceIntegration": true
+  }
+}

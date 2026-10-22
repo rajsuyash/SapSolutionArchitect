@@ -1,0 +1,217 @@
+{
+  "schemaVersion": 1,
+  "caseId": "services-r2r",
+  "synthetic": "Entirely fictional company and numbers. Contains no real customer data.",
+  "company": "Corvane Advisory Group plc (fictional)",
+  "project": {
+    "name": "Corvane R2R eval",
+    "clientName": "Corvane Advisory Group plc (fictional)",
+    "problemStatement": "Record-to-report at Corvane Advisory Group is a spreadsheet-driven close across four legal entities, with manual intercompany matching, Excel revenue recognition and consolidation, manual bank reconciliations and a close that takes 11 working days.",
+    "targetProduct": "S4HANA_CLOUD_PUBLIC",
+    "startingLandscape": "NON_SAP",
+    "modules": ["FI", "CO", "AA", "PS", "TRM"],
+    "orgUnits": [
+      { "type": "COMPANY_CODE", "code": "3000", "name": "Corvane Advisory UK Ltd (fictional)" },
+      { "type": "COMPANY_CODE", "code": "3100", "name": "Corvane Advisory Ireland Ltd (fictional)" },
+      { "type": "COMPANY_CODE", "code": "3200", "name": "Corvane Advisory Netherlands BV (fictional)" },
+      { "type": "COMPANY_CODE", "code": "3300", "name": "Corvane Advisory Singapore Pte Ltd (fictional)" }
+    ],
+    "variantCode": "R2R",
+    "variantName": "Journal to consolidated report"
+  },
+  "opening": "We are Corvane Advisory Group (fictional), a professional services group with about £280 million revenue, 1,900 staff and four legal entities in the UK, Ireland, the Netherlands and Singapore. We report under IFRS in pounds sterling and our month-end close takes 11 working days. Each entity keeps its books in a separate cloud accounting package, timesheets come from TimeTrack, and everything else is Excel: intercompany recharges are agreed by email and matrix, revenue on fixed-fee projects is recognised from a percentage-of-completion spreadsheet, accruals are collected by email, and group consolidation is a workbook with links to each entity's trial balance. Bank accounts at five banks are reconciled by hand. Our auditors have raised findings on intercompany differences and on the audit trail behind manual journals. We want to move to SAP S/4HANA Cloud Public Edition within ten months and shorten the close.",
+  "answerBank": {
+    "catalog": {
+      "process_owner": "The Group Financial Controller owns the close and consolidation, entity finance managers own their ledgers and bank reconciliations, and the Head of Revenue Accounting owns revenue recognition.",
+      "scope_boundary": "The process starts when subledger and timesheet data are final for the month and ends when the consolidated management and statutory reporting pack is signed off. It covers all four legal entities, including intercompany, fixed assets, accruals, bank reconciliation and revenue recognition, and excludes payroll and tax computation.",
+      "current_trigger": "The Group Financial Controller publishes the close calendar and each entity finance manager starts the close when timesheets are locked on the last working day.",
+      "current_systems": "We use four separate cloud accounting packages, TimeTrack for timesheets, Excel for revenue recognition, intercompany, accruals and consolidation, five bank portals, and email for approvals. Journals move between systems as CSV files, so every figure is re-keyed or uploaded.",
+      "current_rules": "Manual journals above £50,000 need the entity finance manager's approval by email. Fixed-fee revenue is recognised over time on cost-to-cost progress, reviewed by the Head of Revenue Accounting. Intercompany recharges are agreed between entities by the 3rd working day.",
+      "current_exceptions": "Late timesheets are posted into the following month. Intercompany balances that do not agree are explained in a spreadsheet and often carried forward. Journals posted after the books close are re-opened by emailing the accounting package administrator.",
+      "current_financial": "Each entity reports in its local currency and is revalued manually at month-end rates, with translation to pounds sterling in the consolidation workbook. Intercompany eliminations and goodwill adjustments are manual journals. There is no single chart of accounts, so a mapping table translates entity accounts to group accounts.",
+      "desired_outcome": "Close in 4 working days, intercompany differences cleared automatically with fewer than 1% unmatched items at close, 90% of bank statement lines reconciled automatically, and one consolidated ledger and reporting pack without Excel.",
+      "desired_controls": "We need a single group chart of accounts, automated intercompany matching and elimination, IFRS 15 revenue recognition with an audit trail, approval and a full audit trail on manual journals, bank reconciliation with automatic matching, and a close task list with sign-off per entity. TimeTrack stays as the timesheet system and must be integrated, and we prefer standard SAP over custom development."
+    }
+  },
+  "steps": [
+    {
+      "n": 1,
+      "name": "Lock timesheets and billing data",
+      "actor": "Resource manager",
+      "system": "TimeTrack",
+      "trigger": "The last working day of the month.",
+      "description": "Resource managers chase consultants to submit timesheets, lock the period in TimeTrack and send a CSV of hours and rates to finance. Late timesheets are left for the next month.",
+      "inputs": "Timesheet entries; project rate cards; leave records",
+      "outputs": "Locked timesheet CSV by project and entity",
+      "controls": "Resource managers approve timesheets before the lock",
+      "exceptions": "Timesheets submitted after the lock are carried into the next month and distort project margins."
+    },
+    {
+      "n": 2,
+      "name": "Post subledger and manual journals",
+      "actor": "Entity accountant",
+      "system": "Local cloud accounting package",
+      "trigger": "The month-end calendar opens the period for journals.",
+      "description": "Each entity accountant posts payables, receivables, payroll and manual journals in the local package. Manual journals are prepared in Excel and uploaded as CSV with approval by email.",
+      "inputs": "Supplier and customer invoices; payroll journal; journal workbook",
+      "outputs": "Posted entity ledger; manual journal list",
+      "controls": "The entity finance manager approves manual journals above £50,000 by email",
+      "exceptions": "Journals posted after the period is closed require an administrator to re-open the books."
+    },
+    {
+      "n": 3,
+      "name": "Agree intercompany recharges",
+      "actor": "Group accountant",
+      "system": "Excel recharge matrix and email",
+      "trigger": "Timesheet and cost data are final for the month.",
+      "description": "The group accountant builds a recharge matrix for management fees and shared staff time, emails each entity to confirm it and asks each entity to post its half in its own package. Entities rarely post on the same day.",
+      "inputs": "Timesheet CSV; shared cost lists; recharge policy",
+      "outputs": "Agreed recharge matrix; intercompany invoices keyed per entity",
+      "controls": "Both entity finance managers confirm the amount by email",
+      "exceptions": "Disagreements on amounts or currencies are resolved by phone, and unmatched balances are carried forward."
+    },
+    {
+      "n": 4,
+      "name": "Recognise revenue under IFRS 15",
+      "actor": "Revenue accountant",
+      "system": "Excel percentage-of-completion workbook",
+      "trigger": "Project cost and timesheet data are final.",
+      "description": "The revenue accountant calculates cost-to-cost progress for each fixed-fee project in Excel, determines revenue earned, compares it with amounts billed and keys a contract asset or contract liability journal. Multi-element contracts are split by hand.",
+      "inputs": "Contract terms; project costs to date; estimated cost to complete; billing schedule",
+      "outputs": "Revenue and contract balance journal",
+      "controls": "The Head of Revenue Accounting reviews projects above £250,000",
+      "exceptions": "Contract modifications and changes in estimated cost to complete are adjusted manually and sometimes missed."
+    },
+    {
+      "n": 5,
+      "name": "Collect accruals and prepayments",
+      "actor": "Entity accountant",
+      "system": "Email and Excel",
+      "trigger": "The close calendar reaches accruals day.",
+      "description": "Accountants email budget holders for uninvoiced costs, collect replies in Excel, book accruals and reverse them the next month. Recurring prepayments are amortised from a schedule.",
+      "inputs": "Budget holder replies; open orders; prepayment schedule",
+      "outputs": "Accrual and prepayment journals",
+      "controls": "Journals above £50,000 are approved by the entity finance manager",
+      "exceptions": "Late replies mean accruals are estimated from last month, and reversals are sometimes forgotten."
+    },
+    {
+      "n": 6,
+      "name": "Depreciate fixed assets",
+      "actor": "Fixed asset accountant",
+      "system": "Excel asset register",
+      "trigger": "The period is open for asset postings.",
+      "description": "The accountant maintains an asset register in Excel per entity, calculates monthly depreciation under IFRS rules and posts a summary journal. Disposals and additions are added by hand.",
+      "inputs": "Asset register; capital invoices; disposal forms",
+      "outputs": "Depreciation journal; updated register",
+      "controls": "The register is reconciled to the general ledger quarterly",
+      "exceptions": "Assets bought late in the month are depreciated from the wrong date and corrected in the next close."
+    },
+    {
+      "n": 7,
+      "name": "Reconcile bank accounts",
+      "actor": "Treasury accountant",
+      "system": "Five bank portals and Excel",
+      "trigger": "Bank statements are available after month end.",
+      "description": "The accountant downloads statements from five banks, compares each line with the ledger in Excel and posts differences. Around 70% of lines are matched by hand each month.",
+      "inputs": "Bank statements; ledger bank account; payment lists",
+      "outputs": "Bank reconciliation workbook; adjusting journals",
+      "controls": "The entity finance manager signs the reconciliation",
+      "exceptions": "Unidentified receipts stay in a suspense account and are cleared the following month."
+    },
+    {
+      "n": 8,
+      "name": "Revalue foreign currency balances",
+      "actor": "Group accountant",
+      "system": "Excel and local accounting packages",
+      "trigger": "Month-end exchange rates are published.",
+      "description": "The accountant gets rates from a treasury email, computes unrealised gains and losses on foreign currency payables, receivables and bank balances in Excel and sends journals to each entity to post.",
+      "inputs": "Month-end rates; open foreign currency balances",
+      "outputs": "Revaluation journals per entity",
+      "controls": "The Group Financial Controller reviews the total gain or loss",
+      "exceptions": "A wrong rate table is usually found after consolidation and the journals are reversed and re-posted."
+    },
+    {
+      "n": 9,
+      "name": "Reconcile and eliminate intercompany",
+      "actor": "Group accountant",
+      "system": "Excel consolidation workbook",
+      "trigger": "All entities have posted their recharges and revaluations.",
+      "description": "The accountant exports intercompany balances from each package, compares counterparty balances in Excel and lists the differences. Eliminating journals are keyed in the workbook. Differences of 2% of balances are common at close.",
+      "inputs": "Entity trial balances; intercompany balance extracts",
+      "outputs": "Intercompany difference list; elimination journals",
+      "controls": "The Group Financial Controller reviews unresolved differences",
+      "exceptions": "Differences that cannot be explained are parked in a group suspense line and carried forward."
+    },
+    {
+      "n": 10,
+      "name": "Consolidate and report",
+      "actor": "Group Financial Controller",
+      "system": "Excel consolidation workbook",
+      "trigger": "Eliminations are complete.",
+      "description": "The controller maps entity accounts to group accounts, translates results to pounds sterling, adds adjustments and produces the management and statutory packs. Segment and project profitability are rebuilt in Excel.",
+      "inputs": "Entity trial balances; mapping table; exchange rates; adjustment journals",
+      "outputs": "Consolidated trial balance; management pack; statutory pack",
+      "controls": "The CFO signs off the packs",
+      "exceptions": "Late entity adjustments force a rework of the whole workbook and the close takes 11 working days."
+    },
+    {
+      "n": 11,
+      "name": "Sign off and lock the period",
+      "actor": "Group Financial Controller",
+      "system": "Email and local accounting packages",
+      "trigger": "The CFO approves the packs.",
+      "description": "The controller emails each entity finance manager to lock the period, files the reconciliations in a shared folder and keeps the close checklist in Excel. There is no central record of who approved which journal.",
+      "inputs": "CFO approval; close checklist; reconciliation files",
+      "outputs": "Locked periods; close checklist; audit file",
+      "controls": "Entity finance managers confirm the lock by email",
+      "exceptions": "Post-close adjustments are posted into the next month and the audit trail is rebuilt from emails."
+    }
+  ],
+  "requirements": [
+    { "key": "timetrack", "stepN": 1, "kind": "CONTROL", "critical": true, "statement": "TimeTrack stays as the timesheet system and must be integrated with SAP for project hours and billing, not replaced." },
+    { "key": "journal-trail", "stepN": 2, "kind": "PAIN_POINT", "critical": true, "statement": "Manual journals are approved by email with no central audit trail, which has led to audit findings." },
+    { "key": "coa", "stepN": 2, "kind": "TO_BE_REQUIREMENT", "critical": true, "statement": "A single group chart of accounts must replace the four local charts and the mapping table." },
+    { "key": "ic-matching", "stepN": 3, "kind": "PAIN_POINT", "critical": true, "statement": "Intercompany recharges are agreed by email and posted separately by each entity, so counterparty balances differ by about 2% at close." },
+    { "key": "ic-target", "stepN": 9, "kind": "TO_BE_REQUIREMENT", "critical": true, "statement": "Intercompany differences must be cleared automatically with fewer than 1% unmatched items at close." },
+    { "key": "ifrs15", "stepN": 4, "kind": "PAIN_POINT", "critical": true, "statement": "IFRS 15 revenue on fixed-fee projects is calculated in Excel, so contract modifications and estimate changes are missed and there is no audit trail." },
+    { "key": "accruals", "stepN": 5, "kind": "PAIN_POINT", "critical": false, "statement": "Accruals are collected by email, estimated from last month when replies are late, and reversals are sometimes forgotten." },
+    { "key": "assets", "stepN": 6, "kind": "PAIN_POINT", "critical": false, "statement": "The asset register is an Excel file, so late additions are depreciated from the wrong date." },
+    { "key": "bank-rec", "stepN": 7, "kind": "PAIN_POINT", "critical": true, "statement": "About 70% of bank statement lines are matched by hand across five banks, and unidentified receipts sit in suspense." },
+    { "key": "bank-target", "stepN": 7, "kind": "TO_BE_REQUIREMENT", "critical": true, "statement": "At least 90% of bank statement lines must be reconciled automatically." },
+    { "key": "fx", "stepN": 8, "kind": "PAIN_POINT", "critical": false, "statement": "Foreign currency revaluation is calculated in Excel and journals are sent to each entity, so a wrong rate is found only after consolidation." },
+    { "key": "consol", "stepN": 10, "kind": "PAIN_POINT", "critical": true, "statement": "Consolidation is a linked Excel workbook, so any late entity adjustment forces rework." },
+    { "key": "close", "stepN": 11, "kind": "TO_BE_REQUIREMENT", "critical": true, "statement": "The month-end close must take 4 working days, down from 11, with a task list and sign-off per entity." }
+  ],
+  "expected": {
+    "capabilities": [
+      { "id": "intercompany", "name": "Intercompany matching and elimination", "solutionRegex": "intercompany (reconciliation|matching|elimination)|elimination|matching of intercompany|\\bICMR\\b", "painRegex": "intercompany" },
+      { "id": "consolidation", "name": "Group consolidation", "solutionRegex": "group reporting|consolidation|consolidated|currency translation", "painRegex": "consolidation" },
+      { "id": "revrec", "name": "IFRS 15 revenue recognition", "solutionRegex": "IFRS 15|revenue accounting|revenue recognition|contract (asset|liability)|percentage of completion|cost-to-cost", "painRegex": "IFRS 15|revenue" },
+      { "id": "accruals", "name": "Accrual and prepayment automation", "solutionRegex": "accrual engine|accrual|prepayment|recurring journal|reversal", "painRegex": "accrual" },
+      { "id": "bankrec", "name": "Bank reconciliation with auto-matching", "solutionRegex": "bank statement|bank reconciliation|manage bank statements|automatic clearing|matching rule", "painRegex": "bank statement|bank lines|unidentified" },
+      { "id": "fx", "name": "Foreign currency valuation", "solutionRegex": "foreign currency (valuation|revaluation)|FX revaluation|exchange rate type|unrealized (gain|loss)", "painRegex": "revaluation|foreign currency" },
+      { "id": "assets", "name": "Asset accounting", "solutionRegex": "asset accounting|depreciation run|asset under construction|asset master", "painRegex": "asset register|depreciat" },
+      { "id": "journal", "name": "Journal approval and audit trail", "solutionRegex": "journal entry (approval|workflow)|manual journal|audit trail|four-eyes|change log", "painRegex": "manual journals|audit trail" },
+      { "id": "closetasks", "name": "Close task management", "solutionRegex": "financial closing|close task|task list|period lock|posting period", "painRegex": "close|task list" }
+    ],
+    "kpis": [
+      { "id": "close", "regex": "(close|closing)[^.\\n]{0,80}\\b4\\s*(working\\s*)?days|\\b4[- ](working[- ])?day[^.\\n]{0,30}(close|closing)" },
+      { "id": "ic", "regex": "intercompany[^.\\n]{0,80}\\b(<|under|below|fewer than|less than)?\\s*1\\s*%|\\b1\\s*%[^.\\n]{0,80}intercompany" },
+      { "id": "bank", "regex": "(bank|reconcil)[^.\\n]{0,80}\\b(9\\d)\\s*%|\\b(9\\d)\\s*%[^.\\n]{0,80}(bank|reconcil)" }
+    ],
+    "salesforce": {
+      "mentionRegex": "timetrack",
+      "replaceRegex": "(replace|retire|decommission|migrate off|sunset)[^.\\n]{0,40}timetrack|timetrack[^.\\n]{0,40}(replaced|retired|decommissioned)"
+    }
+  },
+  "passBar": {
+    "maxTurnsToReadiness": 15,
+    "maxRepeatedGapKeys": 0,
+    "maxNearDuplicates": 0,
+    "minFirstAttemptValidRate": 0.9,
+    "requireToBeValid": true,
+    "minCapabilities": 8,
+    "minKpis": 3,
+    "requireSalesforceIntegration": true
+  }
+}

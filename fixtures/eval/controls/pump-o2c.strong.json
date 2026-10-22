@@ -1,0 +1,1605 @@
+{
+  "note": "Hand-authored STRONG control for judge calibration. Fictional, follows docs/to-be-reference-standard.md. Not generator output.",
+  "requirements": [
+    {
+      "id": "rq_entry-errors",
+      "statement": "7% of orders have entry errors because every PO is re-keyed by hand from email into the Access app.",
+      "critical": true
+    },
+    {
+      "id": "rq_order-speed",
+      "statement": "Orders must be entered within 4 hours of PO receipt with under 1% errors.",
+      "critical": true
+    },
+    {
+      "id": "rq_credit",
+      "statement": "There is no automatic credit check, so orders are accepted without checking the customer's credit limit or overdue invoices.",
+      "critical": true
+    },
+    {
+      "id": "rq_atp",
+      "statement": "There is no automatic availability check, so planners check stock by hand in Access and promised dates are missed. OTIF is only 62%.",
+      "critical": true
+    },
+    {
+      "id": "rq_mto",
+      "statement": "Sales orders are not linked to production orders, so sales cannot see production status or the real promised date.",
+      "critical": false
+    },
+    {
+      "id": "rq_serial",
+      "statement": "Motor serial numbers are tracked on paper job cards, so warranty and traceability depend on manual look-ups.",
+      "critical": false
+    },
+    {
+      "id": "rq_otif",
+      "statement": "OTIF must be above 90%, with delivery documents ready before the truck arrives.",
+      "critical": true
+    },
+    {
+      "id": "rq_einvoice-pain",
+      "statement": "GST e-invoices and e-way bills are made manually on the government portal, and trucks wait 2 to 3 hours at the gate for documents.",
+      "critical": true
+    },
+    {
+      "id": "rq_einvoice-target",
+      "statement": "GST e-invoicing and e-way bill generation must be integrated into the invoice process.",
+      "critical": true
+    },
+    {
+      "id": "rq_returns",
+      "statement": "Returns are not linked to the original invoice, so credit notes are raised manually and can be wrong.",
+      "critical": false
+    },
+    {
+      "id": "rq_interplant",
+      "statement": "There is no automatic inter-plant billing, so transfers between Pune and Coimbatore are billed manually at month end.",
+      "critical": false
+    },
+    {
+      "id": "rq_payment-matching",
+      "statement": "Payments are matched to invoices manually and 18% stay unmatched for more than 15 days, which keeps DSO at 92 days.",
+      "critical": true
+    },
+    {
+      "id": "rq_dso",
+      "statement": "DSO must come down to 65 days or less through automatic payment matching.",
+      "critical": true
+    },
+    {
+      "id": "rq_margin",
+      "statement": "There is no margin view by customer or product, and the month-end close takes 12 days.",
+      "critical": false
+    },
+    {
+      "id": "rq_close",
+      "statement": "The month-end close must take 5 days.",
+      "critical": true
+    },
+    {
+      "id": "rq_salesforce",
+      "statement": "Salesforce stays as the quoting system and must be integrated with SAP, not replaced. Tally is retired.",
+      "critical": true
+    }
+  ],
+  "design": {
+    "schemaVersion": 1,
+    "processName": "Kaveri quote to report (to-be, strong control)",
+    "steps": [
+      {
+        "id": "O2C-QTE-010",
+        "sequence": 1,
+        "title": "Quote in Salesforce with SAP price and availability lookup",
+        "asIsStepIds": [
+          "as_is_1"
+        ],
+        "requirementIds": [
+          "rq_salesforce",
+          "rq_otif"
+        ],
+        "actor": "ROLE-SALES-ENG (sales engineer)",
+        "trigger": "Customer enquiry accepted at a sales office; opportunity exists in Salesforce.",
+        "inputDocuments": [
+          "Customer enquiry (attached to the Salesforce opportunity)",
+          "SAP price list and condition records (read via IF-SF-002)"
+        ],
+        "outputDocuments": [
+          "Salesforce quote version n (PDF), referencing SAP material numbers and condition prices"
+        ],
+        "actions": [
+          {
+            "actor": "ROLE-SALES-ENG",
+            "system": "Salesforce",
+            "operation": "Configure pump or motor lines using SAP material numbers and request price and indicative availability from SAP; apply discount; submit for approval when above threshold",
+            "fields": [
+              "SAP material number",
+              "Quantity",
+              "Price from condition PR00",
+              "Discount %",
+              "Indicative delivery date from availability lookup"
+            ]
+          }
+        ],
+        "businessRules": [
+          {
+            "id": "BR-QTE-01",
+            "condition": "Discount above 10% of list price",
+            "response": "Quote cannot be issued until ROLE-SALES-HEAD approves in workflow WF-SD-DISC-01 (one level; approve, reject, send back). Threshold taken from discovery; value for tiered approval above 10% is open decision DEC-03."
+          },
+          {
+            "id": "BR-QTE-02",
+            "condition": "Material not found in SAP price lookup",
+            "response": "Quote line blocked and routed to master data owner ROLE-MD-SALES; no free-text prices on quotes."
+          }
+        ],
+        "exceptions": [
+          {
+            "condition": "SAP price service unavailable",
+            "response": "Quote saved as draft with banner 'price not confirmed'; cannot be sent; retry from Salesforce queue (see IF-SF-002 error handling)",
+            "owner": "ROLE-SALES-ENG"
+          },
+          {
+            "condition": "Customer requests changes",
+            "response": "New quote version created; previous version locked and kept for audit",
+            "owner": "ROLE-SALES-ENG"
+          }
+        ],
+        "masterData": [
+          {
+            "object": "Material master (sales view) and customer master (business partner)",
+            "fields": [
+              "Material number",
+              "Division",
+              "Pricing group",
+              "Customer number",
+              "GSTIN"
+            ],
+            "owner": "ROLE-MD-SALES creates via change request; Salesforce account is synchronised from the business partner"
+          }
+        ],
+        "effects": {
+          "inventory": "None: a quote does not reserve stock.",
+          "financial": "No accounting entry at this step; none because a quote is not a financial document. Revenue is recognised at billing (O2C-BIL-080).",
+          "ownership": "No transfer of ownership."
+        },
+        "implementation": {
+          "kind": "INTEGRATION",
+          "detail": "Salesforce stays the quoting tool and is integrated, not replaced. Interface IF-SF-002 (SAP to Salesforce, request-response, on demand, record type price and availability, system of record SAP for prices; errors logged in the integration monitor, alerted to ROLE-INTEG-SUPPORT by e-mail, failed calls safely re-sent by the user from the quote). Discount approval workflow WF-SD-DISC-01 is standard workflow configuration (CFG-SD-WF-DISC). Product configuration fields exposed to Salesforce are RICEFW item I-02 (interface). Exact released API for price lookup needs validation, GAP-01.",
+          "referenceIds": []
+        },
+        "decisionIds": [
+          "DEC-03"
+        ],
+        "addedValue": "Quote prices come from SAP, removing re-keying differences. Feeds KPI-ORD-ACC (order accuracy, baseline 93%, target above 99%, owner Head of Order Fulfilment) and KPI-OTIF through the availability date.",
+        "acceptanceTests": [
+          {
+            "id": "AT-QTE-010-N1",
+            "kind": "NORMAL",
+            "given": "A configured pump with list price and 8% discount",
+            "when": "The sales engineer submits the quote",
+            "then": "The quote is issued with SAP price and an availability date, without approval",
+            "requirementIds": [
+              "rq_salesforce"
+            ]
+          },
+          {
+            "id": "AT-QTE-010-E1",
+            "kind": "EXCEPTION",
+            "given": "A quote with 14% discount",
+            "when": "The engineer tries to issue it",
+            "then": "It is blocked until WF-SD-DISC-01 is approved; a rejection returns it to the engineer with a reason",
+            "requirementIds": [
+              "rq_salesforce"
+            ]
+          }
+        ],
+        "exceptionsNotApplicableReason": null
+      },
+      {
+        "id": "O2C-ORD-020",
+        "sequence": 2,
+        "title": "Create sales order automatically from the accepted quote and customer PO",
+        "asIsStepIds": [
+          "as_is_2",
+          "as_is_3"
+        ],
+        "requirementIds": [
+          "rq_entry-errors",
+          "rq_order-speed",
+          "rq_salesforce"
+        ],
+        "actor": "ROLE-ORDER-DESK (order desk executive)",
+        "trigger": "Customer PO received and the Salesforce quote is marked accepted.",
+        "inputDocuments": [
+          "Customer PO (attached to the Salesforce quote)",
+          "Accepted Salesforce quote with SAP material numbers"
+        ],
+        "outputDocuments": [
+          "SAP sales order (type CFG-SD-DOCTYPE-OR) referencing the Salesforce quote number and customer PO number"
+        ],
+        "actions": [
+          {
+            "actor": "ROLE-ORDER-DESK",
+            "system": "SAP S/4HANA",
+            "operation": "Review the sales order created by interface IF-SF-001, compare PO number, price and quantities against the quote on the order screen, correct differences and release",
+            "fields": [
+              "Sales order number",
+              "Customer PO number",
+              "Salesforce quote ID",
+              "Item quantity",
+              "Net price",
+              "Requested delivery date"
+            ]
+          }
+        ],
+        "businessRules": [
+          {
+            "id": "BR-ORD-01",
+            "condition": "Customer PO number already exists for the customer",
+            "response": "Duplicate PO warning; the order desk must confirm before saving to avoid double orders."
+          },
+          {
+            "id": "BR-ORD-02",
+            "condition": "PO price differs from the quote price by more than the tolerance",
+            "response": "Order is set to 'pricing block' and returned to the sales coordinator; tolerance value is open decision DEC-04."
+          }
+        ],
+        "exceptions": [
+          {
+            "condition": "IF-SF-001 message fails validation (unknown material or blocked customer)",
+            "response": "Message goes to the integration error queue with the reason; ROLE-ORDER-DESK corrects master data or the quote and re-sends from the monitor; no order is created partially",
+            "owner": "ROLE-ORDER-DESK"
+          },
+          {
+            "condition": "Entry error found after release",
+            "response": "Change the order (no cancel and re-enter); quantity and price changes are blocked once a delivery exists",
+            "owner": "ROLE-ORDER-DESK"
+          }
+        ],
+        "masterData": [
+          {
+            "object": "Customer master (business partner, customer role)",
+            "fields": [
+              "Payment terms",
+              "Incoterms",
+              "Credit segment",
+              "Tax classification",
+              "Ship-to addresses"
+            ],
+            "owner": "ROLE-MD-SALES; changes need Finance Controller approval for payment terms"
+          }
+        ],
+        "effects": {
+          "inventory": "No stock movement; availability is checked in O2C-ORD-030.",
+          "financial": "No accounting entry at this step; none because a sales order is not an accounting document.",
+          "ownership": "No transfer of ownership."
+        },
+        "implementation": {
+          "kind": "INTEGRATION",
+          "detail": "Interface IF-SF-001 (Salesforce to SAP, event-driven on quote acceptance, record type sales order with items, system of record: SAP after creation, Salesforce before). Errors are visible in the integration monitor, alerted by e-mail to ROLE-INTEG-SUPPORT and re-run idempotently using the Salesforce quote ID as the key. Order type CFG-SD-DOCTYPE-OR and item categories are standard configuration. Document status model: created, pricing blocked, credit blocked, released, partially delivered, completed, rejected. Edit/lock: price and quantity locked once an outbound delivery exists; customer PO number locked after billing. RICEFW I-01 (interface IF-SF-001). Released API name needs validation, GAP-01.",
+          "referenceIds": []
+        },
+        "decisionIds": [
+          "DEC-04"
+        ],
+        "addedValue": "Eliminates re-keying so entry errors fall from 7% to under 1% and orders are entered within 4 hours of PO receipt (KPI-ORD-ACC, KPI-ORD-LEAD; owner Head of Order Fulfilment; measured on this step).",
+        "acceptanceTests": [
+          {
+            "id": "AT-ORD-020-N1",
+            "kind": "NORMAL",
+            "given": "An accepted Salesforce quote and matching PO",
+            "when": "IF-SF-001 runs",
+            "then": "A sales order exists within minutes with the quote ID and PO number and the order desk releases it in one review",
+            "requirementIds": [
+              "rq_entry-errors",
+              "rq_order-speed"
+            ]
+          },
+          {
+            "id": "AT-ORD-020-E1",
+            "kind": "EXCEPTION",
+            "given": "A quote with a blocked customer",
+            "when": "IF-SF-001 runs",
+            "then": "No order is created, the error is visible in the monitor and alerted, and a re-send after correction creates exactly one order",
+            "requirementIds": [
+              "rq_entry-errors",
+              "rq_salesforce"
+            ]
+          }
+        ],
+        "exceptionsNotApplicableReason": null
+      },
+      {
+        "id": "O2C-ORD-030",
+        "sequence": 3,
+        "title": "Automatic credit check and availability-to-promise check",
+        "asIsStepIds": [
+          "as_is_3",
+          "as_is_4"
+        ],
+        "requirementIds": [
+          "rq_credit",
+          "rq_atp",
+          "rq_otif"
+        ],
+        "actor": "ROLE-CREDIT-CTRL (credit controller) and ROLE-ORDER-DESK",
+        "trigger": "Sales order saved or changed.",
+        "inputDocuments": [
+          "Sales order",
+          "Customer credit segment and limit",
+          "Open receivables and open order value"
+        ],
+        "outputDocuments": [
+          "Confirmed schedule lines with confirmed dates",
+          "Credit check result on the order"
+        ],
+        "actions": [
+          {
+            "actor": "SAP S/4HANA (automatic)",
+            "system": "SAP S/4HANA",
+            "operation": "Run credit check against credit limit including open orders, deliveries and overdue items; run availability check (available-to-promise) per item against plant stock, planned receipts and production",
+            "fields": [
+              "Credit limit",
+              "Credit exposure",
+              "Overdue days",
+              "Confirmed quantity",
+              "Confirmed delivery date",
+              "Plant"
+            ]
+          },
+          {
+            "actor": "ROLE-CREDIT-CTRL",
+            "system": "SAP S/4HANA",
+            "operation": "Review credit-blocked orders in the worklist and release, reject or request prepayment",
+            "fields": [
+              "Blocked order",
+              "Exposure",
+              "Release decision",
+              "Reason"
+            ]
+          }
+        ],
+        "businessRules": [
+          {
+            "id": "BR-CRD-01",
+            "condition": "Credit exposure including the new order exceeds the credit limit, or invoices are overdue beyond the allowed days",
+            "response": "Order gets a credit block; delivery and billing are not possible until ROLE-CREDIT-CTRL releases it. Limits and allowed overdue days are open decision DEC-01 (owner Finance Controller)."
+          },
+          {
+            "id": "BR-ATP-01",
+            "condition": "Confirmed quantity is less than ordered",
+            "response": "Partial confirmation by schedule line; remaining quantity goes to production (O2C-PRD-040) with the promised date shown to the order desk."
+          }
+        ],
+        "exceptions": [
+          {
+            "condition": "Credit controller rejects release",
+            "response": "Order stays blocked; customer informed by the order desk; order rejected with reason code after 5 working days unless prepayment arrives",
+            "owner": "ROLE-CREDIT-CTRL"
+          },
+          {
+            "condition": "Stock count is wrong so confirmed stock is not physically there",
+            "response": "Cycle count adjusts stock; affected schedule lines are re-checked by a rescheduling run and the order desk is notified",
+            "owner": "ROLE-WAREHOUSE"
+          }
+        ],
+        "masterData": [
+          {
+            "object": "Credit master data (credit segment, risk class, limit) and material availability settings (checking group, safety stock)",
+            "fields": [
+              "Credit segment",
+              "Credit limit",
+              "Risk class",
+              "Checking group",
+              "Replenishment lead time"
+            ],
+            "owner": "ROLE-CREDIT-CTRL for credit data; ROLE-MD-LOGISTICS for availability data"
+          }
+        ],
+        "effects": {
+          "inventory": "Confirmed quantity is reserved against stock (soft reservation) and does not move stock.",
+          "financial": "No accounting entry at this step; none because credit and availability are checks only.",
+          "ownership": "No transfer of ownership."
+        },
+        "implementation": {
+          "kind": "NEEDS_VALIDATION",
+          "detail": "Credit management and available-to-promise are standard SAP functions; the exact scope items and apps available in the chosen target release need validation against trusted references before they are named in the blueprint (GAP-02). Credit check configuration object CFG-FI-CREDIT-SEG; availability check CFG-SD-ATP-GRP. Release worklist is a standard app, no custom object. Orders are never accepted without a credit result.",
+          "referenceIds": []
+        },
+        "decisionIds": [
+          "DEC-01"
+        ],
+        "addedValue": "Stops uncontrolled credit exposure and replaces manual stock look-ups, raising OTIF from 62% towards above 90% (KPI-OTIF, owner Head of Order Fulfilment, data from this step and O2C-DLV-060) and protecting DSO.",
+        "acceptanceTests": [
+          {
+            "id": "AT-ORD-030-N1",
+            "kind": "NORMAL",
+            "given": "A customer within limit and stock available",
+            "when": "The order is saved",
+            "then": "No block, full confirmation with a date and a reservation",
+            "requirementIds": [
+              "rq_credit",
+              "rq_atp"
+            ]
+          },
+          {
+            "id": "AT-ORD-030-E1",
+            "kind": "EXCEPTION",
+            "given": "A customer over limit",
+            "when": "The order is saved",
+            "then": "The order carries a credit block, appears in the worklist and cannot be delivered until released; rejection leaves it blocked",
+            "requirementIds": [
+              "rq_credit"
+            ]
+          },
+          {
+            "id": "AT-ORD-030-E2",
+            "kind": "EXCEPTION",
+            "given": "Ordered quantity 10 and stock 6",
+            "when": "Availability check runs",
+            "then": "6 confirmed on a first schedule line, 4 passed to production with a later date",
+            "requirementIds": [
+              "rq_atp"
+            ]
+          }
+        ],
+        "exceptionsNotApplicableReason": null
+      },
+      {
+        "id": "O2C-PRD-040",
+        "sequence": 4,
+        "title": "Make-to-order production order from the sales order",
+        "asIsStepIds": [
+          "as_is_5"
+        ],
+        "requirementIds": [
+          "rq_mto",
+          "rq_atp"
+        ],
+        "actor": "ROLE-PROD-PLANNER (production planner)",
+        "trigger": "Schedule line has an unconfirmed quantity after the availability check.",
+        "inputDocuments": [
+          "Sales order schedule line",
+          "Bill of materials",
+          "Routing and work centre capacity"
+        ],
+        "outputDocuments": [
+          "Planned order converted to a production order linked to the sales order item",
+          "Updated confirmed date on the sales order"
+        ],
+        "actions": [
+          {
+            "actor": "ROLE-PROD-PLANNER",
+            "system": "SAP S/4HANA",
+            "operation": "Run requirements planning for the sales-order-linked demand, convert planned orders to production orders at Pune or Coimbatore, check capacity and confirm the date back to the sales order",
+            "fields": [
+              "Production order",
+              "Plant",
+              "Planned start and finish",
+              "Sales order item link",
+              "Component availability"
+            ]
+          }
+        ],
+        "businessRules": [
+          {
+            "id": "BR-PRD-01",
+            "condition": "Production finish date is later than the confirmed date on the sales order",
+            "response": "The sales order date is updated automatically and the order desk gets a notification so the customer is told; no phone-only changes."
+          },
+          {
+            "id": "BR-PRD-02",
+            "condition": "Component shortage on the production order",
+            "response": "Production order is not released; purchase requisition created by requirements planning for the shortage."
+          }
+        ],
+        "exceptions": [
+          {
+            "condition": "Urgent order slotted in",
+            "response": "Planner reschedules affected orders; the system updates dependent sales order dates and flags missed dates",
+            "owner": "ROLE-PROD-PLANNER"
+          },
+          {
+            "condition": "Sales order quantity changed after the production order exists",
+            "response": "Change propagates to the linked planned or production order; blocked if production has started",
+            "owner": "ROLE-ORDER-DESK"
+          }
+        ],
+        "masterData": [
+          {
+            "object": "Bill of materials, routing, work centre and material planning data (MRP type, lot size)",
+            "fields": [
+              "BOM components",
+              "Routing operations",
+              "Work centre capacity",
+              "MRP type",
+              "Procurement type"
+            ],
+            "owner": "ROLE-MD-LOGISTICS with approval by plant production manager"
+          }
+        ],
+        "effects": {
+          "inventory": "Production order reserves components; no stock movement until goods issue to the order.",
+          "financial": "No accounting entry at this step; costs are collected on the production order at issue and confirmation (see O2C-PRD-050).",
+          "ownership": "Own stock only."
+        },
+        "implementation": {
+          "kind": "STANDARD",
+          "detail": "Make-to-order (sales-order-linked planning) with MRP and production orders in standard planning and shop-floor functions. Configuration CFG-PP-MTO-STRATEGY, requirement class and strategy group for make-to-order items. The sales order to production order link replaces the Excel plan. Whether the target product edition supports every strategy needs validation, GAP-03.",
+          "referenceIds": []
+        },
+        "addedValue": "Sales sees production status and the real promised date; supports KPI-OTIF (owner Head of Order Fulfilment).",
+        "acceptanceTests": [
+          {
+            "id": "AT-PRD-040-N1",
+            "kind": "NORMAL",
+            "given": "A sales order item with a shortage",
+            "when": "Requirements planning runs",
+            "then": "A planned order is created linked to the sales order item and converted to a production order with a date shown on the order",
+            "requirementIds": [
+              "rq_mto"
+            ]
+          },
+          {
+            "id": "AT-PRD-040-E1",
+            "kind": "EXCEPTION",
+            "given": "An urgent order pushes an existing order",
+            "when": "The planner reschedules",
+            "then": "The affected sales order dates update and a notification is raised",
+            "requirementIds": [
+              "rq_mto",
+              "rq_atp"
+            ]
+          }
+        ],
+        "exceptionsNotApplicableReason": null
+      },
+      {
+        "id": "O2C-PRD-050",
+        "sequence": 5,
+        "title": "Confirm production, inspect and record motor serial numbers",
+        "asIsStepIds": [
+          "as_is_6"
+        ],
+        "requirementIds": [
+          "rq_serial",
+          "rq_mto"
+        ],
+        "actor": "ROLE-PLANT-SUP (plant supervisor) and ROLE-QA-INSP (quality inspector)",
+        "trigger": "Production order operations completed on the shop floor.",
+        "inputDocuments": [
+          "Production order",
+          "Inspection lot"
+        ],
+        "outputDocuments": [
+          "Production confirmation",
+          "Goods receipt of finished goods with serial numbers",
+          "Inspection result (usage decision)"
+        ],
+        "actions": [
+          {
+            "actor": "ROLE-PLANT-SUP",
+            "system": "SAP S/4HANA",
+            "operation": "Confirm operations, post goods issue of components and goods receipt of finished units; assign a serial number to each motor",
+            "fields": [
+              "Production order",
+              "Yield quantity",
+              "Scrap quantity",
+              "Serial number",
+              "Storage location"
+            ]
+          },
+          {
+            "actor": "ROLE-QA-INSP",
+            "system": "SAP S/4HANA",
+            "operation": "Record inspection results against the inspection lot and make the usage decision",
+            "fields": [
+              "Inspection lot",
+              "Characteristic result",
+              "Usage decision",
+              "Defect code"
+            ]
+          }
+        ],
+        "businessRules": [
+          {
+            "id": "BR-QA-01",
+            "condition": "Usage decision is reject",
+            "response": "Units are moved to blocked stock and a rework order or scrap posting is created; delivery of those serial numbers is not possible."
+          },
+          {
+            "id": "BR-SER-01",
+            "condition": "Material is serial-number managed",
+            "response": "Goods receipt and goods issue require one serial number per unit; quantity cannot post without them."
+          }
+        ],
+        "exceptions": [
+          {
+            "condition": "Inspection failed",
+            "response": "Rework order created and the plan updated; second inspection lot created; sales order date re-checked",
+            "owner": "ROLE-QA-INSP"
+          },
+          {
+            "condition": "Serial number duplicated or mistyped",
+            "response": "Posting rejected with a message; correction by reversing the confirmation within the same shift, afterwards by the plant quality manager",
+            "owner": "ROLE-PLANT-SUP"
+          }
+        ],
+        "masterData": [
+          {
+            "object": "Material master serial profile and inspection plan",
+            "fields": [
+              "Serial number profile",
+              "Inspection type",
+              "Inspection plan",
+              "Characteristics"
+            ],
+            "owner": "ROLE-MD-LOGISTICS and quality manager"
+          }
+        ],
+        "effects": {
+          "inventory": "Components issued to the order; finished goods received into unrestricted or inspection stock; blocked stock when rejected.",
+          "financial": "Goods issue of components: Dr work in process / Cr raw material inventory. Goods receipt of finished goods: Dr finished goods inventory / Cr work in process (standard price, variance to production variance account) via account determination; accounts are business to provide.",
+          "ownership": "Own stock only."
+        },
+        "implementation": {
+          "kind": "NEEDS_VALIDATION",
+          "detail": "Serial number management and quality inspection are standard functions; the inspection lot origin and the serial profile configuration (CFG-QM-INSPTYPE, CFG-LO-SERIALPROFILE) need validation in the target edition (GAP-04). Paper job cards are replaced by shop-floor confirmation; no custom object. Warranty look-up by serial number is a standard report.",
+          "referenceIds": []
+        },
+        "addedValue": "Warranty and traceability by serial number without paper look-ups; inspection results in the system. Feeds KPI-FPY (first-pass yield, baseline to be measured, owner plant quality manager).",
+        "acceptanceTests": [
+          {
+            "id": "AT-PRD-050-N1",
+            "kind": "NORMAL",
+            "given": "A production order for 5 motors",
+            "when": "The supervisor posts goods receipt with 5 serial numbers",
+            "then": "Stock increases by 5 units, each traceable by serial number to the order",
+            "requirementIds": [
+              "rq_serial"
+            ]
+          },
+          {
+            "id": "AT-PRD-050-E1",
+            "kind": "EXCEPTION",
+            "given": "An inspection lot with usage decision reject",
+            "when": "The inspector saves",
+            "then": "Units are in blocked stock, a rework order exists and delivery is not possible for those serial numbers",
+            "requirementIds": [
+              "rq_serial"
+            ]
+          }
+        ],
+        "exceptionsNotApplicableReason": null
+      },
+      {
+        "id": "O2C-DLV-060",
+        "sequence": 6,
+        "title": "Outbound delivery, picking, goods issue and gate release",
+        "asIsStepIds": [
+          "as_is_7"
+        ],
+        "requirementIds": [
+          "rq_otif",
+          "rq_einvoice-pain",
+          "rq_serial"
+        ],
+        "actor": "ROLE-DISPATCH (dispatch clerk)",
+        "trigger": "Confirmed schedule line reaches its delivery date and the order has no credit block.",
+        "inputDocuments": [
+          "Released sales order",
+          "Stock with serial numbers"
+        ],
+        "outputDocuments": [
+          "Outbound delivery",
+          "Packing list and delivery challan",
+          "Goods issue document",
+          "Gate pass with e-way bill reference (from O2C-BIL-080)"
+        ],
+        "actions": [
+          {
+            "actor": "ROLE-DISPATCH",
+            "system": "SAP S/4HANA",
+            "operation": "Create the delivery from the due list, pick and pack, assign serial numbers, post goods issue and print the gate pass once the billing document carries the IRN and e-way bill",
+            "fields": [
+              "Delivery number",
+              "Picked quantity",
+              "Serial numbers",
+              "Transporter",
+              "Vehicle number",
+              "Gate pass number"
+            ]
+          }
+        ],
+        "businessRules": [
+          {
+            "id": "BR-DLV-01",
+            "condition": "Billing document has no IRN or e-way bill",
+            "response": "Gate pass cannot be printed, so the truck is not released; the exception is visible in the dispatch worklist before the truck arrives."
+          },
+          {
+            "id": "BR-DLV-02",
+            "condition": "Delivery date due in the next working day",
+            "response": "Delivery proposed on the due list so documents are prepared before the truck arrives."
+          }
+        ],
+        "exceptions": [
+          {
+            "condition": "Partial delivery",
+            "response": "Delivery created for available quantity; remaining schedule line stays open; separate billing and e-way bill per delivery",
+            "owner": "ROLE-DISPATCH"
+          },
+          {
+            "condition": "Goods issue posted in error",
+            "response": "Reverse the goods issue before billing; after billing, cancel via credit memo (O2C-RET-090)",
+            "owner": "ROLE-DISPATCH"
+          }
+        ],
+        "masterData": [
+          {
+            "object": "Shipping point, transporter and ship-to master data",
+            "fields": [
+              "Shipping point",
+              "Transporter ID",
+              "Ship-to GSTIN",
+              "Route"
+            ],
+            "owner": "ROLE-MD-LOGISTICS"
+          }
+        ],
+        "effects": {
+          "inventory": "Goods issue reduces unrestricted stock of the plant and the serial number status changes to 'delivered'.",
+          "financial": "Goods issue: Dr cost of goods sold / Cr finished goods inventory at standard price via account determination (accounts business to provide); no revenue yet.",
+          "ownership": "Title passes at the Incoterm point stated on the order (CFG-SD-INCOTERMS); confirmed with the customer contract, open decision DEC-05."
+        },
+        "implementation": {
+          "kind": "CONFIGURATION",
+          "detail": "Standard outbound delivery process with the delivery due list. Output forms for the delivery challan and packing list are RICEFW F-01 (form). Gate pass printing blocked until the e-document status is 'accepted' is configuration of output control, to be validated (GAP-05). Delivery type CFG-SD-DOCTYPE-LF.",
+          "referenceIds": []
+        },
+        "decisionIds": [
+          "DEC-05"
+        ],
+        "addedValue": "Trucks no longer wait 2 to 3 hours at the gate for documents; OTIF measured at goods issue versus confirmed date (KPI-OTIF above 90%, owner Head of Order Fulfilment; KPI-GATE truck wait under 30 minutes, owner dispatch manager).",
+        "acceptanceTests": [
+          {
+            "id": "AT-DLV-060-N1",
+            "kind": "NORMAL",
+            "given": "A delivery with billing document, IRN and e-way bill",
+            "when": "The clerk prints the gate pass",
+            "then": "The pass shows the IRN and e-way bill number and the truck is released",
+            "requirementIds": [
+              "rq_otif",
+              "rq_einvoice-pain"
+            ]
+          },
+          {
+            "id": "AT-DLV-060-E1",
+            "kind": "EXCEPTION",
+            "given": "A delivery whose e-way bill failed",
+            "when": "The clerk tries to print the gate pass",
+            "then": "It is blocked with a clear message and the case is in the exception worklist",
+            "requirementIds": [
+              "rq_einvoice-pain"
+            ]
+          }
+        ],
+        "exceptionsNotApplicableReason": null
+      },
+      {
+        "id": "O2C-DLV-070",
+        "sequence": 7,
+        "title": "Inter-plant stock transfer and billing between Pune and Coimbatore",
+        "asIsStepIds": [
+          "as_is_9"
+        ],
+        "requirementIds": [
+          "rq_interplant"
+        ],
+        "actor": "ROLE-WAREHOUSE (warehouse planner)",
+        "trigger": "A plant needs stock held by the other plant.",
+        "inputDocuments": [
+          "Stock transport order",
+          "Delivery and goods receipt documents"
+        ],
+        "outputDocuments": [
+          "Stock transport order",
+          "Outbound delivery to the receiving plant",
+          "Stock transfer invoice where the plants have separate GST registrations",
+          "Goods receipt at the receiving plant"
+        ],
+        "actions": [
+          {
+            "actor": "ROLE-WAREHOUSE",
+            "system": "SAP S/4HANA",
+            "operation": "Create a stock transport order from the receiving plant, deliver from the sending plant, post goods issue and goods receipt, and trigger the transfer billing when required",
+            "fields": [
+              "Stock transport order",
+              "Sending plant",
+              "Receiving plant",
+              "Quantity",
+              "In-transit stock"
+            ]
+          }
+        ],
+        "businessRules": [
+          {
+            "id": "BR-STO-01",
+            "condition": "Sending and receiving plants carry different GST registrations",
+            "response": "A stock transfer invoice with e-invoice and e-way bill is created per delivery; whether the two plants are separate registrations is an open decision DEC-06 for the tax manager."
+          }
+        ],
+        "exceptions": [
+          {
+            "condition": "Short receipt or damaged goods at the receiving plant",
+            "response": "Goods receipt posted for received quantity, difference posted to a loss account with a claim reference",
+            "owner": "ROLE-WAREHOUSE"
+          }
+        ],
+        "masterData": [
+          {
+            "object": "Plant master with supplying plant assignment and tax registration",
+            "fields": [
+              "Plant",
+              "GST registration",
+              "Supplying plant",
+              "Valuation area"
+            ],
+            "owner": "Tax manager and ROLE-MD-LOGISTICS"
+          }
+        ],
+        "effects": {
+          "inventory": "Stock moves from the sending plant to in-transit stock and then to the receiving plant.",
+          "financial": "Movement between plants within one company code at standard price: no profit or loss; Dr inventory receiving plant / Cr inventory sending plant. A stock transfer invoice, if required, posts output GST per DEC-06.",
+          "ownership": "No change of legal ownership (one company code)."
+        },
+        "implementation": {
+          "kind": "NEEDS_VALIDATION",
+          "detail": "Stock transport order process is standard; the GST stock transfer billing option for the target edition needs validation (GAP-06). No custom development planned.",
+          "referenceIds": []
+        },
+        "decisionIds": [
+          "DEC-06"
+        ],
+        "addedValue": "Replaces month-end manual inter-plant billing, shortening the close (KPI-CLOSE 5 days, owner Finance Controller).",
+        "acceptanceTests": [
+          {
+            "id": "AT-DLV-070-N1",
+            "kind": "NORMAL",
+            "given": "A transport order from Coimbatore to Pune",
+            "when": "Goods issue and receipt are posted",
+            "then": "In-transit stock appears then clears and no manual month-end bill is needed",
+            "requirementIds": [
+              "rq_interplant"
+            ]
+          },
+          {
+            "id": "AT-DLV-070-E1",
+            "kind": "EXCEPTION",
+            "given": "Received quantity lower than shipped",
+            "when": "Goods receipt is posted",
+            "then": "The difference is posted to the loss account with a claim reference",
+            "requirementIds": [
+              "rq_interplant"
+            ]
+          }
+        ],
+        "exceptionsNotApplicableReason": null
+      },
+      {
+        "id": "O2C-BIL-080",
+        "sequence": 8,
+        "title": "Create billing document with GST e-invoice (IRN) and e-way bill",
+        "asIsStepIds": [
+          "as_is_8",
+          "as_is_9"
+        ],
+        "requirementIds": [
+          "rq_einvoice-pain",
+          "rq_einvoice-target",
+          "rq_returns"
+        ],
+        "actor": "ROLE-AR-EXEC (accounts receivable executive)",
+        "trigger": "Goods issue posted for the delivery.",
+        "inputDocuments": [
+          "Outbound delivery with goods issue",
+          "Customer GSTIN and HSN codes"
+        ],
+        "outputDocuments": [
+          "Billing document (invoice) with IRN and QR code",
+          "E-way bill number",
+          "Customer invoice sent by e-mail"
+        ],
+        "actions": [
+          {
+            "actor": "SAP S/4HANA (automatic)",
+            "system": "SAP S/4HANA",
+            "operation": "Create the invoice from the delivery, send it to the government e-invoice service, store the returned IRN and QR code, generate the e-way bill and e-mail the invoice to the customer",
+            "fields": [
+              "Billing document",
+              "IRN",
+              "QR code",
+              "E-way bill number",
+              "GSTIN",
+              "HSN code",
+              "Tax code",
+              "E-document status"
+            ]
+          }
+        ],
+        "businessRules": [
+          {
+            "id": "BR-BIL-01",
+            "condition": "Customer GSTIN or HSN code missing or invalid",
+            "response": "Billing is blocked before submission and routed to ROLE-MD-SALES; no invoice is cancelled and re-issued for avoidable master data errors."
+          },
+          {
+            "id": "BR-BIL-02",
+            "condition": "E-invoice cancellation needed",
+            "response": "Allowed only inside the statutory window and only with a reason code and approval by the Finance Controller."
+          }
+        ],
+        "exceptions": [
+          {
+            "condition": "Government portal unavailable or rejects the request",
+            "response": "E-document status 'error' with the message; automatic retry every 15 minutes up to 6 times, then alert to ROLE-AR-EXEC; re-submit from the e-document monitor is idempotent",
+            "owner": "ROLE-AR-EXEC"
+          },
+          {
+            "condition": "Invoice must be corrected after the IRN exists",
+            "response": "Credit memo and new invoice (O2C-RET-090); the original cannot be edited",
+            "owner": "ROLE-AR-EXEC"
+          }
+        ],
+        "masterData": [
+          {
+            "object": "Customer tax data and material tax classification",
+            "fields": [
+              "GSTIN",
+              "HSN code",
+              "Tax classification",
+              "Place of supply"
+            ],
+            "owner": "ROLE-MD-SALES with tax manager review"
+          }
+        ],
+        "effects": {
+          "inventory": "No stock movement; goods issue was posted in O2C-DLV-060.",
+          "financial": "Dr customer receivable (reconciliation account) for gross amount / Cr revenue for net amount / Cr output GST (CGST and SGST or IGST by place of supply). TDS deducted by the customer is handled at payment (O2C-CSH-100). Account determination is business to provide.",
+          "ownership": "Receivable recognised; title already per Incoterm."
+        },
+        "implementation": {
+          "kind": "NEEDS_VALIDATION",
+          "detail": "India e-invoicing and e-way bill are delivered by the standard compliance reporting capability; which functions and connectors the target edition provides for e-invoice and e-way bill must be validated against trusted references (GAP-07) before the solution is committed. Interface IF-GST-001 to the government e-invoice service (outbound, per billing document, record type invoice JSON, system of record SAP; errors visible in e-document monitor, alert e-mail, safe re-run). RICEFW I-03 (interface), F-02 (invoice form with QR code).",
+          "referenceIds": []
+        },
+        "addedValue": "E-invoicing and e-way bill integrated into billing, ending manual portal entry and gate delays; supports KPI-GATE and DSO through faster, correct invoices.",
+        "acceptanceTests": [
+          {
+            "id": "AT-BIL-080-N1",
+            "kind": "NORMAL",
+            "given": "A delivery with valid GSTIN and HSN codes",
+            "when": "Billing runs",
+            "then": "The invoice has an IRN, QR code and e-way bill number and the customer receives it by e-mail",
+            "requirementIds": [
+              "rq_einvoice-target"
+            ]
+          },
+          {
+            "id": "AT-BIL-080-E1",
+            "kind": "EXCEPTION",
+            "given": "Government service returns an error",
+            "when": "Billing runs",
+            "then": "The e-document shows 'error', retries happen automatically and a manual re-submit after correction produces one IRN",
+            "requirementIds": [
+              "rq_einvoice-pain"
+            ]
+          }
+        ],
+        "exceptionsNotApplicableReason": null
+      },
+      {
+        "id": "O2C-RET-090",
+        "sequence": 9,
+        "title": "Customer return with reference to the original invoice and credit memo",
+        "asIsStepIds": [
+          "as_is_9"
+        ],
+        "requirementIds": [
+          "rq_returns"
+        ],
+        "actor": "ROLE-ORDER-DESK",
+        "trigger": "Customer return request accepted by the stores team or sales coordinator.",
+        "inputDocuments": [
+          "Original billing document",
+          "Return request or complaint form"
+        ],
+        "outputDocuments": [
+          "Return order referencing the invoice item",
+          "Returns delivery",
+          "Credit memo (with e-invoice credit note)"
+        ],
+        "actions": [
+          {
+            "actor": "ROLE-ORDER-DESK",
+            "system": "SAP S/4HANA",
+            "operation": "Create the return order with reference to the billing document item, select the return reason, request approval where required, receive the goods into blocked or inspection stock and release the credit memo",
+            "fields": [
+              "Return order",
+              "Reference billing document",
+              "Return reason",
+              "Returned quantity",
+              "Serial number",
+              "Credit memo"
+            ]
+          }
+        ],
+        "businessRules": [
+          {
+            "id": "BR-RET-01",
+            "condition": "Returned quantity exceeds invoiced quantity less quantity already returned",
+            "response": "Blocked with a message."
+          },
+          {
+            "id": "BR-RET-02",
+            "condition": "Credit memo value above the approval threshold",
+            "response": "Requires Finance Controller approval in WF-RET-01 (one level; approve, reject, send back); threshold is open decision DEC-02."
+          }
+        ],
+        "exceptions": [
+          {
+            "condition": "Invoice predates go-live and is not in SAP",
+            "response": "Create the return without reference with a mandatory legacy invoice number and a finance review flag",
+            "owner": "ROLE-AR-EXEC"
+          },
+          {
+            "condition": "Approver rejects",
+            "response": "Return order closed with a rejection reason and the customer is informed by the order desk",
+            "owner": "ROLE-ORDER-DESK"
+          }
+        ],
+        "masterData": [
+          {
+            "object": "Return reason codes",
+            "fields": [
+              "Reason code",
+              "Credit memo type",
+              "Stock disposition"
+            ],
+            "owner": "Head of Order Fulfilment"
+          }
+        ],
+        "effects": {
+          "inventory": "Returned goods received into blocked or inspection stock; moved to unrestricted stock or scrapped after inspection.",
+          "financial": "Credit memo: Dr revenue (or sales returns) and Dr output GST / Cr customer receivable. Cost of goods sold is reversed only for goods returned to saleable stock. Accounts business to provide.",
+          "ownership": "Title returns to Kaveri on goods receipt of the return."
+        },
+        "implementation": {
+          "kind": "NEEDS_VALIDATION",
+          "detail": "Returns with invoice reference and approval are standard advanced returns functions; availability in the target edition needs validation (GAP-08). Workflow WF-RET-01 standard. Form FORM-RET-01 (return authorisation printout) is RICEFW F-03.",
+          "referenceIds": []
+        },
+        "decisionIds": [
+          "DEC-02"
+        ],
+        "addedValue": "Credit notes are linked to the original invoice and correct by construction; KPI-RET-CYCLE (days from return request to credit memo, baseline to be measured, owner Finance Controller).",
+        "acceptanceTests": [
+          {
+            "id": "AT-RET-090-N1",
+            "kind": "NORMAL",
+            "given": "A posted invoice and a valid return reason",
+            "when": "The desk creates the return order",
+            "then": "The return links to the invoice item and the credit memo is created after goods receipt",
+            "requirementIds": [
+              "rq_returns"
+            ]
+          },
+          {
+            "id": "AT-RET-090-E1",
+            "kind": "EXCEPTION",
+            "given": "A return quantity above the remaining returnable quantity",
+            "when": "The desk saves",
+            "then": "It is blocked with a message",
+            "requirementIds": [
+              "rq_returns"
+            ]
+          }
+        ],
+        "exceptionsNotApplicableReason": null
+      },
+      {
+        "id": "O2C-CSH-100",
+        "sequence": 10,
+        "title": "Bank statement import and automatic cash application including TDS",
+        "asIsStepIds": [
+          "as_is_10"
+        ],
+        "requirementIds": [
+          "rq_payment-matching",
+          "rq_dso"
+        ],
+        "actor": "ROLE-AR-CLERK (accounts receivable clerk)",
+        "trigger": "A bank statement file is received.",
+        "inputDocuments": [
+          "Electronic bank statement",
+          "Open customer invoices",
+          "Remittance advice"
+        ],
+        "outputDocuments": [
+          "Cleared invoices",
+          "Posted bank and receivable entries",
+          "Worklist of unmatched items"
+        ],
+        "actions": [
+          {
+            "actor": "SAP S/4HANA (automatic)",
+            "system": "SAP S/4HANA",
+            "operation": "Import the bank statement, match each line to open invoices using reference, amount and customer rules, post receipts, clear invoices and post TDS differences; unmatched lines go to a worklist for ROLE-AR-CLERK",
+            "fields": [
+              "Bank statement line",
+              "Payment reference",
+              "Customer",
+              "Invoice number",
+              "TDS amount",
+              "Clearing document"
+            ]
+          }
+        ],
+        "businessRules": [
+          {
+            "id": "BR-CSH-01",
+            "condition": "Payment equals invoice less TDS within the allowed tolerance",
+            "response": "Cleared automatically with the TDS difference posted to the TDS receivable account."
+          },
+          {
+            "id": "BR-CSH-02",
+            "condition": "Line cannot be matched with sufficient confidence",
+            "response": "Put in the unmatched worklist and not posted to suspense; aged items over 5 days escalate to the receivables supervisor."
+          }
+        ],
+        "exceptions": [
+          {
+            "condition": "Part payment",
+            "response": "Cleared against the oldest invoice per rule or posted on account; the clerk assigns it in the worklist",
+            "owner": "ROLE-AR-CLERK"
+          },
+          {
+            "condition": "Bank file duplicate or not importable",
+            "response": "Import rejected with the reason; the same statement cannot be imported twice",
+            "owner": "ROLE-AR-CLERK"
+          }
+        ],
+        "masterData": [
+          {
+            "object": "House bank and bank account master and customer bank data",
+            "fields": [
+              "House bank",
+              "Account ID",
+              "Customer bank reference",
+              "Matching rule set"
+            ],
+            "owner": "Treasury analyst"
+          }
+        ],
+        "effects": {
+          "inventory": "None.",
+          "financial": "Dr bank (main account) and Dr TDS receivable / Cr customer receivable for the cleared invoices. Unmatched lines are not posted until assigned.",
+          "ownership": "Not applicable."
+        },
+        "implementation": {
+          "kind": "NEEDS_VALIDATION",
+          "detail": "Bank statement import and automatic clearing are standard functions; the matching rule configuration (CFG-FI-BANKRULES) and the handling of TDS at receipt in the India localisation need validation (GAP-09). Interface IF-BANK-001 (bank to SAP, daily file, statement format, system of record bank, error handling by import log with alert to ROLE-AR-CLERK and safe re-import of a corrected file).",
+          "referenceIds": []
+        },
+        "addedValue": "Reduces unmatched payments from 18% to a small residual and DSO from 92 to 65 days or less (KPI-DSO, owner Finance Controller; KPI-UNMATCHED unmatched over 15 days under 3%).",
+        "acceptanceTests": [
+          {
+            "id": "AT-CSH-100-N1",
+            "kind": "NORMAL",
+            "given": "A statement line equal to an open invoice less 2% TDS",
+            "when": "The statement is imported",
+            "then": "The invoice is cleared automatically with the TDS difference posted",
+            "requirementIds": [
+              "rq_payment-matching"
+            ]
+          },
+          {
+            "id": "AT-CSH-100-E1",
+            "kind": "EXCEPTION",
+            "given": "A line with no usable reference",
+            "when": "The statement is imported",
+            "then": "It appears in the unmatched worklist, not in suspense, and escalates after 5 days",
+            "requirementIds": [
+              "rq_payment-matching",
+              "rq_dso"
+            ]
+          }
+        ],
+        "exceptionsNotApplicableReason": null
+      },
+      {
+        "id": "O2C-RPT-110",
+        "sequence": 11,
+        "title": "Period-end close, margin analysis and reporting",
+        "asIsStepIds": [
+          "as_is_11"
+        ],
+        "requirementIds": [
+          "rq_margin",
+          "rq_close",
+          "rq_dso"
+        ],
+        "actor": "ROLE-FIN-CTRL (Finance Controller)",
+        "trigger": "Last working day of the month.",
+        "inputDocuments": [
+          "Billing documents",
+          "Goods movements",
+          "Open items",
+          "Bank reconciliation"
+        ],
+        "outputDocuments": [
+          "Period-end task list with sign-off",
+          "Margin report by customer and product",
+          "Receivables and DSO report"
+        ],
+        "actions": [
+          {
+            "actor": "ROLE-FIN-CTRL",
+            "system": "SAP S/4HANA",
+            "operation": "Run the period-end task list in sequence: complete cash application, goods receipt/invoice receipt clearing, cost of sales and WIP settlement, accruals, then close the posting period; publish the margin and receivables reports",
+            "fields": [
+              "Task list status",
+              "Posting period",
+              "Margin by customer",
+              "Margin by product",
+              "DSO"
+            ]
+          }
+        ],
+        "businessRules": [
+          {
+            "id": "BR-CLS-01",
+            "condition": "Any open delivery without billing or unposted goods movement older than 1 day at period end",
+            "response": "Reported in the close task list as an exception that must be resolved or accrued before the posting period is closed."
+          }
+        ],
+        "exceptions": [
+          {
+            "condition": "Late correction after the period is closed",
+            "response": "Posted in the open period with a reference to the closed period; reopening needs Finance Controller approval and is logged",
+            "owner": "ROLE-FIN-CTRL"
+          }
+        ],
+        "masterData": [
+          {
+            "object": "Profitability characteristics and period control",
+            "fields": [
+              "Customer group",
+              "Product group",
+              "Posting period variant"
+            ],
+            "owner": "Finance Controller"
+          }
+        ],
+        "effects": {
+          "inventory": "Stock valuation by period; no physical movement.",
+          "financial": "Period-end postings: accruals (Dr expense / Cr accrued liabilities), COGS and variance settlement; no new customer postings. Chart of accounts and variants business to provide.",
+          "ownership": "Not applicable."
+        },
+        "implementation": {
+          "kind": "NEEDS_VALIDATION",
+          "detail": "Margin analysis and period-end close task lists are standard analytics and closing functions; the specific apps available in the target edition need validation (GAP-10). Margin report is a standard report, no custom report planned. Period-end activities touched by this scope: cash application, goods receipt clearing, WIP settlement, stock valuation, accrual; owner and sequence are in the task list.",
+          "referenceIds": []
+        },
+        "decisionIds": [
+          "DEC-07"
+        ],
+        "addedValue": "Month-end close in 5 days instead of 12 and margin by customer and product (KPI-CLOSE 5 days, owner Finance Controller; KPI-MARGIN reported monthly). Tally is retired, all balances are migrated per the migration plan below.",
+        "acceptanceTests": [
+          {
+            "id": "AT-RPT-110-N1",
+            "kind": "NORMAL",
+            "given": "A month with all deliveries billed",
+            "when": "The task list is run",
+            "then": "All tasks complete in sequence and the posting period closes by working day 5",
+            "requirementIds": [
+              "rq_close",
+              "rq_margin"
+            ]
+          },
+          {
+            "id": "AT-RPT-110-E1",
+            "kind": "EXCEPTION",
+            "given": "A delivery without billing at period end",
+            "when": "The task list runs",
+            "then": "It is flagged as an exception that blocks the close until resolved or accrued",
+            "requirementIds": [
+              "rq_close"
+            ]
+          }
+        ],
+        "exceptionsNotApplicableReason": null
+      }
+    ],
+    "eliminatedAsIsSteps": [
+      {
+        "asIsStepId": "as_is_4",
+        "reason": "Manual stock check is replaced by the automatic availability check in O2C-ORD-030."
+      }
+    ],
+    "coverage": [
+      {
+        "requirementId": "rq_entry-errors",
+        "disposition": "IMPLEMENTED",
+        "stepIds": [
+          "O2C-ORD-020"
+        ],
+        "decisionId": null,
+        "rationale": "Designed in the cited steps with acceptance tests; measurement owner named in the added value."
+      },
+      {
+        "requirementId": "rq_order-speed",
+        "disposition": "IMPLEMENTED",
+        "stepIds": [
+          "O2C-ORD-020"
+        ],
+        "decisionId": null,
+        "rationale": "Designed in the cited steps with acceptance tests; measurement owner named in the added value."
+      },
+      {
+        "requirementId": "rq_credit",
+        "disposition": "IMPLEMENTED",
+        "stepIds": [
+          "O2C-ORD-030"
+        ],
+        "decisionId": null,
+        "rationale": "Designed in the cited steps with acceptance tests; measurement owner named in the added value."
+      },
+      {
+        "requirementId": "rq_atp",
+        "disposition": "IMPLEMENTED",
+        "stepIds": [
+          "O2C-ORD-030",
+          "O2C-PRD-040"
+        ],
+        "decisionId": null,
+        "rationale": "Designed in the cited steps with acceptance tests; measurement owner named in the added value."
+      },
+      {
+        "requirementId": "rq_mto",
+        "disposition": "IMPLEMENTED",
+        "stepIds": [
+          "O2C-PRD-040",
+          "O2C-PRD-050"
+        ],
+        "decisionId": null,
+        "rationale": "Designed in the cited steps with acceptance tests; measurement owner named in the added value."
+      },
+      {
+        "requirementId": "rq_serial",
+        "disposition": "IMPLEMENTED",
+        "stepIds": [
+          "O2C-PRD-050",
+          "O2C-DLV-060"
+        ],
+        "decisionId": null,
+        "rationale": "Designed in the cited steps with acceptance tests; measurement owner named in the added value."
+      },
+      {
+        "requirementId": "rq_otif",
+        "disposition": "IMPLEMENTED",
+        "stepIds": [
+          "O2C-QTE-010",
+          "O2C-ORD-030",
+          "O2C-DLV-060"
+        ],
+        "decisionId": null,
+        "rationale": "Designed in the cited steps with acceptance tests; measurement owner named in the added value."
+      },
+      {
+        "requirementId": "rq_einvoice-pain",
+        "disposition": "IMPLEMENTED",
+        "stepIds": [
+          "O2C-DLV-060",
+          "O2C-BIL-080"
+        ],
+        "decisionId": null,
+        "rationale": "Designed in the cited steps with acceptance tests; measurement owner named in the added value."
+      },
+      {
+        "requirementId": "rq_einvoice-target",
+        "disposition": "IMPLEMENTED",
+        "stepIds": [
+          "O2C-BIL-080"
+        ],
+        "decisionId": null,
+        "rationale": "Designed in the cited steps with acceptance tests; measurement owner named in the added value."
+      },
+      {
+        "requirementId": "rq_returns",
+        "disposition": "IMPLEMENTED",
+        "stepIds": [
+          "O2C-BIL-080",
+          "O2C-RET-090"
+        ],
+        "decisionId": null,
+        "rationale": "Designed in the cited steps with acceptance tests; measurement owner named in the added value."
+      },
+      {
+        "requirementId": "rq_interplant",
+        "disposition": "IMPLEMENTED",
+        "stepIds": [
+          "O2C-DLV-070"
+        ],
+        "decisionId": null,
+        "rationale": "Designed in the cited steps with acceptance tests; measurement owner named in the added value."
+      },
+      {
+        "requirementId": "rq_payment-matching",
+        "disposition": "IMPLEMENTED",
+        "stepIds": [
+          "O2C-CSH-100"
+        ],
+        "decisionId": null,
+        "rationale": "Designed in the cited steps with acceptance tests; measurement owner named in the added value."
+      },
+      {
+        "requirementId": "rq_dso",
+        "disposition": "IMPLEMENTED",
+        "stepIds": [
+          "O2C-CSH-100",
+          "O2C-RPT-110"
+        ],
+        "decisionId": null,
+        "rationale": "Designed in the cited steps with acceptance tests; measurement owner named in the added value."
+      },
+      {
+        "requirementId": "rq_margin",
+        "disposition": "IMPLEMENTED",
+        "stepIds": [
+          "O2C-RPT-110"
+        ],
+        "decisionId": null,
+        "rationale": "Designed in the cited steps with acceptance tests; measurement owner named in the added value."
+      },
+      {
+        "requirementId": "rq_close",
+        "disposition": "IMPLEMENTED",
+        "stepIds": [
+          "O2C-RPT-110"
+        ],
+        "decisionId": null,
+        "rationale": "Designed in the cited steps with acceptance tests; measurement owner named in the added value."
+      },
+      {
+        "requirementId": "rq_salesforce",
+        "disposition": "IMPLEMENTED",
+        "stepIds": [
+          "O2C-QTE-010",
+          "O2C-ORD-020"
+        ],
+        "decisionId": null,
+        "rationale": "Implemented as a rule, interface or workflow in the cited steps; control owner named there."
+      }
+    ],
+    "conflictDecisions": [],
+    "openQuestions": [
+      {
+        "id": "DEC-01",
+        "question": "Credit limits per customer segment and allowed overdue days before a credit block (holds O2C-ORD-030 go-live configuration; not assumed).",
+        "owner": "Finance Controller",
+        "affectedStepIds": [
+          "O2C-ORD-030"
+        ]
+      },
+      {
+        "id": "DEC-02",
+        "question": "Credit memo approval threshold for returns (holds WF-RET-01 configuration).",
+        "owner": "Finance Controller",
+        "affectedStepIds": [
+          "O2C-RET-090"
+        ]
+      },
+      {
+        "id": "DEC-03",
+        "question": "Tiered discount approval levels above 10% (holds WF-SD-DISC-01 beyond one level).",
+        "owner": "Head of Sales",
+        "affectedStepIds": [
+          "O2C-QTE-010"
+        ]
+      },
+      {
+        "id": "DEC-04",
+        "question": "Allowed price tolerance between customer PO and quote before a pricing block.",
+        "owner": "Head of Order Fulfilment",
+        "affectedStepIds": [
+          "O2C-ORD-020"
+        ]
+      },
+      {
+        "id": "DEC-05",
+        "question": "Incoterm and point of transfer of title for standard customers (affects revenue timing; none assumed).",
+        "owner": "Finance Controller",
+        "affectedStepIds": [
+          "O2C-DLV-060"
+        ]
+      },
+      {
+        "id": "DEC-06",
+        "question": "Whether Pune and Coimbatore are separate GST registrations, which decides stock transfer invoicing.",
+        "owner": "Tax Manager",
+        "affectedStepIds": [
+          "O2C-DLV-070"
+        ]
+      },
+      {
+        "id": "DEC-07",
+        "question": "Chart of accounts, posting period variant and reconciliation accounts (value business to provide).",
+        "owner": "Finance Controller",
+        "affectedStepIds": [
+          "O2C-RPT-110",
+          "O2C-BIL-080"
+        ]
+      },
+      {
+        "id": "GAP-01",
+        "question": "GAP-01 Salesforce released APIs for price lookup and order creation not yet evidenced. Mitigation type: validation workshop; fallback is file-based interface. Status: open.",
+        "owner": "Integration lead",
+        "affectedStepIds": [
+          "O2C-QTE-010",
+          "O2C-ORD-020"
+        ]
+      },
+      {
+        "id": "GAP-02",
+        "question": "GAP-02 Credit management and availability check scope items not evidenced for the target release. Mitigation type: standard option confirmation; fallback is manual credit review. Status: open.",
+        "owner": "SAP solution architect",
+        "affectedStepIds": [
+          "O2C-ORD-030"
+        ]
+      },
+      {
+        "id": "GAP-03",
+        "question": "GAP-03 Make-to-order strategy support in target edition to validate. Mitigation type: validation; fallback is make-to-stock with reservations. Status: open.",
+        "owner": "Production planning lead",
+        "affectedStepIds": [
+          "O2C-PRD-040"
+        ]
+      },
+      {
+        "id": "GAP-05",
+        "question": "GAP-05 Gate pass blocking on e-document status may need an output rule. Mitigation type: configuration validation; fallback is manual check by dispatch. Status: open.",
+        "owner": "SAP solution architect",
+        "affectedStepIds": [
+          "O2C-DLV-060"
+        ]
+      },
+      {
+        "id": "GAP-07",
+        "question": "GAP-07 India e-invoice and e-way bill capability in target edition not evidenced. Mitigation type: validation against trusted references; fallback is third-party add-on decision. Status: open.",
+        "owner": "Tax Manager",
+        "affectedStepIds": [
+          "O2C-BIL-080"
+        ]
+      },
+      {
+        "id": "GAP-09",
+        "question": "GAP-09 TDS at receipt handling in India localisation not evidenced. Mitigation type: validation; fallback is manual TDS journal. Status: open.",
+        "owner": "Finance Controller",
+        "affectedStepIds": [
+          "O2C-CSH-100"
+        ]
+      },
+      {
+        "id": "MIG-01",
+        "question": "Data migration objects for go-live: customers, materials, open sales orders, open receivables, opening balances from Tally with control totals reconciled; initial load for Salesforce account and material sync (IF-SF-002) and bank accounts. Owner and cutover sequence to be agreed.",
+        "owner": "Project manager",
+        "affectedStepIds": [
+          "O2C-ORD-020",
+          "O2C-CSH-100",
+          "O2C-RPT-110"
+        ]
+      }
+    ]
+  }
+}

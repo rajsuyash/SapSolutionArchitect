@@ -1,0 +1,218 @@
+{
+  "schemaVersion": 1,
+  "caseId": "pharma-p2p",
+  "synthetic": "Entirely fictional company and numbers. Contains no real customer data.",
+  "company": "Nordhaven Pharma Wholesale GmbH (fictional)",
+  "project": {
+    "name": "Nordhaven P2P eval",
+    "clientName": "Nordhaven Pharma Wholesale GmbH (fictional)",
+    "problemStatement": "Procure-to-pay at Nordhaven Pharma Wholesale runs on a legacy wholesale system plus spreadsheets, causing GDP batch and expiry gaps at goods receipt, slow manual invoice matching, missed early-payment discounts and an unreliable GR/IR balance at month end.",
+    "targetProduct": "S4HANA_CLOUD_PRIVATE",
+    "startingLandscape": "NON_SAP",
+    "modules": ["MM", "FI", "CO", "QM", "EWM"],
+    "orgUnits": [
+      { "type": "COMPANY_CODE", "code": "2000", "name": "Nordhaven Pharma Wholesale GmbH (fictional)" },
+      { "type": "PLANT", "code": "2100", "name": "Hamburg distribution centre (fictional)" },
+      { "type": "PLANT", "code": "2200", "name": "Leipzig distribution centre (fictional)" },
+      { "type": "REGION", "code": "DE", "name": "Germany (fictional)" }
+    ],
+    "variantCode": "P2P",
+    "variantName": "Requisition to pay"
+  },
+  "opening": "We are Nordhaven Pharma Wholesale (fictional), a German wholesaler of prescription and over-the-counter medicines with about €410 million revenue, two GDP-licensed distribution centres in Hamburg and Leipzig and around 640 active suppliers. We raise roughly 9,500 purchase order lines and receive about 3,100 supplier invoices a month. Purchasing runs in our legacy wholesale system, supplier invoices arrive as PDFs by email and are matched against orders in Excel, and batch numbers and expiry dates are keyed in at the dock from paper delivery notes. Under Good Distribution Practice we must keep goods in quarantine until the responsible person releases them, and we have had audit findings on missing batch records. Roughly 14% of invoices fail matching and take over a week to clear, we miss many early-payment discounts, and the goods-received-not-invoiced balance never reconciles at month end. We want to move to SAP S/4HANA Private Cloud within twelve months and fix procure-to-pay end to end under German VAT rules.",
+  "answerBank": {
+    "catalog": {
+      "process_owner": "The Head of Procurement owns requisition to purchase order, the Responsible Person for GDP owns goods receipt and quality release, and the Accounts Payable Manager owns invoice matching and payment.",
+      "scope_boundary": "The process starts when a replenishment need is identified and ends when the supplier is paid and the GR/IR account is cleared at month end. It covers the Hamburg and Leipzig distribution centres, all trade suppliers for medicines and consumables, and excludes narcotics, which follow a separate controlled process.",
+      "current_trigger": "A purchasing planner raises a replenishment need from a weekly stock-cover spreadsheet, and the cycle continues when goods and the supplier invoice arrive.",
+      "current_systems": "We use a legacy wholesale system for purchase orders and stock, Excel for replenishment planning and invoice matching, a shared mailbox for supplier invoice PDFs, the ColdChain Monitor temperature logging system at the docks, and the bank's online banking portal for SEPA payments. The finance ledger is a separate accounting package, so receipts and invoices are re-keyed into it.",
+      "current_rules": "Purchase orders above 25,000 euro need the Head of Procurement's approval by email. New suppliers must hold a valid wholesale licence and pass a GDP questionnaire before the first order. An invoice is paid if price and quantity are within 2% of the order, otherwise it goes to the buyer.",
+      "current_exceptions": "Short or damaged deliveries are noted on the paper delivery note and the buyer is told by phone. Goods with a missing batch number or a temperature excursion are physically separated but not blocked in the system. Invoices that do not match wait in a shared folder until the buyer replies, and credit notes from suppliers are matched manually.",
+      "current_financial": "Goods receipts are valued at the order price and posted to a GR/IR account in the accounting package once a week. Invoices are keyed in from the matched Excel list, input VAT is coded by hand, and intra-EU purchases are reverse-charged manually. Accruals for uninvoiced receipts are estimated at month end.",
+      "desired_outcome": "At least 85% of invoices matched touchlessly, goods receipt posted the same day for 95% of deliveries, early-payment discount capture above 90%, and a GR/IR balance that reconciles within 3 working days of month end.",
+      "desired_controls": "We need batch and expiry captured at goods receipt with automatic quarantine until the responsible person releases the batch, a three-way match with tolerance rules, approval workflow on purchase orders, a qualified supplier list that blocks orders to unapproved suppliers, German VAT and intra-community reverse charge handled in the standard process, and ColdChain Monitor kept and integrated for temperature data. We prefer standard SAP over custom development."
+    }
+  },
+  "steps": [
+    {
+      "n": 1,
+      "name": "Identify replenishment need",
+      "actor": "Purchasing planner",
+      "system": "Excel stock-cover sheet",
+      "trigger": "The weekly stock-cover review is due or a stock-out alert is raised.",
+      "description": "The planner exports stock levels from the legacy system, calculates cover per product in Excel and lists the products to reorder with quantities. There is no minimum stock or forecast in the system.",
+      "inputs": "Stock export; sales history; supplier lead times",
+      "outputs": "Replenishment list per distribution centre",
+      "controls": "The purchasing team lead reviews the list before orders are placed",
+      "exceptions": "When demand spikes between reviews, products run out because no automatic reorder point exists."
+    },
+    {
+      "n": 2,
+      "name": "Create and approve purchase order",
+      "actor": "Buyer",
+      "system": "Legacy wholesale system and email",
+      "trigger": "The replenishment list is approved by the team lead.",
+      "description": "The buyer keys each order line into the legacy system, picks the supplier from memory or a spreadsheet, and emails orders above 25,000 euro to the Head of Procurement for approval. Prices come from a price spreadsheet that is updated by hand.",
+      "inputs": "Replenishment list; supplier price spreadsheet; approval email",
+      "outputs": "Purchase order PDF sent to the supplier",
+      "controls": "Head of Procurement approves orders above 25,000 euro by email",
+      "exceptions": "When a price in the spreadsheet is out of date the supplier invoices a different price and the order is amended later."
+    },
+    {
+      "n": 3,
+      "name": "Qualify and evaluate suppliers",
+      "actor": "Quality assurance officer",
+      "system": "Excel and shared drive",
+      "trigger": "A new supplier is proposed or the annual review is due.",
+      "description": "QA collects the wholesale licence, GDP certificate and questionnaire into a folder, records approval in an Excel list and reviews supplier performance once a year from delivery complaints. The system does not stop orders to a supplier whose licence has expired.",
+      "inputs": "Wholesale licence; GDP certificate; supplier questionnaire; complaint log",
+      "outputs": "Approved supplier list in Excel; annual evaluation note",
+      "controls": "The Responsible Person for GDP signs off new suppliers",
+      "exceptions": "An expired licence is only noticed at audit, and a poor supplier keeps receiving orders because the evaluation is not linked to purchasing."
+    },
+    {
+      "n": 4,
+      "name": "Receive goods at the dock",
+      "actor": "Goods receipt clerk",
+      "system": "Legacy wholesale system and paper delivery note",
+      "trigger": "A supplier delivery arrives at the dock.",
+      "description": "The clerk compares the delivery note with the order, keys the quantity, batch number and expiry date from the paper note, and checks the ColdChain Monitor temperature log printout. Goods are put on a quarantine pallet by physical separation only.",
+      "inputs": "Paper delivery note; purchase order; temperature log printout",
+      "outputs": "Goods receipt entry; quarantine pallet label",
+      "controls": "The clerk checks the temperature log and seal; the Responsible Person is informed of excursions by phone",
+      "exceptions": "A missing batch number or short-dated stock is separated by hand but remains available for sale in the system until someone blocks it."
+    },
+    {
+      "n": 5,
+      "name": "Release batch from quarantine",
+      "actor": "Responsible Person for GDP",
+      "system": "Paper release form and legacy system",
+      "trigger": "Goods are waiting on the quarantine pallet.",
+      "description": "The Responsible Person checks the documents, certificate of analysis and temperature record, signs a paper release form and asks the clerk to change the stock status in the legacy system.",
+      "inputs": "Quarantine pallet; certificate of analysis; temperature log; release form",
+      "outputs": "Signed release form; stock status changed to saleable",
+      "controls": "Only the Responsible Person or a deputy signs the release",
+      "exceptions": "Rejected batches are returned to the supplier on a paper note and the credit is chased by the buyer."
+    },
+    {
+      "n": 6,
+      "name": "Put away and manage shelf life",
+      "actor": "Warehouse operator",
+      "system": "Legacy wholesale system",
+      "trigger": "A batch is released for sale.",
+      "description": "Operators put released goods into pick locations and the system picks the oldest stock by location, not by expiry date. Near-expiry reports are produced monthly from an export.",
+      "inputs": "Released batch; location list",
+      "outputs": "Stock in pick location",
+      "controls": "A monthly near-expiry report is reviewed by the warehouse manager",
+      "exceptions": "Stock that expires before it is sold is written off at month end, and short-dated batches are sometimes shipped to customers by mistake."
+    },
+    {
+      "n": 7,
+      "name": "Receive supplier invoice",
+      "actor": "Accounts payable clerk",
+      "system": "Shared mailbox and Excel",
+      "trigger": "A supplier invoice PDF arrives in the shared mailbox.",
+      "description": "The clerk opens each PDF, enters the invoice number, amount, VAT and order number into the Excel matching list, and forwards invoices without an order number to the buyer.",
+      "inputs": "Invoice PDF; matching list; purchase order number",
+      "outputs": "Row in the Excel matching list",
+      "controls": "Duplicate invoice numbers are checked by filtering the Excel list",
+      "exceptions": "Duplicate invoices and invoices without an order reference are sometimes paid twice or delayed."
+    },
+    {
+      "n": 8,
+      "name": "Match invoice to order and receipt",
+      "actor": "Accounts payable clerk",
+      "system": "Excel and legacy wholesale system",
+      "trigger": "An invoice row is added to the matching list.",
+      "description": "The clerk looks up the order price and received quantity in the legacy system and compares them to the invoice. Within 2% tolerance the invoice goes forward, otherwise it goes to the buyer by email. About 14% of invoices fail matching.",
+      "inputs": "Matching list; purchase order; goods receipt",
+      "outputs": "Matched list ready for posting; mismatch emails to buyers",
+      "controls": "The 2% tolerance is applied by eye and the Accounts Payable Manager reviews the mismatch list weekly",
+      "exceptions": "Unmatched invoices sit for more than a week, and supplier credit notes are matched manually."
+    },
+    {
+      "n": 9,
+      "name": "Post invoice and handle VAT",
+      "actor": "Accounts payable clerk",
+      "system": "Accounting package",
+      "trigger": "A matched invoice is approved for posting.",
+      "description": "The clerk keys the invoice into the accounting package, picks the VAT code by hand and posts reverse-charge VAT manually for intra-EU purchases. Goods receipts are posted to the GR/IR account once a week.",
+      "inputs": "Matched list; supplier master; VAT code table",
+      "outputs": "Posted supplier invoice; VAT entries",
+      "controls": "The Accounts Payable Manager reviews postings above 50,000 euro",
+      "exceptions": "A wrong VAT code is only found at the VAT return, and receipts posted weekly leave the GR/IR balance out of date."
+    },
+    {
+      "n": 10,
+      "name": "Pay suppliers",
+      "actor": "Treasury analyst",
+      "system": "Online banking portal and Excel",
+      "trigger": "The weekly payment run is due.",
+      "description": "The analyst picks invoices due that week from Excel, builds a SEPA file by hand and uploads it to the online banking portal. Early-payment discounts are applied only when the clerk remembers them.",
+      "inputs": "Due-invoice list; supplier bank details; discount terms",
+      "outputs": "SEPA payment file; payment confirmation",
+      "controls": "A second person approves the payment file in the banking portal",
+      "exceptions": "Changed supplier bank details arrive by email and are updated without a call-back, and discounts are missed when the run is late."
+    },
+    {
+      "n": 11,
+      "name": "Clear GR/IR and accrue at month end",
+      "actor": "Financial accountant",
+      "system": "Accounting package and Excel",
+      "trigger": "The month ends.",
+      "description": "The accountant exports open goods receipts and invoices to Excel, tries to match them, and books an estimated accrual for goods received but not invoiced. The GR/IR balance never reconciles and the close takes 9 working days.",
+      "inputs": "GR/IR export; open order list; invoice list",
+      "outputs": "Accrual journal; GR/IR reconciliation sheet",
+      "controls": "The Financial Controller approves the accrual journal",
+      "exceptions": "Old unreconciled GR/IR items are carried forward month after month."
+    }
+  ],
+  "requirements": [
+    { "key": "reorder", "stepN": 1, "kind": "PAIN_POINT", "critical": false, "statement": "There is no reorder point or forecast in the system, so replenishment depends on a weekly spreadsheet and products run out between reviews." },
+    { "key": "po-approval", "stepN": 2, "kind": "CONTROL", "critical": true, "statement": "Purchase orders above 25,000 euro must go through an approval workflow in the system instead of email." },
+    { "key": "supplier-block", "stepN": 3, "kind": "PAIN_POINT", "critical": true, "statement": "The system does not block orders to suppliers with an expired wholesale licence or GDP certificate, which is only noticed at audit." },
+    { "key": "supplier-eval", "stepN": 3, "kind": "TO_BE_REQUIREMENT", "critical": false, "statement": "Supplier performance on delivery, quality and price must be evaluated in the system and visible to buyers." },
+    { "key": "batch-expiry", "stepN": 4, "kind": "PAIN_POINT", "critical": true, "statement": "Batch numbers and expiry dates are keyed from paper delivery notes, and goods missing a batch number remain available for sale." },
+    { "key": "quarantine", "stepN": 5, "kind": "TO_BE_REQUIREMENT", "critical": true, "statement": "Received goods must be in quarantine stock automatically until the Responsible Person releases the batch with a recorded decision." },
+    { "key": "fefo", "stepN": 6, "kind": "PAIN_POINT", "critical": true, "statement": "The system picks stock by location and not by expiry, so short-dated batches are shipped and stock is written off." },
+    { "key": "coldchain", "stepN": 4, "kind": "CONTROL", "critical": true, "statement": "ColdChain Monitor stays as the temperature logging system and must be integrated with SAP so a temperature excursion blocks the batch. It is not replaced." },
+    { "key": "three-way", "stepN": 8, "kind": "PAIN_POINT", "critical": true, "statement": "14% of invoices fail manual matching and wait more than a week, and tolerances are applied by eye." },
+    { "key": "touchless", "stepN": 8, "kind": "TO_BE_REQUIREMENT", "critical": true, "statement": "At least 85% of invoices must be matched touchlessly against the order and goods receipt with tolerance rules." },
+    { "key": "vat", "stepN": 9, "kind": "PAIN_POINT", "critical": true, "statement": "VAT codes are chosen by hand and intra-community reverse charge is posted manually, so errors surface at the VAT return." },
+    { "key": "grir", "stepN": 11, "kind": "PAIN_POINT", "critical": true, "statement": "The GR/IR balance never reconciles because receipts are posted weekly and old items are carried forward." },
+    { "key": "close", "stepN": 11, "kind": "TO_BE_REQUIREMENT", "critical": false, "statement": "The GR/IR balance must reconcile within 3 working days of month end." },
+    { "key": "discount", "stepN": 10, "kind": "PAIN_POINT", "critical": false, "statement": "Early-payment discounts are missed because payment runs are built by hand and discount terms are not applied automatically." }
+  ],
+  "expected": {
+    "capabilities": [
+      { "id": "batch", "name": "Batch management with expiry dates", "solutionRegex": "batch management|batch number|shelf[- ]life|expiry date", "painRegex": "batch number|expiry" },
+      { "id": "quarantine", "name": "Quarantine and quality release", "solutionRegex": "quarantine|quality inspection|usage decision|blocked stock", "painRegex": "quarantine|released? the batch|remain available" },
+      { "id": "fefo", "name": "First-expired-first-out picking", "solutionRegex": "FEFO|first[- ]expired|expiry-based|remaining shelf life", "painRegex": "expiry|short-dated" },
+      { "id": "threeway", "name": "Three-way invoice verification", "solutionRegex": "three-way match|3-way match|invoice verification|tolerance", "painRegex": "matching|match" },
+      { "id": "supplier", "name": "Supplier qualification and evaluation", "solutionRegex": "supplier evaluation|supplier qualification|vendor evaluation|source list|approved supplier", "painRegex": "licence|supplier performance|GDP certificate" },
+      { "id": "vat", "name": "EU VAT and reverse charge", "solutionRegex": "reverse charge|input tax|tax code|intra-community|VAT", "painRegex": "VAT|reverse charge" },
+      { "id": "grir", "name": "GR/IR clearing", "solutionRegex": "GR/IR|goods receipt/invoice receipt|clearing of GR", "painRegex": "GR/IR" },
+      { "id": "payment", "name": "Automatic payment run with discounts", "solutionRegex": "payment run|automatic payment|F110|cash discount|SEPA", "painRegex": "discount|payment run" },
+      { "id": "release", "name": "Purchase order release strategy", "solutionRegex": "release strategy|approval workflow|purchase order release|workflow", "painRegex": "approval workflow|25,000" }
+    ],
+    "kpis": [
+      { "id": "touchless", "regex": "(touchless|automatic(ally)?)[^.\\n]{0,80}\\b(8[5-9]|9\\d)\\s*%|\\b(8[5-9]|9\\d)\\s*%[^.\\n]{0,80}(touchless|automatic(ally)?)" },
+      { "id": "gr-same-day", "regex": "(same[- ]day|within (the same )?day)[^.\\n]{0,80}\\b(9[5-9]|100)\\s*%|\\b(9[5-9]|100)\\s*%[^.\\n]{0,80}same[- ]day" },
+      { "id": "discount", "regex": "(discount)[^.\\n]{0,80}\\b(9\\d)\\s*%|\\b(9\\d)\\s*%[^.\\n]{0,80}discount" }
+    ],
+    "salesforce": {
+      "mentionRegex": "cold ?chain",
+      "replaceRegex": "(replace|retire|decommission|migrate off|sunset)[^.\\n]{0,40}cold ?chain|cold ?chain[^.\\n]{0,40}(replaced|retired|decommissioned)"
+    }
+  },
+  "passBar": {
+    "maxTurnsToReadiness": 15,
+    "maxRepeatedGapKeys": 0,
+    "maxNearDuplicates": 0,
+    "minFirstAttemptValidRate": 0.9,
+    "requireToBeValid": true,
+    "minCapabilities": 8,
+    "minKpis": 3,
+    "requireSalesforceIntegration": true
+  }
+}
