@@ -65,6 +65,15 @@ gcloud builds submit <dir> --config=deploy/gcp/cloudbuild.yaml --substitutions=_
 
 Never pass secrets as Docker build arguments or commit them. Required variables are documented in `.env.example` and validated in `src/lib/env.ts`. Production uses HTTPS for `APP_URL` and `S3_ENDPOINT`, a random `AUTH_SECRET`, real Anthropic credentials, and `EMAIL_PROVIDER=disabled` until email features exist. Set `DEMO_ACCESS_PASSWORD` to a random string of at least 24 characters to enable the additional demo gate (username `demo`). The gate does not replace session or tenant authorization.
 
+**AI provider.** `AI_PROVIDER` is `stub` (offline fixtures, never allowed in production), `anthropic`, or `deepinfra`. Both real providers use the Anthropic Messages protocol through the same SDK; `AI_MODEL` is the single model setting.
+
+| `AI_PROVIDER` | Key | `AI_MODEL` | Admin cost estimate (USD per M tokens) |
+| --- | --- | --- | --- |
+| `anthropic` | `ANTHROPIC_API_KEY` | `claude-sonnet-5-5` | `AI_PRICE_INPUT_USD_PER_MTOK=2`, `AI_PRICE_OUTPUT_USD_PER_MTOK=10` (defaults) |
+| `deepinfra` | `DEEPINFRA_API_KEY` | `XiaomiMiMo/MiMo-V2.6-Pro` | `AI_PRICE_INPUT_USD_PER_MTOK=0.43`, `AI_PRICE_OUTPUT_USD_PER_MTOK=0.87` |
+
+DeepInfra requests go to `https://api.deepinfra.com/anthropic` and carry no Claude-specific parameters (thinking, effort, betas, cache control). The model's `thinking` blocks are ignored. Provider failures stay generic for users; the server logs one JSON line per failure (`ai_provider_error` with provider, model, stage, HTTP status, error type and a category: credit, auth, rate_limit, overloaded, invalid_request, timeout, unknown) and never the prompt or key.
+
 The demo sets `AI_MAX_CONCURRENCY=1` and `AI_MAX_INPUT_TOKENS=60000` (To-Be generation needs about 45000 or more). These limit concurrency and input size, not total monthly AI spending. Do not share the invitation password publicly. Do not enable service tracing that captures request bodies or credentials.
 
 `/api/health` returns 200 only when PostgreSQL, a completed queue probe, and storage are healthy. Cloud Run checks it before routing traffic. Stopping the worker intentionally makes it return 503.

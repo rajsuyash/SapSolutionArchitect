@@ -10,8 +10,10 @@ const schema = z.object({
   DATABASE_URL: z.url({ protocol: /^postgres(ql)?$/ }),
   APP_URL: httpUrl,
   AUTH_SECRET: z.string().min(32),
-  AI_PROVIDER: z.enum(["anthropic", "stub"]),
+  AI_PROVIDER: z.enum(["anthropic", "deepinfra", "stub"]),
   ANTHROPIC_API_KEY: z.string().optional(),
+  DEEPINFRA_API_KEY: z.string().optional(),
+  // One model setting for every provider: anthropic -> claude-sonnet-5-5, deepinfra -> XiaomiMiMo/MiMo-V2.6-Pro.
   AI_MODEL: required.default("claude-sonnet-5-5"),
   AI_MAX_INPUT_TOKENS: z.coerce.number().int().positive().default(60000),
   CONSULTANT_DAILY_JOB_LIMIT: z.coerce.number().int().min(1).max(100000).default(200),
@@ -33,12 +35,13 @@ const schema = z.object({
   // Comma-separated sign-in emails of SaaS operators; empty or unset means nobody is a platform admin.
   PLATFORM_ADMIN_EMAILS: z.string().optional().transform((value) =>
     (value ?? "").split(",").map((email) => email.trim().toLowerCase()).filter(Boolean)),
-  // Claude Sonnet 5.5 list price, USD per million tokens; used only for the admin cost estimate.
+  // Claude Sonnet 5.5 list price, USD per million tokens (MiMo-V2.6-Pro on DeepInfra: 0.43 / 0.87); used only for the admin cost estimate.
   AI_PRICE_INPUT_USD_PER_MTOK: price(2),
   AI_PRICE_OUTPUT_USD_PER_MTOK: price(10),
 }).superRefine((config, context) => {
   const invalid = (name: string) => context.addIssue({ code: "custom", path: [name], message: "Invalid configuration" });
   if (config.AI_PROVIDER === "anthropic" && !config.ANTHROPIC_API_KEY?.trim()) invalid("ANTHROPIC_API_KEY");
+  if (config.AI_PROVIDER === "deepinfra" && !config.DEEPINFRA_API_KEY?.trim()) invalid("DEEPINFRA_API_KEY");
   if (config.EMAIL_PROVIDER === "resend" && !config.EMAIL_API_KEY?.trim()) invalid("EMAIL_API_KEY");
   // Google sign-in needs both halves of the client credential, or neither.
   if (!config.GOOGLE_CLIENT_ID?.trim() !== !config.GOOGLE_CLIENT_SECRET?.trim()) {

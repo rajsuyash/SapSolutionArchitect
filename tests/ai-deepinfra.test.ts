@@ -1,0 +1,152 @@
+import { readFileSync } from "node:fs";
+import { parseEnv } from "node:util";
+import Anthropic from "@anthropic-ai/sdk";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { parseEnvironment } from "../src/lib/env";
+import { createStageRunner } from "../src/lib/ai/runStage";
+import { classifyProviderError } from "../src/lib/ai/provider";
+
+const local = parseEnv(readFileSync(new URL("../.env.example", import.meta.url), "utf8"));
+const env = (overrides: Record<string, string> = {}) => ({ ...local, NODE_ENV: "test", ...overrides });
+const input = { name: "Synthetic project", clientName: "Synthetic client",
+  problemStatement: "Orders arrive by email and staff re-key them into spreadsheets, causing delays and errors.",
+  targetProduct: "S4HANA_CLOUD_PUBLIC", startingLandscape: "NON_SAP", modules: ["SD"], orgUnits: [] };
+const payload = () => ({ schemaVersion: 1, objectives: [{ id: "OBJ-1", text: "Reduce order delays" }],
+  painPoints: [{ id: "PPS-1", text: "Manual entry", quote: "re-key them into spreadsheets" }], scopeSummary: "Order processing",
+  proposedProcesses: [{ ref: "p1", parentRef: null, level: 1, code: "O2C", name: "Order to Cash", module: "SD", rationale: "Orders are the stated problem" },
+    { ref: "p2", parentRef: "p1", level: 2, code: "O2C-01", name: "Order entry", module: "SD", rationale: "Manual entry" }],
+  clarifyingQuestions: ["What is the current error rate?"], inputTruncated: false });
+const tool = (id = "tool_1") => ({ type: "tool_use", id, name: "submit_analysis", input: payload() });
+const thinking = { type: "thinking", thinking: "private reasoning, not for users", signature: "sig" };
+const text = { type: "text", text: "I will submit the analysis." };
+const json = { headers: { "content-type": "application/json" } };
+const reply = (content: unknown[], stop = "tool_use") => new Response(JSON.stringify({ id: "msg", type: "message", role: "assistant",
+  model: "m", content, stop_reason: stop, stop_sequence: null, usage: { input_tokens: 30, output_tokens: 20 } }), json);
+
+function harness(generate: (attempt: number) => Response = () => reply([thinking, text, tool()])) {
+  const urls: string[] = [], headers: Array<Headers> = [], bodies: Array<Record<string, unknown>> = [];
+  const fetch = vi.fn<typeof globalThis.fetch>(async (url, init) => {
+    urls.push(String(url)); headers.push(new Headers(init?.headers));
+    if (String(url).includes("count_tokens")) return new Response(JSON.stringify({ input_tokens: 10 }), json);
+    bodies.push(JSON.parse(String(init?.body)));
+    return generate(bodies.length);
+  });
+  return { fetch, urls, headers, bodies };
+}
+const deepinfra = () => parseEnvironment(env({ AI_PROVIDER: "deepinfra", DEEPINFRA_API_KEY: "di-test-key", AI_MODEL: "XiaomiMiMo/MiMo-V2.6-Pro" }));
+const anthropic = () => parseEnvironment(env({ AI_PROVIDER: "anthropic", ANTHROPIC_API_KEY: "an-test-key" }));
+const ALLOWED_KEYS = ["max_tokens", "messages", "model", "system", "tool_choice", "tools"];
+afterEach(() => vi.restoreAllMocks());
+
+describe("provider request shape", () => {
+  it("sends DeepInfra requests to its Anthropic endpoint with its own key and only portable parameters", async () => {
+    const h = harness();
+    const result = await createStageRunner(deepinfra(), { fetch: h.fetch })("problem_analysis", input);
+    expect(result.metrics).toMatchObject({ provider: "deepinfra", model: "XiaomiMiMo/MiMo-V2.6-Pro", attempts: 1, inputTokens: 30, outputTokens: 20 });
+    expect(h.urls.every((url) => url.startsWith("https://api.deepinfra.com/anthropic/v1/messages"))).toBe(true);
+    expect(h.headers[0]!.get("x-api-key")).toBe("di-test-key");
+    expect(h.headers[0]!.has("anthropic-beta")).toBe(false);
+    expect(Object.keys(h.bodies[0]!).sort()).toEqual(ALLOWED_KEYS);
+    expect(h.bodies[0]!.model).toBe("XiaomiMiMo/MiMo-V2.6-Pro");
+  });
+  it("keeps the Anthropic path on api.anthropic.com with the same portable parameters", async () => {
+    const h = harness();
+    await createStageRunner(anthropic(), { fetch: h.fetch })("problem_analysis", input);
+    expect(h.urls.every((url) => url.startsWith("https://api.anthropic.com/v1/messages"))).toBe(true);
+    expect(h.headers[0]!.get("x-api-key")).toBe("an-test-key");
+    expect(Object.keys(h.bodies[0]!).sort()).toEqual(ALLOWED_KEYS);
+  });
+  it("refuses to start without the selected provider's key", () => {
+    expect(() => createStageRunner({ ...deepinfra(), DEEPINFRA_API_KEY: undefined })).toThrow("Missing DEEPINFRA_API_KEY");
+    expect(() => createStageRunner({ ...anthropic(), ANTHROPIC_API_KEY: " " })).toThrow("Missing ANTHROPIC_API_KEY");
+  });
+  it("keeps DeepInfra in production but still replaces stub with anthropic", async () => {
+    const prod = { ...deepinfra(), NODE_ENV: "production" as const };
+    const h = harness();
+    expect((await createStageRunner(prod, { fetch: h.fetch })("problem_analysis", input)).metrics.provider).toBe("deepinfra");
+    const stub = { ...anthropic(), NODE_ENV: "production" as const, AI_PROVIDER: "stub" as const };
+    expect((await createStageRunner(stub, { fetch: harness().fetch })("problem_analysis", input)).metrics.provider).toBe("anthropic");
+  });
+});
+
+describe("reasoning-model latency", () => {
+  it("allows a DeepInfra call to run past 120s (the Anthropic limit) within the 240s call limit", async () => {
+    vi.useFakeTimers();
+    try {
+      const fetch = vi.fn<typeof globalThis.fetch>(async (url) => String(url).includes("count_tokens")
+        ? new Response(JSON.stringify({ input_tokens: 10 }), json)
+        : new Promise<Response>((resolve) => setTimeout(() => resolve(reply([thinking, tool()])), 150000)));
+      const pending = createStageRunner(deepinfra(), { fetch })("problem_analysis", input);
+      await vi.waitFor(() => expect(fetch.mock.calls.some(([url]) => !String(url).includes("count_tokens"))).toBe(true));
+      await vi.advanceTimersByTimeAsync(151000);
+      expect((await pending).metrics.attempts).toBe(1);
+    } finally { vi.useRealTimers(); }
+  });
+});
+
+describe("responses with thinking blocks", () => {
+  it("ignores thinking and text blocks around the single tool_use", async () => {
+    const h = harness();
+    const result = await createStageRunner(deepinfra(), { fetch: h.fetch })("problem_analysis", input);
+    expect(result.metrics.attempts).toBe(1);
+    expect(JSON.stringify(result.payload)).not.toContain("private reasoning");
+  });
+  it("repairs once when the model answers [thinking, text] with no tool call, then succeeds", async () => {
+    const h = harness((attempt) => attempt === 1 ? reply([thinking, text], "end_turn") : reply([thinking, text, tool()]));
+    const result = await createStageRunner(deepinfra(), { fetch: h.fetch })("problem_analysis", input);
+    expect(result.metrics.attempts).toBe(2);
+    expect(result.metrics.validationErrors.length).toBeGreaterThan(0);
+  });
+  it("rejects two tool_use blocks on every attempt", async () => {
+    const h = harness(() => reply([thinking, tool("t1"), tool("t2")]));
+    await expect(createStageRunner(deepinfra(), { fetch: h.fetch })("problem_analysis", input))
+      .rejects.toMatchObject({ code: "AI_INVALID_OUTPUT", metrics: { attempts: 2 } });
+  });
+});
+
+describe("provider failure logging", () => {
+  const apiError = (status: number, message: string, type?: string) => Anthropic.APIError.generate(status,
+    type ? { type: "error", error: { type, message } } : undefined, message, new Headers());
+  it.each([
+    [400, "Your credit balance is too low to access the Anthropic API", "invalid_request_error", "credit"],
+    [401, "invalid x-api-key", "authentication_error", "auth"],
+    [429, "slow down", "rate_limit_error", "rate_limit"],
+    [529, "Overloaded", "overloaded_error", "overloaded"],
+    [400, "messages.0.content: bad", "invalid_request_error", "invalid_request"],
+    [418, "teapot", undefined, "unknown"],
+  ])("maps %s %s to %s", (status, message, type, category) => {
+    expect(classifyProviderError(apiError(status, message, type))).toMatchObject({ status, category, errorType: type });
+  });
+  it("maps SDK timeouts to timeout", () => {
+    expect(classifyProviderError(new Anthropic.APIConnectionTimeoutError())).toEqual({ category: "timeout" });
+  });
+  it("logs one safe line, keeps the user-facing code generic, and leaks no prompt or key", async () => {
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    const h = harness(() => new Response(JSON.stringify({ type: "error", error: { type: "invalid_request_error",
+      message: "Your credit balance is too low" } }), { status: 400, ...json }));
+    await expect(createStageRunner(deepinfra(), { fetch: h.fetch })("problem_analysis", input)).rejects.toMatchObject({ code: "AI_PROVIDER_ERROR" });
+    expect(log).toHaveBeenCalledTimes(1);
+    const line = String(log.mock.calls[0]![0]);
+    expect(JSON.parse(line)).toEqual({ event: "ai_provider_error", provider: "deepinfra", model: "XiaomiMiMo/MiMo-V2.6-Pro",
+      stage: "problem_analysis", status: 400, errorType: "invalid_request_error", category: "credit" });
+    expect(line).not.toContain("re-key"); expect(line).not.toContain("di-test-key"); expect(line).not.toContain("Synthetic");
+  });
+});
+
+describe("environment", () => {
+  it("requires DEEPINFRA_API_KEY for deepinfra", () => {
+    expect(() => parseEnvironment(env({ AI_PROVIDER: "deepinfra" }))).toThrow("DEEPINFRA_API_KEY");
+    expect(() => parseEnvironment(env({ AI_PROVIDER: "deepinfra", DEEPINFRA_API_KEY: "  " }))).toThrow("DEEPINFRA_API_KEY");
+    expect(deepinfra().AI_PROVIDER).toBe("deepinfra");
+  });
+  it("still requires ANTHROPIC_API_KEY for anthropic and not for deepinfra", () => {
+    expect(() => parseEnvironment(env({ AI_PROVIDER: "anthropic" }))).toThrow("ANTHROPIC_API_KEY");
+    expect(deepinfra().ANTHROPIC_API_KEY).toBeFalsy();
+  });
+  it("allows deepinfra in production and still forces stub to anthropic", () => {
+    const prod = { NODE_ENV: "production", APP_URL: "https://x.example", S3_ENDPOINT: "https://s3.example",
+      AUTH_SECRET: "x".repeat(40), EMAIL_PROVIDER: "disabled" };
+    expect(parseEnvironment(env({ ...prod, AI_PROVIDER: "deepinfra", DEEPINFRA_API_KEY: "k" })).AI_PROVIDER).toBe("deepinfra");
+    expect(() => parseEnvironment(env({ ...prod, AI_PROVIDER: "stub" }))).toThrow("ANTHROPIC_API_KEY");
+  });
+});

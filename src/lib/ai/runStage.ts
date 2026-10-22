@@ -5,6 +5,7 @@ import { parseEnvironment, type Environment } from "../env";
 import { ProblemAnalysisInputSchema, ProblemAnalysisSchema, redactInput, schemaIssues, validateProblemAnalysis,
   type ProblemAnalysis, type ValidationIssue } from "./problem-analysis";
 import { STAGE_BUDGET_MS } from "./timeouts";
+import { createProviderClient, logProviderFailure, type Provider } from "./provider";
 import { DetailedDesignSchema } from "./design-quality";
 import { loadToBeReferences, parseToBeInput, validateToBeOutput, type ToBeOutput } from "./to-be";
 import { InterviewTurnSchema, parseInterviewInput, validateInterviewTurn, type InterviewInput, type InterviewTurn } from "./discovery-interview";
@@ -12,14 +13,14 @@ import { InterviewTurnSchema, parseInterviewInput, validateInterviewTurn, type I
 type Stage = "problem_analysis" | "to_be" | "interview_turn";
 type Payloads = { problem_analysis: ProblemAnalysis; to_be: ToBeOutput; interview_turn: InterviewTurn };
 type Code = "AI_INPUT_INVALID" | "AI_INPUT_TOO_LARGE" | "AI_INVALID_OUTPUT" | "AI_PROVIDER_ERROR" | "AI_TIMEOUT" | "AI_CANCELLED";
-export type StageMetrics = { stage: Stage; provider: "stub" | "anthropic"; model: string; inputTokens: number;
+export type StageMetrics = { stage: Stage; provider: Provider; model: string; inputTokens: number;
   outputTokens: number; latencyMs: number; attempts: number; validationErrors: ValidationIssue[] };
 export class AIStageError extends Error {
   constructor(public readonly code: Code, public readonly metrics: StageMetrics) {
     super(code); this.name = "AIStageError";
   }
 }
-type Config = Pick<Environment, "NODE_ENV" | "AI_PROVIDER" | "ANTHROPIC_API_KEY" | "AI_MODEL" | "AI_MAX_INPUT_TOKENS" | "AI_MAX_CONCURRENCY" | "AI_FAULT_INJECTION">;
+type Config = Pick<Environment, "NODE_ENV" | "AI_PROVIDER" | "ANTHROPIC_API_KEY" | "DEEPINFRA_API_KEY" | "AI_MODEL" | "AI_MAX_INPUT_TOKENS" | "AI_MAX_CONCURRENCY" | "AI_FAULT_INJECTION">;
 type Options = { fetch?: typeof fetch; sapCatalogDir?: string };
 const CALL_TIMEOUT = 120000;
 const DESIGN_CALL_TIMEOUT = 240000;
@@ -41,14 +42,20 @@ function pause(ms: number, signal: AbortSignal): Promise<void> {
 export function createStageRunner(config: Config, options: Options = {}) {
   if (!Number.isSafeInteger(config.AI_MAX_CONCURRENCY) || config.AI_MAX_CONCURRENCY < 1 ||
     !Number.isSafeInteger(config.AI_MAX_INPUT_TOKENS) || config.AI_MAX_INPUT_TOKENS < 1) throw new Error("Invalid AI limits");
-  const provider = config.NODE_ENV === "production" ? "anthropic" : config.AI_PROVIDER;
-  if (provider === "anthropic" && !config.ANTHROPIC_API_KEY?.trim()) throw new Error("Missing ANTHROPIC_API_KEY");
+  const provider: Provider = config.NODE_ENV === "production" && config.AI_PROVIDER === "stub" ? "anthropic" : config.AI_PROVIDER;
+  // MiMo is a reasoning model served at about 20-40 tokens/s: a 2.5k-token answer took 114s live, so the
+  // 120s limit is too tight for it. The whole-stage budget still caps the stage.
+  const callTimeout = provider === "deepinfra" ? DESIGN_CALL_TIMEOUT : CALL_TIMEOUT;
+  const apiKey = provider === "anthropic" ? config.ANTHROPIC_API_KEY : provider === "deepinfra" ? config.DEEPINFRA_API_KEY : undefined;
+  if (provider !== "stub" && !apiKey?.trim()) throw new Error(`Missing ${provider === "anthropic" ? "ANTHROPIC_API_KEY" : "DEEPINFRA_API_KEY"}`);
   const fault = config.NODE_ENV === "production" ? undefined : config.AI_FAULT_INJECTION;
   let faultUsed = false;
   // SDK retries and logs are disabled: this boundary owns the bounded policy and
   // SDK debug output can contain bodies. Never inherit API base URLs from env.
-  const client = provider === "anthropic" ? new Anthropic({ apiKey: config.ANTHROPIC_API_KEY, authToken: null,
-    baseURL: "https://api.anthropic.com", maxRetries: 0, timeout: CALL_TIMEOUT, logLevel: "off", openTelemetry: false, fetch: options.fetch }) : undefined;
+  // The request sends only model, max_tokens, system, messages, tools and tool_choice: no Claude-specific
+  // thinking, effort, beta or cache_control settings, so any Messages-compatible provider accepts it.
+  // DeepInfra may return `thinking` blocks first; only tool_use blocks are read, all others are ignored.
+  const client = provider === "stub" ? undefined : createProviderClient(provider, apiKey!, callTimeout, options.fetch);
   let active = 0;
   const waiters: Array<{ ready: () => void; abort: () => void; signal: AbortSignal }> = [];
   const release = () => {
@@ -81,7 +88,7 @@ export function createStageRunner(config: Config, options: Options = {}) {
     const pending = new Set<Promise<unknown>>();
     let acquired = false;
 
-    async function call<T>(work: (signal: AbortSignal) => Promise<T>, timeoutMs = CALL_TIMEOUT): Promise<T> {
+    async function call<T>(work: (signal: AbortSignal) => Promise<T>, timeoutMs = callTimeout): Promise<T> {
       signal.throwIfAborted();
       const controller = new AbortController();
       const abort = () => controller.abort(signal.reason);
@@ -99,16 +106,16 @@ export function createStageRunner(config: Config, options: Options = {}) {
       finally { clearTimeout(timeout); signal.removeEventListener("abort", abort); controller.signal.removeEventListener("abort", stop); }
     }
 
-    async function transport<T>(work: (signal: AbortSignal) => Promise<T>, timeoutMs = CALL_TIMEOUT): Promise<T> {
+    async function transport<T>(work: (signal: AbortSignal) => Promise<T>, timeoutMs = callTimeout): Promise<T> {
       for (let retry = 0; ; retry++) {
         try { return await call(work, timeoutMs); }
         catch (error) {
           if (signal.aborted) throw error;
           if (error instanceof AIStageError) throw error;
-          if (error instanceof Anthropic.APIConnectionTimeoutError) throw fail("AI_TIMEOUT");
+          if (error instanceof Anthropic.APIConnectionTimeoutError) { logProviderFailure(provider, config.AI_MODEL, stage, error); throw fail("AI_TIMEOUT"); }
           const retryable = error instanceof Anthropic.APIConnectionError ||
             (error instanceof Anthropic.APIError && (error.status === 429 || (error.status ?? 0) >= 500));
-          if (!retryable || retry >= 2) throw fail("AI_PROVIDER_ERROR");
+          if (!retryable || retry >= 2) { logProviderFailure(provider, config.AI_MODEL, stage, error); throw fail("AI_PROVIDER_ERROR"); }
           await pause(retry === 0 ? 2000 : 8000, signal);
         }
       }
@@ -203,8 +210,8 @@ export function createStageRunner(config: Config, options: Options = {}) {
               messages, tools,
               // Sonnet 5.5 rejects forced tool selection. The prompt requests the
               // tool; validation still requires exactly one complete tool payload.
-              tool_choice: toolChoice }, { signal, timeout: designInput ? DESIGN_CALL_TIMEOUT : CALL_TIMEOUT });
-          }, designInput ? DESIGN_CALL_TIMEOUT : CALL_TIMEOUT);
+              tool_choice: toolChoice }, { signal, timeout: designInput ? DESIGN_CALL_TIMEOUT : callTimeout });
+          }, designInput ? DESIGN_CALL_TIMEOUT : callTimeout);
           const usage = z.object({ input_tokens: z.number().int().nonnegative(), output_tokens: z.number().int().nonnegative(),
             cache_creation_input_tokens: z.number().int().nonnegative().nullish(), cache_read_input_tokens: z.number().int().nonnegative().nullish(),
           }).safeParse(message.usage);
