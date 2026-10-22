@@ -1,6 +1,6 @@
 # Claude Code handoff — SAP consultant discovery and To-Be quality
 
-Checkpoint: 2026-10-21 ~15:45 UTC (end of session). All code committed and pushed on branch feat/consultant-discovery-to-be at 19f05d4; production deploy blocked by a Railway platform outage.
+Checkpoint: 2026-10-22. Code at 95c735c on branch feat/consultant-discovery-to-be (pushed; fast-forwarded into `main`); production moved from Railway to Google Cloud and live at 95c735c.
 
 ## Goal of next session
 
@@ -12,32 +12,22 @@ Acceptance target: an evidence-backed **at least 9/10** To-Be assessment using t
 
 Read the authoritative scope and rubric in [the quality improvement plan](to-be-quality-improvement-plan.md). Do not reproduce or replace its acceptance criteria with an easier scoring system.
 
-## FIRST ACTION: finish the blocked production deploy
+## Production (Google Cloud)
 
-Why blocked: Railway Major Outage on 2026-10-21 ("Dashboard and API unavailable, builds paused"; status updates 11:33 and 13:40 UTC, still paused at 15:40 UTC). `railway up` uploads, then prints `Deploys have been paused temporarily` and creates no deployment. The last attempt (~15:42 UTC) failed this way. Check https://status.railway.com first. The page is client-rendered and a partial render once produced a false "resumed": confirm the incident text is actually gone.
+Deployment procedure, resources and cost are in the README "Deployment" section; do not duplicate them here.
 
-- Railway: project `sap-solution-architect-demo`, environment `production`, services `worker`, `web`, `Postgres`. The CLI is already logged in on this machine (`railway whoami`).
-- Current live state: old revision `5be1777`; `/api/health` returned 200 at 15:42 UTC.
-- Already done: `AI_MAX_INPUT_TOKENS=60000` is set on both web and worker (skip-deploys; takes effect with the new code). `CONSULTANT_DAILY_JOB_LIMIT` defaults to 200 if unset.
-
-Procedure:
-
-1. Make a clean detached worktree of `19f05d4` in a scratch dir (`git worktree add --detach <dir> 19f05d4`) so the untracked customer workbook can never be uploaded. Verify there is no `*.xlsx` in it. Then `railway link -p sap-solution-architect-demo -e production`.
-2. `railway up --service worker --detach` FIRST. Its pre-deploy runs migrations 0005, 0006 and 0007. Wait for SUCCESS and for logs containing "Worker ready" and the `sap_reference_catalogs` line with 65 verified. Stop if it fails.
-3. Then `railway up --service web --detach`; wait for SUCCESS.
-4. `curl https://web-production-7a4d.up.railway.app/api/health` must return 200. Smoke the consultant workspace route `/projects/:id/consultant`.
-5. Remove the worktree.
-6. Merge `feat/consultant-discovery-to-be` into `main` (open a PR or fast-forward, per user preference) and push.
-
-Rollback (current live, both on revision `5be1777`): worker `a51aa764-8bd3-472a-8deb-f160ea2c5bda`, web `aae47e59-1a83-483f-90e0-928ebe4408ce`. Migrations 0005-0007 are additive; rolling back code does not revert them.
+- Live on GCP at https://sap-web-965411321011.europe-west1.run.app running `95c735c`; `/api/health` returned 200, verified 2026-10-22.
+- Railway web and worker were removed on 2026-10-22. The Railway Postgres still exists; decision pending.
+- Railway reported a security incident on 2026-10-21 and recommended rotating all secrets stored there. The Anthropic key was reused on GCP after the user checked usage and saw nothing unexpected; `AUTH_SECRET` and the demo password are new on GCP.
+- Not yet done: a real AI consultant job exercised end-to-end on GCP.
 
 ## State of play (updated 2026-10-21, end of day)
 
 ### Workspace and Git
 
 - Repository root: `/Volumes/Suyash2TB/07 Tech Projects/SAP Solution Architect`. Remote: https://github.com/rajsuyash/SapSolutionArchitect. Branch `feat/consultant-discovery-to-be`.
-- HEAD is `19f05d4` (pushed to origin), 6 commits ahead of `main` (`e6a71f1`, `5d6eb30`, `96b1f87`, `ecdaab6`, `5581d9c`, `19f05d4`). `main` is still at `5be1777`; the branch is not merged. Never commit the customer workbook, generated xlsx deliverables or `test-results/`. Run `git status --short` before editing.
-- Live demo (https://web-production-7a4d.up.railway.app) is still at `5be1777` pending the blocked deploy (see FIRST ACTION); do not claim live parity.
+- HEAD is `95c735c` on the branch, pushed to origin; `main` was fast-forwarded to it (previously `5be1777`). Never commit the customer workbook, generated xlsx deliverables or `test-results/`. Run `git status --short` before editing.
+- Live demo: https://sap-web-965411321011.europe-west1.run.app on Google Cloud at `95c735c` (see Production above). The old Railway URL is retired.
 - The customer workbook in the repo root is untracked and customer-confidential. **Never add it to Git.** Customer-derived artefacts live only in gitignored `test-results/`. Commit only synthetic fixtures. Keep customer names, workbook text and requirement text out of tracked docs.
 
 ### Built (committed on the branch)
@@ -59,8 +49,8 @@ Rollback (current live, both on revision `5be1777`): worker `a51aa764-8bd3-472a-
 
 Last reported state (2026-10-21). **Re-run before relying on it; verification expires with any later change.**
 
-- At `19f05d4` (pre-ship /ship review run, blockers fixed): typecheck + lint clean, build OK, `RUN_DB_TESTS=1 vitest` 341 passed, browser synthetic 28/28 (needs the local Postgres below for DB tests).
-- Not done: production deploy (blocked), merge to `main`, hosted subscription-auth path (still undesigned; hosted runtime remains the API-key SDK path), real SAP execution of any scenario.
+- At `19f05d4` (pre-ship /ship review run, blockers fixed; later commits are docs-only): typecheck + lint clean, build OK, `RUN_DB_TESTS=1 vitest` 341 passed, browser synthetic 28/28 (needs the local Postgres below for DB tests).
+- Done 2026-10-22: production deploy (now on GCP), merge to `main`. Not done: a real consultant job end-to-end on GCP, hosted subscription-auth path (still undesigned; hosted runtime remains the API-key SDK path), real SAP execution of any scenario.
 - Customer target confirmed by the user on 2026-10-21: **SAP S/4HANA 2023 private/on-prem, FPS level** (resolves the former release question IQ-RELEASE).
 
 ### Rental evaluation (v6 to v12) and where it stands
@@ -83,7 +73,7 @@ The tenant row-lock regression (`FOR SHARE OF p,m,u` failing with `permission de
 
 ## Resume sequence
 
-1. Finish the deploy (see FIRST ACTION), then merge to `main`.
+1. Exercise one real consultant job end-to-end on GCP (discovery, confirm As-Is, generate To-Be, exports). Decide what to do with the Railway Postgres.
 2. Re-verify the tree if anything changed: `git status --short`, typecheck, lint, `pnpm test`, DB suites, build, synthetic browser suite.
 3. If continuing the rental design: fix V12-1..9 (three HIGH first), run one bounded repair round, GPT-6-Sol review, re-render the deliverable. Expected gain is small (ceiling 83-84).
 4. Get user decisions on the 42-topic decision register; confirm licence entitlement (TM, ARM, event enablement).
@@ -154,7 +144,7 @@ rtk proxy pnpm build
 
 ## Skills to use
 
-- Task observer: `/Users/suyashraj/.agents/skills/task-observer/SKILL.md`; follow its Session Start Protocol. Pinned log: `/Users/suyashraj/.Codex/skill-observations/observation-log/`.
+- Task observer: `/Users/suyashraj/.agents/skills/task-observer/SKILL.md`; follow its Session Start Protocol. Pinned log for Claude Code sessions: `/Users/suyashraj/.claude/skill-observations/observation-log/` (Codex sessions use their own pinned path, `/Users/suyashraj/.Codex/skill-observations/observation-log/`).
 - E2E testing: `/Users/suyashraj/.agents/skills/e2e-testing/SKILL.md` for the actual Playwright journey.
 - AI regression testing: `/Users/suyashraj/.agents/skills/ai-regression-testing/SKILL.md` for repeatable model evaluations.
 - API design: `/Users/suyashraj/.agents/skills/api-design/SKILL.md` if helpful for the new authenticated endpoints.
@@ -163,4 +153,4 @@ rtk proxy pnpm build
 
 ## Handoff integrity
 
-This is a continuation checkpoint, not a completion report. Claimed: the built items and last-reported verification above, and reviewer scores through v12 (78.75). Not claimed: a 9/10 score, executed SAP scenarios, a completed deployment (deployment was attempted but blocked by the Railway outage; live is still `5be1777`), or current whole-system green status (re-verify). The "Integration contracts and traps" and "Models and credentials" sections predate the HTTP/UI/report work; read source for current signatures.
+This is a continuation checkpoint, not a completion report. Claimed: the built items and last-reported verification above, and reviewer scores through v12 (78.75). Not claimed: a 9/10 score, executed SAP scenarios, an end-to-end real AI job on the GCP deployment (deployed and health-checked only), or current whole-system green status (re-verify). The "Integration contracts and traps" and "Models and credentials" sections predate the HTTP/UI/report work; read source for current signatures.

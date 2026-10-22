@@ -1,0 +1,4 @@
+# approved by Suyash 2026-10-22: Postgres for app + pg-boss queue (Cloud SQL micro chosen over Neon/Railway), paid from trial credit
+google_sql_database_instance
+# approved by Suyash 2026-10-22: queue worker must run 24/7 (Cloud Run, 1 always-on instance chosen)
+google_cloud_run_v2_worker_pool

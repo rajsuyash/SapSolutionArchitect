@@ -42,33 +42,35 @@ The fixture accounts are local-only. Production explicitly refuses `db:seed`; de
 
 ## Deployment
 
-Both services use the root Dockerfile. Deploy the worker first, then the web service. Both run this pre-deploy command under the existing migration lock:
+Production runs on Google Cloud: project `sap-solution-architect-demo`, region `europe-west1`, account `suyash@voxdonna.com` (always pass `--project` and `--account`). Railway is retired: its web and worker deployments were removed on 2026-10-22 after Railway's 2026-10-21 security incident, and its Postgres still exists pending a decision.
+
+Order matters: build the image, run migrations, deploy the worker, then deploy web. Both services use the root Dockerfile image `europe-west1-docker.pkg.dev/sap-solution-architect-demo/app/sap:<git-sha>` (Artifact Registry repo `app`; it keeps the 5 newest images). Build from a clean worktree of the commit so untracked local files can never be uploaded (`.dockerignore` also excludes `*.xlsx`):
 
 ```sh
-node --import tsx scripts/seed.ts --migrate-only
+git worktree add --detach <dir> <sha>
+gcloud builds submit <dir> --config=deploy/gcp/cloudbuild.yaml --substitutions=_TAG=<sha> --region=europe-west1
 ```
 
 | Setting | Web | Worker |
 |---|---|---|
-| Start command | `node node_modules/next/dist/bin/next start --hostname 0.0.0.0` | `node --import tsx src/worker.ts` |
-| Health check | `/api/health` | None; checked through web queue probe |
-| Replicas | 1 | 1 |
-| Restart | On failure, 3 attempts | On failure, 3 attempts |
+| Resource | Cloud Run service `sap-web` | Cloud Run worker pool `sap-worker` |
+| Start command | Dockerfile CMD (`node node_modules/next/dist/bin/next start --hostname 0.0.0.0`) | `node --import tsx src/worker.ts` |
+| Health check | Startup probe on `/api/health`, port 3000 | None; checked through web queue probe |
+| Instances | min 0, max 3 | 1 (1 vCPU / 1 GiB) |
 
-Configure secrets through Railway variables, never Docker build arguments or the repository. Required variables are documented in `.env.example` and validated in `src/lib/env.ts`. Production uses HTTPS for `APP_URL` and `S3_ENDPOINT`, a random `AUTH_SECRET`, real Anthropic credentials, and `EMAIL_PROVIDER=disabled` until email features exist. `DATABASE_URL` references `${{Postgres.DATABASE_URL}}` on the private network. Set `DEMO_ACCESS_PASSWORD` to a random string of at least 24 characters to enable the additional demo gate (username `demo`). The gate does not replace session or tenant authorization.
+- **Database:** Cloud SQL Postgres 16 `sap-pg` (db-f1-micro), private IP only (org policy forbids a public IP); database and user `sap_pm`. Services reach it through Direct VPC egress: `--network=default --subnet=default --vpc-egress=private-ranges-only`.
+- **Migrations:** Cloud Run job `sap-migrate` runs the same image with `node --import tsx scripts/seed.ts --migrate-only` under the existing migration lock. Run `gcloud run jobs deploy sap-migrate --image=... --execute-now --wait` (or `gcloud run jobs execute sap-migrate --wait` after updating the image) before deploying the worker.
+- **Worker:** deploy with `gcloud run worker-pools deploy sap-worker` (this command needs the Python `grpc` module available to gcloud). Wait for "Worker ready" in its logs before deploying web.
+- **Web:** `sap-web` is public via `--no-invoker-iam-check` (org policy blocks `allUsers`); the demo gate and login protect it. URL: https://sap-web-965411321011.europe-west1.run.app, which is also `APP_URL`.
+- **Identity and config:** services run as `sap-runtime@sap-solution-architect-demo.iam.gserviceaccount.com`. Secrets live in Secret Manager and are mounted with `--set-secrets`: `database-url`→`DATABASE_URL`, `auth-secret`→`AUTH_SECRET`, `anthropic-api-key`→`ANTHROPIC_API_KEY`, `demo-access-password`→`DEMO_ACCESS_PASSWORD`, `s3-access-key-id`→`S3_ACCESS_KEY_ID`, `s3-secret-access-key`→`S3_SECRET_ACCESS_KEY`. Plain env: `S3_ENDPOINT=https://storage.googleapis.com`, `S3_REGION=auto`, `S3_BUCKET=sap-solution-architect-demo-files` (Cloud Storage through its S3-compatible API with an HMAC key).
+
+Never pass secrets as Docker build arguments or commit them. Required variables are documented in `.env.example` and validated in `src/lib/env.ts`. Production uses HTTPS for `APP_URL` and `S3_ENDPOINT`, a random `AUTH_SECRET`, real Anthropic credentials, and `EMAIL_PROVIDER=disabled` until email features exist. Set `DEMO_ACCESS_PASSWORD` to a random string of at least 24 characters to enable the additional demo gate (username `demo`). The gate does not replace session or tenant authorization.
 
 The demo sets `AI_MAX_CONCURRENCY=1` and `AI_MAX_INPUT_TOKENS=60000` (To-Be generation needs about 45000 or more). These limit concurrency and input size, not total monthly AI spending. Do not share the invitation password publicly. Do not enable service tracing that captures request bodies or credentials.
 
-Deploy reviewed source using the Railway CLI:
+`/api/health` returns 200 only when PostgreSQL, a completed queue probe, and storage are healthy. Cloud Run checks it before routing traffic. Stopping the worker intentionally makes it return 503.
 
-```sh
-railway link --project ef5224a0-be48-461f-bfaa-dada466937d3
-railway up --service worker --detach
-# Wait for the worker to report "Worker ready" before deploying web.
-railway up --service web --detach
-```
-
-`/api/health` returns 200 only when PostgreSQL, a completed queue probe, and storage are healthy. Railway checks it before routing traffic. Stopping the worker intentionally makes it return 503.
+Cost: roughly $60/month (always-on worker about $50, Cloud SQL micro about $10), excluding Anthropic usage; a budget alert of ₹6,500 is set on the billing account. The trial credit is believed to end 2026-11-13 (from account notes, not verified in the console).
 
 ## Verification
 
