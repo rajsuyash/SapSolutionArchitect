@@ -1,0 +1,220 @@
+{
+  "schemaVersion": 1,
+  "caseId": "pump-o2c",
+  "synthetic": "Entirely fictional company and numbers. Contains no real customer data.",
+  "company": "Kaveri Fluid Systems Pvt Ltd",
+  "project": {
+    "name": "Kaveri O2C eval",
+    "clientName": "Kaveri Fluid Systems Pvt Ltd",
+    "problemStatement": "Order-to-cash at Kaveri Fluid Systems runs on disconnected tools with manual re-entry, causing order errors, late deliveries, slow collections and a slow month-end close.",
+    "targetProduct": "S4HANA_CLOUD_PUBLIC",
+    "startingLandscape": "NON_SAP",
+    "modules": ["SD", "MM", "PP", "FI", "CO", "QM"],
+    "orgUnits": [
+      { "type": "COMPANY_CODE", "code": "1000", "name": "Kaveri Fluid Systems" },
+      { "type": "PLANT", "code": "1100", "name": "Pune" },
+      { "type": "PLANT", "code": "1200", "name": "Coimbatore" },
+      { "type": "SALES_ORG", "code": "1000", "name": "Kaveri Sales" }
+    ],
+    "variantCode": "O2C",
+    "variantName": "Quote to report"
+  },
+  "opening": "We are Kaveri Fluid Systems, a pump and motor manufacturer with about ₹850 crore revenue, two plants in Pune and Coimbatore, one warehouse and four sales offices. We handle around 2,800 orders a month and our order-to-cash cycle is painful. Quotes go out from Salesforce, but once a customer PO arrives everything is typed in again by hand and finance runs on Tally. Production planning lives in Excel, and our GST e-invoices and e-way bills are done manually on the government portal. Roughly 7% of orders have entry errors, deliveries are often late and collections are slow. Trucks sometimes wait hours at the gate for paperwork. We want to move to SAP S/4HANA Cloud Public Edition within nine months and fix this end to end.",
+  "answerBank": {
+    "catalog": {
+      "process_owner": "The Head of Order Fulfilment owns the quote-to-report process, and the Finance Controller owns invoicing, collections and month-end reporting.",
+      "scope_boundary": "The process starts when a customer quote is raised in Salesforce and ends with month-end reporting in Excel. It covers the Pune and Coimbatore plants, the central warehouse and all four sales offices.",
+      "current_trigger": "A sales engineer raises a customer quote in Salesforce, and the order starts when the customer's purchase order arrives by email.",
+      "current_systems": "We use Salesforce for quotes only, an MS Access app for sales orders and inventory, Excel for production planning, Tally Prime for finance, and the government GST portal manually for e-invoices and e-way bills. Nothing is integrated, so people re-key data between them.",
+      "current_rules": "Discounts above 10% need the sales head's approval by email. Orders are accepted without any credit check, and production requests go out only after a manual stock check in Access.",
+      "current_exceptions": "Wrong orders are corrected by cancelling and re-entering them in Access. Returns are accepted by the stores team on a paper note and are not linked to the original invoice. Unmatched payments stay in a suspense list until accounts clerks trace them.",
+      "current_financial": "Invoices are raised in Tally after the e-invoice is generated manually on the GST portal. Payments are matched to invoices by hand from bank statements, and inter-plant transfers are billed manually at month end. There is no margin view by customer or product.",
+      "desired_outcome": "Orders entered within 4 hours with under 1% errors, OTIF above 90%, DSO of 65 days or less, month-end close in 5 days, and GST e-invoicing integrated into the process.",
+      "desired_controls": "We need an automatic credit check at order entry, GST e-invoice and e-way bill generated from the invoice with an audit trail, and serial numbers captured for every motor. Salesforce stays as the quoting tool and must be integrated, Tally is retired, TDS must be handled in the standard process, and we prefer standard SAP over custom development."
+    }
+  },
+  "steps": [
+    {
+      "n": 1,
+      "name": "Raise customer quote",
+      "actor": "Sales engineer",
+      "system": "Salesforce",
+      "trigger": "A customer enquiry is received at a sales office.",
+      "description": "The sales engineer configures the pump or motor, prices it from the price list and issues the quote from Salesforce. Discounts above 10% are approved by the sales head by email.",
+      "inputs": "Customer enquiry; price list; discount approval email",
+      "outputs": "Quote PDF; Salesforce quote record",
+      "controls": "Sales head approves discounts above 10%",
+      "exceptions": "When the customer asks for changes the engineer issues a new quote version in Salesforce."
+    },
+    {
+      "n": 2,
+      "name": "Receive customer PO",
+      "actor": "Sales coordinator",
+      "system": "Email",
+      "trigger": "The customer sends a purchase order by email.",
+      "description": "The sales coordinator compares the PO with the quote by eye and forwards it to the order desk.",
+      "inputs": "Customer PO PDF; accepted quote",
+      "outputs": "Verified PO forwarded to the order desk",
+      "controls": "PO price is compared with the quote by eye",
+      "exceptions": "When the PO differs from the quote the coordinator phones the customer and waits for a corrected PO."
+    },
+    {
+      "n": 3,
+      "name": "Enter sales order",
+      "actor": "Order desk executive",
+      "system": "MS Access order app",
+      "trigger": "A verified PO reaches the order desk.",
+      "description": "The executive re-keys every PO line into the Access app. There is no link to Salesforce and no credit check.",
+      "inputs": "Verified PO; customer master in Access",
+      "outputs": "Sales order number in Access",
+      "controls": "A supervisor spot-checks about one order in ten",
+      "exceptions": "Entry errors found at dispatch are fixed by cancelling and re-entering the order, and about 7% of orders have errors."
+    },
+    {
+      "n": 4,
+      "name": "Check stock",
+      "actor": "Warehouse planner",
+      "system": "MS Access inventory",
+      "trigger": "A sales order is saved in Access.",
+      "description": "The planner checks stock for each line by hand in the Access inventory and phones the order desk to say whether it ships from stock or must be produced. There is no automatic availability check.",
+      "inputs": "Sales order; Access stock list",
+      "outputs": "Ship-from-stock or produce decision",
+      "controls": "None, it depends on the planner's judgement",
+      "exceptions": "When the Access stock count is out of date the promised date is missed."
+    },
+    {
+      "n": 5,
+      "name": "Request production",
+      "actor": "Production planner",
+      "system": "Excel and email",
+      "trigger": "A stock shortfall is identified.",
+      "description": "The order desk emails a production request and the planner adds it to the Excel plan for Pune or Coimbatore. Sales orders are not linked to production orders.",
+      "inputs": "Production request email; Excel plan; bill of materials sheet",
+      "outputs": "Excel production plan entry with a promised date",
+      "controls": "The planner confirms capacity by hand",
+      "exceptions": "Urgent orders are slotted in by phone and the sales order is never updated with the new date."
+    },
+    {
+      "n": 6,
+      "name": "Produce",
+      "actor": "Plant supervisor",
+      "system": "Excel plan and paper job cards",
+      "trigger": "The production slot is reached.",
+      "description": "The plant assembles pumps and motors against the Excel plan, and motor serial numbers are written on a paper job card.",
+      "inputs": "Excel plan; job card; raw materials",
+      "outputs": "Finished pumps and motors; paper job card with serial numbers",
+      "controls": "Quality inspection releases the units for dispatch",
+      "exceptions": "A failed inspection sends the unit back for rework and the plan is not updated."
+    },
+    {
+      "n": 7,
+      "name": "Prepare dispatch and gate documents",
+      "actor": "Dispatch clerk",
+      "system": "MS Access and paper",
+      "trigger": "Goods are ready and the customer delivery date is due.",
+      "description": "The clerk prepares the delivery challan and packing list from Access, waits for the manual invoice and e-way bill, then releases the truck. Trucks wait 2 to 3 hours at the gate for documents.",
+      "inputs": "Sales order; finished goods; transporter details",
+      "outputs": "Delivery challan; packing list; gate pass",
+      "controls": "Security checks the gate pass against the physical load",
+      "exceptions": "A missing e-way bill holds the truck at the gate."
+    },
+    {
+      "n": 8,
+      "name": "Generate e-invoice and e-way bill",
+      "actor": "Accounts executive",
+      "system": "Government GST portal, manual",
+      "trigger": "Dispatch documents are ready.",
+      "description": "The accounts executive types the invoice details into the government portal to get the IRN and the e-way bill, then downloads and prints them.",
+      "inputs": "Delivery challan; customer GSTIN; HSN codes",
+      "outputs": "IRN with QR code; e-way bill number",
+      "controls": "The executive checks GSTIN and HSN before submitting",
+      "exceptions": "When the portal is down or the GSTIN is wrong the invoice is cancelled within the allowed window and re-issued."
+    },
+    {
+      "n": 9,
+      "name": "Post invoice",
+      "actor": "Accounts executive",
+      "system": "Tally Prime",
+      "trigger": "The IRN and e-way bill are received.",
+      "description": "The executive re-keys the invoice in Tally with the IRN and emails it to the customer. Inter-plant transfers are billed manually at month end.",
+      "inputs": "IRN with QR code; sales order; delivery challan",
+      "outputs": "Tally invoice; invoice email to the customer",
+      "controls": "The Finance Controller reviews invoices above ₹10 lakh",
+      "exceptions": "Returns are accepted on a paper note and a credit note is raised manually without linking to the original invoice."
+    },
+    {
+      "n": 10,
+      "name": "Receive and match payment",
+      "actor": "Accounts receivable clerk",
+      "system": "Tally Prime and bank statements",
+      "trigger": "A customer payment appears in the bank statement.",
+      "description": "Clerks download bank statements and match each receipt to invoices by hand in Tally, including TDS deductions. 18% of payments stay unmatched for more than 15 days.",
+      "inputs": "Bank statement; remittance advice emails; open invoice list",
+      "outputs": "Receipt entries in Tally; cleared invoices",
+      "controls": "The receivables supervisor reviews the weekly unmatched list",
+      "exceptions": "Part payments and TDS short-payments are parked in a suspense account until traced."
+    },
+    {
+      "n": 11,
+      "name": "Month-end reporting",
+      "actor": "Finance Controller",
+      "system": "Excel and Tally Prime",
+      "trigger": "The month ends.",
+      "description": "The finance team exports Tally data to Excel, reconciles it with Access and Salesforce numbers and builds sales and receivables reports. The close takes 12 days and there is no margin view by customer or product.",
+      "inputs": "Tally trial balance; Access sales orders; Salesforce quotes; stock valuation sheet",
+      "outputs": "Month-end sales, receivables and stock report in Excel",
+      "controls": "The Finance Controller signs off the final report",
+      "exceptions": "Late corrections after close are posted into the next month."
+    }
+  ],
+  "requirements": [
+    { "key": "entry-errors", "stepN": 3, "kind": "PAIN_POINT", "critical": true, "statement": "7% of orders have entry errors because every PO is re-keyed by hand from email into the Access app." },
+    { "key": "order-speed", "stepN": 3, "kind": "TO_BE_REQUIREMENT", "critical": true, "statement": "Orders must be entered within 4 hours of PO receipt with under 1% errors." },
+    { "key": "credit", "stepN": 3, "kind": "PAIN_POINT", "critical": true, "statement": "There is no automatic credit check, so orders are accepted without checking the customer's credit limit or overdue invoices." },
+    { "key": "atp", "stepN": 4, "kind": "PAIN_POINT", "critical": true, "statement": "There is no automatic availability check, so planners check stock by hand in Access and promised dates are missed. OTIF is only 62%." },
+    { "key": "mto", "stepN": 5, "kind": "PAIN_POINT", "critical": false, "statement": "Sales orders are not linked to production orders, so sales cannot see production status or the real promised date." },
+    { "key": "serial", "stepN": 6, "kind": "PAIN_POINT", "critical": false, "statement": "Motor serial numbers are tracked on paper job cards, so warranty and traceability depend on manual look-ups." },
+    { "key": "otif", "stepN": 7, "kind": "TO_BE_REQUIREMENT", "critical": true, "statement": "OTIF must be above 90%, with delivery documents ready before the truck arrives." },
+    { "key": "einvoice-pain", "stepN": 8, "kind": "PAIN_POINT", "critical": true, "statement": "GST e-invoices and e-way bills are made manually on the government portal, and trucks wait 2 to 3 hours at the gate for documents." },
+    { "key": "einvoice-target", "stepN": 8, "kind": "TO_BE_REQUIREMENT", "critical": true, "statement": "GST e-invoicing and e-way bill generation must be integrated into the invoice process." },
+    { "key": "returns", "stepN": 9, "kind": "PAIN_POINT", "critical": false, "statement": "Returns are not linked to the original invoice, so credit notes are raised manually and can be wrong." },
+    { "key": "interplant", "stepN": 9, "kind": "PAIN_POINT", "critical": false, "statement": "There is no automatic inter-plant billing, so transfers between Pune and Coimbatore are billed manually at month end." },
+    { "key": "payment-matching", "stepN": 10, "kind": "PAIN_POINT", "critical": true, "statement": "Payments are matched to invoices manually and 18% stay unmatched for more than 15 days, which keeps DSO at 92 days." },
+    { "key": "dso", "stepN": 10, "kind": "TO_BE_REQUIREMENT", "critical": true, "statement": "DSO must come down to 65 days or less through automatic payment matching." },
+    { "key": "margin", "stepN": 11, "kind": "PAIN_POINT", "critical": false, "statement": "There is no margin view by customer or product, and the month-end close takes 12 days." },
+    { "key": "close", "stepN": 11, "kind": "TO_BE_REQUIREMENT", "critical": true, "statement": "The month-end close must take 5 days." },
+    { "key": "salesforce", "stepN": 1, "kind": "CONTROL", "critical": true, "statement": "Salesforce stays as the quoting system and must be integrated with SAP, not replaced. Tally is retired." }
+  ],
+  "expected": {
+    "capabilities": [
+      { "id": "credit", "name": "Credit management", "solutionRegex": "credit limit|credit check|credit management", "painRegex": "credit (check|limit)" },
+      { "id": "atp", "name": "Available-to-promise", "solutionRegex": "available-to-promise|\\bATP\\b|availability check", "painRegex": "availability check|\\bATP\\b|stock" },
+      { "id": "mto", "name": "Make-to-order", "solutionRegex": "make-to-order|\\bMTO\\b|sales order.*production", "painRegex": "not linked to production|production order" },
+      { "id": "serial", "name": "Serial numbers", "solutionRegex": "serial number|serialization", "painRegex": "serial number" },
+      { "id": "einvoice", "name": "India e-invoice and e-way bill", "solutionRegex": "e-invoic|\\bIRN\\b|e-way bill|\\beway\\b", "painRegex": "e-invoic|e-way bill|GST" },
+      { "id": "returns", "name": "Advanced returns", "solutionRegex": "returns management|advanced returns|return order", "painRegex": "returns? (are )?not linked|\\breturns?\\b" },
+      { "id": "interplant", "name": "Inter-plant and intercompany billing", "solutionRegex": "intercompany|inter-company|stock transport order|\\bSTO\\b|cross-company", "painRegex": "inter-?plant" },
+      { "id": "bankrecon", "name": "Bank reconciliation and cash application", "solutionRegex": "bank statement|reconciliation|cash application|automatic clearing", "painRegex": "unmatched|matched .*manual|manual.* match|payment matching" },
+      { "id": "margin", "name": "Margin analysis", "solutionRegex": "margin analysis|profitability|CO-PA", "painRegex": "margin" }
+    ],
+    "kpis": [
+      { "id": "otif", "regex": "OTIF[^.\\n]{0,80}(90|9[1-9])\\s*%|(90|9[1-9])\\s*%[^.\\n]{0,80}OTIF" },
+      { "id": "dso", "regex": "(DSO|days sales outstanding)[^.\\n]{0,80}\\b(65|[1-5]\\d|6[0-4])\\s*days|\\b(65|[1-5]\\d|6[0-4])\\s*days[^.\\n]{0,80}(DSO|days sales outstanding)" },
+      { "id": "close", "regex": "(close|closing)[^.\\n]{0,80}\\b5\\s*(working\\s*)?days|\\b5[- ](working[- ])?day[^.\\n]{0,30}(close|closing)" }
+    ],
+    "salesforce": {
+      "mentionRegex": "salesforce",
+      "replaceRegex": "(replace|retire|decommission|migrate off|sunset)[^.\\n]{0,40}salesforce|salesforce[^.\\n]{0,40}(replaced|retired|decommissioned)"
+    }
+  },
+  "passBar": {
+    "maxTurnsToReadiness": 15,
+    "maxRepeatedGapKeys": 0,
+    "maxNearDuplicates": 0,
+    "minFirstAttemptValidRate": 0.9,
+    "requireToBeValid": true,
+    "minCapabilities": 8,
+    "minKpis": 3,
+    "requireSalesforceIntegration": true
+  }
+}

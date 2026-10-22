@@ -1,0 +1,167 @@
+// Pure scoring of a recorded consultant run (interview transcript + final To-Be). No I/O:
+// the live driver (scripts/eval-consultant.ts) records, this module judges.
+import { z } from "zod";
+
+const count = z.number().int().nonnegative();
+export const TurnRecordSchema = z.object({
+  index: z.number().int().positive(),
+  userMessage: z.string(),
+  /** activeGaps handed to the model for this turn. */
+  gapsAvailable: count,
+  questions: z.array(z.object({ gapKey: z.string(), fieldId: z.string(), question: z.string() })),
+  proposals: count,
+  /** Provider calls made by runStage for this turn; 1 means the first attempt validated. */
+  attempts: count,
+  validationErrors: count,
+  /** Stage error code when the turn failed (AI_INVALID_OUTPUT, AI_PROVIDER_ERROR, ...). */
+  error: z.string().nullable(),
+  inputTokens: count, outputTokens: count, latencyMs: count,
+});
+const StepRecordSchema = z.looseObject({
+  id: z.string(), title: z.string(), requirementIds: z.array(z.string()),
+  actions: z.array(z.looseObject({ operation: z.string(), system: z.string().optional(), fields: z.array(z.string()).optional() })),
+  implementation: z.looseObject({ kind: z.string(), detail: z.string() }),
+  acceptanceTests: z.array(z.looseObject({ given: z.string(), when: z.string(), then: z.string() })),
+  addedValue: z.string(),
+});
+export const TranscriptSchema = z.object({
+  schemaVersion: z.literal(1),
+  caseId: z.string(), provider: z.string(), model: z.string(), startedAt: z.string(),
+  turns: z.array(TurnRecordSchema),
+  readiness: z.object({
+    reached: z.boolean(), atTurn: z.number().int().positive().nullable(),
+    /** The driver filled the template directly after the turn cap so the To-Be could still be measured. */
+    forcedCompletion: z.boolean(), directEdits: count, blockers: z.array(z.string()),
+  }),
+  toBe: z.object({
+    attempted: z.boolean(), structurallyValid: z.boolean(), errorCode: z.string().nullable(),
+    attempts: count, validationErrors: count, inputTokens: count, outputTokens: count,
+    requirements: z.array(z.object({ id: z.string(), statement: z.string(), evidence: z.string().optional() })),
+    design: z.object({ steps: z.array(StepRecordSchema) }).nullable(),
+  }).nullable(),
+  aborted: z.string().nullable(),
+});
+export type Transcript = z.infer<typeof TranscriptSchema>;
+
+/** The slice of a fixture the scorer needs. Regexes are source strings, compiled case-insensitively. */
+export const ScoringCaseSchema = z.object({
+  caseId: z.string(),
+  expected: z.object({
+    capabilities: z.array(z.object({ id: z.string(), name: z.string(), solutionRegex: z.string(), painRegex: z.string() })).min(1),
+    kpis: z.array(z.object({ id: z.string(), regex: z.string() })),
+    salesforce: z.object({ mentionRegex: z.string(), replaceRegex: z.string() }),
+  }),
+  passBar: z.object({
+    maxTurnsToReadiness: z.number(), maxRepeatedGapKeys: z.number(), maxNearDuplicates: z.number(),
+    minFirstAttemptValidRate: z.number(), requireToBeValid: z.boolean(), minCapabilities: z.number(),
+    minKpis: z.number(), requireSalesforceIntegration: z.boolean(),
+  }),
+});
+export type ScoringCase = z.infer<typeof ScoringCaseSchema>;
+
+export const NEAR_DUPLICATE_JACCARD = 0.8;
+const rx = (source: string) => new RegExp(source, "i");
+const tokens = (text: string) => new Set(text.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").split(" ").filter(Boolean));
+export function jaccard(a: string, b: string): number {
+  const left = tokens(a), right = tokens(b);
+  if (!left.size || !right.size) return 0;
+  let shared = 0;
+  for (const token of left) if (right.has(token)) shared++;
+  return shared / (left.size + right.size - shared);
+}
+
+type Step = NonNullable<NonNullable<Transcript["toBe"]>["design"]>["steps"][number];
+const stepText = (step: Step) => [step.title, ...step.actions.flatMap(a => [a.operation, a.system ?? "", ...(a.fields ?? [])]),
+  step.implementation.detail].join("\n");
+
+export function scoreRun(rawTranscript: unknown, rawCase: unknown) {
+  const transcript = TranscriptSchema.parse(rawTranscript);
+  const { expected, passBar } = ScoringCaseSchema.parse(rawCase);
+  const { turns, toBe } = transcript;
+
+  const questions = turns.flatMap(t => t.questions.map(q => ({ turn: t.index, ...q })));
+  // A gapKey asked twice, in one turn or across turns, is repeated: count occurrences.
+  const occurrences = new Map<string, number>();
+  for (const q of questions) occurrences.set(q.gapKey, (occurrences.get(q.gapKey) ?? 0) + 1);
+  const repeatedGapKeys = [...occurrences].filter(([, n]) => n > 1).map(([key]) => key);
+
+  const nearDuplicates: { a: { turn: number; question: string }; b: { turn: number; question: string }; jaccard: number }[] = [];
+  for (let i = 0; i < questions.length; i++) for (let j = i + 1; j < questions.length; j++) {
+    const score = jaccard(questions[i]!.question, questions[j]!.question);
+    if (score >= NEAR_DUPLICATE_JACCARD) nearDuplicates.push({
+      a: { turn: questions[i]!.turn, question: questions[i]!.question },
+      b: { turn: questions[j]!.turn, question: questions[j]!.question }, jaccard: Number(score.toFixed(3)) });
+  }
+
+  const validTurns = turns.filter(t => t.error === null && t.attempts === 1 && t.validationErrors === 0).length;
+  const firstAttemptValidRate = turns.length ? validTurns / turns.length : 0;
+  const turnsToReadiness = transcript.readiness.reached ? transcript.readiness.atTurn : null;
+
+  const requirementText = new Map((toBe?.requirements ?? []).map(r => [r.id, `${r.statement}\n${r.evidence ?? ""}`]));
+  const steps = toBe?.design?.steps ?? [];
+  const capabilities = expected.capabilities.map(cap => {
+    const solution = rx(cap.solutionRegex), pain = rx(cap.painRegex);
+    const matching = steps.filter(step => solution.test(stepText(step)));
+    // Mentioning the capability is not enough: the step must serve a requirement that names the related pain.
+    const linked = matching.find(step => step.requirementIds.some(id => pain.test(requirementText.get(id) ?? "")));
+    return { id: cap.id, name: cap.name, covered: !!linked, stepId: linked?.id ?? null,
+      reason: linked ? "covered" as const : matching.length ? "no_requirement_link" as const : "no_solution_text" as const };
+  });
+  const capabilityCount = capabilities.filter(c => c.covered).length;
+
+  const kpiCorpus = steps.flatMap(s => [s.addedValue, ...s.acceptanceTests.map(t => `${t.given} ${t.when} ${t.then}`)]).join("\n");
+  const kpis = expected.kpis.map(k => ({ id: k.id, met: rx(k.regex).test(kpiCorpus) }));
+  const kpiCount = kpis.filter(k => k.met).length;
+
+  const mention = rx(expected.salesforce.mentionRegex), replace = rx(expected.salesforce.replaceRegex);
+  const salesforce = {
+    integration: steps.some(s => s.implementation.kind === "INTEGRATION" && mention.test(`${stepText(s)}\n${s.addedValue}`)),
+    replaced: steps.some(s => replace.test(`${stepText(s)}\n${s.addedValue}`)),
+  };
+
+  const toBeValid = !!toBe?.attempted && toBe.structurallyValid && steps.length > 0;
+  const check = (name: string, pass: boolean, detail: string) => ({ name, pass, detail });
+  const checks = [
+    check("readiness", turnsToReadiness !== null && turnsToReadiness <= passBar.maxTurnsToReadiness,
+      `${turnsToReadiness ?? "not reached"} turns (max ${passBar.maxTurnsToReadiness})`),
+    check("repeatedGapKeys", repeatedGapKeys.length <= passBar.maxRepeatedGapKeys, `${repeatedGapKeys.length} (max ${passBar.maxRepeatedGapKeys})`),
+    check("nearDuplicates", nearDuplicates.length <= passBar.maxNearDuplicates, `${nearDuplicates.length} pairs (max ${passBar.maxNearDuplicates})`),
+    check("firstAttemptValid", turns.length > 0 && firstAttemptValidRate >= passBar.minFirstAttemptValidRate,
+      `${(firstAttemptValidRate * 100).toFixed(0)}% of ${turns.length} turns (min ${passBar.minFirstAttemptValidRate * 100}%)`),
+    check("toBeValid", !passBar.requireToBeValid || toBeValid, toBe ? (toBeValid ? "valid" : `invalid (${toBe.errorCode ?? "no steps"})`) : "To-Be not generated"),
+    check("capabilities", capabilityCount >= passBar.minCapabilities, `${capabilityCount}/${capabilities.length} (min ${passBar.minCapabilities})`),
+    check("kpis", kpiCount >= passBar.minKpis, `${kpiCount}/${kpis.length} (min ${passBar.minKpis})`),
+    check("salesforce", !passBar.requireSalesforceIntegration || (salesforce.integration && !salesforce.replaced),
+      `integration=${salesforce.integration} replaced=${salesforce.replaced}`),
+  ];
+
+  return {
+    caseId: transcript.caseId, provider: transcript.provider, model: transcript.model,
+    turns: {
+      total: turns.length, turnsToReadiness, forcedCompletion: transcript.readiness.forcedCompletion,
+      directEdits: transcript.readiness.directEdits,
+      questionsPerTurn: turns.map(t => t.questions.length),
+      zeroQuestionTurnsWithGapsRemaining: turns.filter(t => t.questions.length === 0 && t.gapsAvailable > 0).map(t => t.index),
+      failedTurns: turns.filter(t => t.error !== null).map(t => ({ turn: t.index, error: t.error })),
+    },
+    repeatedGapKeys, nearDuplicateCount: nearDuplicates.length, nearDuplicates: nearDuplicates.slice(0, 20), // sample only
+    firstAttemptValidRate: Number(firstAttemptValidRate.toFixed(3)),
+    toBeValid, capabilities, capabilityCount, kpis, kpiCount, salesforce,
+    outputTokens: turns.reduce((n, t) => n + t.outputTokens, 0) + (toBe?.outputTokens ?? 0),
+    aborted: transcript.aborted, checks, pass: checks.every(c => c.pass),
+  };
+}
+export type Score = ReturnType<typeof scoreRun>;
+
+export function summarize(score: Score): string {
+  const lines = [`${score.pass ? "PASS" : "FAIL"}  ${score.caseId}  ${score.provider}/${score.model}`,
+    ...score.checks.map(c => `  ${c.pass ? "ok  " : "FAIL"} ${c.name}: ${c.detail}`)];
+  const missed = score.capabilities.filter(c => !c.covered).map(c => `${c.id} (${c.reason})`);
+  if (missed.length) lines.push(`  capabilities missed: ${missed.join(", ")}`);
+  if (score.turns.zeroQuestionTurnsWithGapsRemaining.length) {
+    lines.push(`  turns with 0 questions while gaps remained: ${score.turns.zeroQuestionTurnsWithGapsRemaining.join(", ")}`);
+  }
+  if (score.turns.forcedCompletion) lines.push(`  note: template completed by direct entry after the turn cap (${score.turns.directEdits} edits)`);
+  if (score.aborted) lines.push(`  aborted: ${score.aborted}`);
+  return lines.join("\n");
+}
