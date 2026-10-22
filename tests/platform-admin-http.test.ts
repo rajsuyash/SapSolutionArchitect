@@ -145,7 +145,7 @@ describe.skipIf(process.env.RUN_DB_TESTS !== "1")("platform admin HTTP boundary"
       const { status, body } = await call("GET", "overview", { token: adminToken });
       expect(status).toBe(200);
       const { totals, organizations, users, pricing } = body.data;
-      expect(pricing).toEqual({ inputUsdPerMTok: 2, outputUsdPerMTok: 10 });
+      expect(pricing).toEqual({ inputUsdPerMTok: 2, outputUsdPerMTok: 10, models: 0 });
       const byName = Object.fromEntries(organizations.map((o: { name: string }) => [o.name, o]));
       expect(byName.Alpha).toMatchObject({ id: alpha, userCount: 3, projectCount: 2, jobsToday: 3, jobs30d: 4,
         inputTokens30d: 3_500_000, outputTokens30d: 150_000, dailyAiJobQuota: 10, suspendedAt: null });

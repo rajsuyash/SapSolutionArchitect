@@ -21,7 +21,7 @@ const request = z.discriminatedUnion("kind", [
   z.strictObject({ kind: z.literal("INTERVIEW"), expectedRevision: z.number().int().positive(), messageId: z.string().regex(/^[A-Za-z0-9_-]{1,64}$/) }),
   z.strictObject({ kind: z.literal("TO_BE"), expectedRevision: z.number().int().positive() }),
 ]);
-const metricsSchema = z.strictObject({ stage: z.enum(["interview_turn", "to_be"]), provider: z.enum(["stub", "anthropic"]),
+const metricsSchema = z.strictObject({ stage: z.enum(["interview_turn", "to_be"]), provider: z.enum(["stub", "anthropic", "deepinfra"]),
   model: z.string().max(160), inputTokens: z.number().int().nonnegative(), outputTokens: z.number().int().nonnegative(),
   latencyMs: z.number().nonnegative(), attempts: z.number().int().nonnegative(),
   validationErrors: z.array(z.strictObject({ path: z.string().max(200), code: z.string().max(80), detail: z.string().max(200).optional() })).max(1000) });

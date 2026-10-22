@@ -18,7 +18,7 @@ export default async function AdminPage() {
   const { totals, pricing, organizations, users } = await platformAdmin.overview(token);
   return <div className={styles.root}>
     <h1>Platform admin</h1>
-    <p className={styles.lede}>All workspaces. Costs are estimates from token counts at ${pricing.inputUsdPerMTok} / ${pricing.outputUsdPerMTok} per million input / output tokens.</p>
+    <p className={styles.lede}>All workspaces. Costs are estimates from token counts at ${pricing.inputUsdPerMTok} / ${pricing.outputUsdPerMTok} per million input / output tokens{pricing.models ? `, except ${pricing.models} model${pricing.models === 1 ? "" : "s"} with their own configured price` : ""}.</p>
     <ul className={styles.totals} aria-label="Totals">
       <li><strong>{totals.workspaces}</strong><span>Workspaces</span></li>
       <li><strong>{totals.users}</strong><span>Users</span></li>

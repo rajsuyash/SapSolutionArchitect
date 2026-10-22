@@ -8,6 +8,12 @@ const price = (fallback: number) => z.preprocess((value) => (typeof value === "s
 // Whole seconds within [min, max]; a blank variable means "use the default".
 const seconds = (fallback: number, min: number, max: number) => z.preprocess((value) => (typeof value === "string" && !value.trim() ? undefined : value),
   z.coerce.number().int().min(min).max(max).default(fallback));
+const blankToUndefined = (value: unknown) => (typeof value === "string" && !value.trim() ? undefined : value);
+// JSON object: model id -> [input USD/MTok, output USD/MTok]. Unparseable text is passed on as-is and fails the record check.
+const modelPrices = z.preprocess((value) => {
+  if (typeof value !== "string" || !value.trim()) return undefined;
+  try { return JSON.parse(value); } catch { return value; }
+}, z.record(z.string().trim().min(1), z.tuple([z.number().positive().max(1000), z.number().positive().max(1000)])).default({}));
 const schema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
   DATABASE_URL: z.url({ protocol: /^postgres(ql)?$/ }),
@@ -16,8 +22,10 @@ const schema = z.object({
   AI_PROVIDER: z.enum(["anthropic", "deepinfra", "stub"]),
   ANTHROPIC_API_KEY: z.string().optional(),
   DEEPINFRA_API_KEY: z.string().optional(),
-  // One model setting for every provider: anthropic -> claude-sonnet-5-5, deepinfra -> XiaomiMiMo/MiMo-V2.6-Pro.
+  // Model for every stage except design, for any provider: anthropic -> claude-sonnet-5-5, deepinfra -> XiaomiMiMo/MiMo-V2.6-Flash.
   AI_MODEL: required.default("claude-sonnet-5-5"),
+  // Optional stronger/slower model for the long To-Be design stage only; unset means AI_MODEL runs every stage.
+  AI_MODEL_DESIGN: z.preprocess(blankToUndefined, required.optional()),
   AI_MAX_INPUT_TOKENS: z.coerce.number().int().positive().default(60000),
   CONSULTANT_DAILY_JOB_LIMIT: z.coerce.number().int().min(1).max(100000).default(200),
   AI_MAX_CONCURRENCY: z.coerce.number().int().positive().default(4),
@@ -42,9 +50,11 @@ const schema = z.object({
   // Comma-separated sign-in emails of SaaS operators; empty or unset means nobody is a platform admin.
   PLATFORM_ADMIN_EMAILS: z.string().optional().transform((value) =>
     (value ?? "").split(",").map((email) => email.trim().toLowerCase()).filter(Boolean)),
-  // Claude Sonnet 5.5 list price, USD per million tokens (MiMo-V2.6-Pro on DeepInfra: 0.43 / 0.87); used only for the admin cost estimate.
+  // Claude Sonnet 5.5 list price, USD per million tokens (per-model overrides: AI_MODEL_PRICES); used only for the admin cost estimate.
   AI_PRICE_INPUT_USD_PER_MTOK: price(2),
   AI_PRICE_OUTPUT_USD_PER_MTOK: price(10),
+  // Per-model override of the two prices above, keyed by the model id recorded in job metrics.
+  AI_MODEL_PRICES: modelPrices,
 }).superRefine((config, context) => {
   const invalid = (name: string) => context.addIssue({ code: "custom", path: [name], message: "Invalid configuration" });
   if (config.AI_PROVIDER === "anthropic" && !config.ANTHROPIC_API_KEY?.trim()) invalid("ANTHROPIC_API_KEY");

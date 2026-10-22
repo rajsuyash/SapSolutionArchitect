@@ -4,27 +4,10 @@ import { describe, expect, it, vi } from "vitest";
 import { parseEnvironment } from "../src/lib/env";
 import { createStageRunner } from "../src/lib/ai/runStage";
 import { InterviewTurnSchema, parseInterviewInput, validateInterviewTurn,
-  type InterviewInput, type InterviewTurn } from "../src/lib/ai/discovery-interview";
+  type InterviewTurn } from "../src/lib/ai/discovery-interview";
+import { fixture } from "./support/interview-input";
 import { asStream } from "./support/sse";
 
-const fixture = (): InterviewInput => ({
-  schemaVersion: 1, contextRevision: 3, variantName: "Equipment hire",
-  problemStatement: "Asset returns are recorded manually and delayed updates cause disputed invoices.",
-  currentMessage: { id: "MSG-3", text: "The clerk records physical returns in the spreadsheet. The actual date is sometimes missing." },
-  evidence: [{ id: "SRC-1", text: "The hire desk sends a paper return note to billing.\r\n" }],
-  fields: [
-    { id: "return-action", label: "Return action", value: null, status: "EMPTY" },
-    { id: "return-system", label: "Return system", value: "Paper log", status: "KNOWN" },
-    { id: "return-date", label: "Return date policy", value: null, status: "UNKNOWN" },
-  ],
-  activeGaps: [
-    { key: "return-action-gap", fieldId: "return-action", detail: "How is return recorded?", priority: "IMPORTANT" },
-    { key: "return-date-gap", fieldId: "return-date", detail: "What date stops charging?", priority: "CRITICAL" },
-  ],
-  closedGapKeys: ["known-actor-gap"],
-  history: [{ role: "assistant", text: "Which clerk records the return?" },
-    { role: "user", text: "The stores clerk." }],
-});
 const proposal = (): InterviewTurn => ({
   schemaVersion: 1, contextRevision: 3,
   reply: "Thank you for that context.",

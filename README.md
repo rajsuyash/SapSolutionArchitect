@@ -65,12 +65,24 @@ gcloud builds submit <dir> --config=deploy/gcp/cloudbuild.yaml --substitutions=_
 
 Never pass secrets as Docker build arguments or commit them. Required variables are documented in `.env.example` and validated in `src/lib/env.ts`. Production uses HTTPS for `APP_URL` and `S3_ENDPOINT`, a random `AUTH_SECRET`, real Anthropic credentials, and `EMAIL_PROVIDER=disabled` until email features exist. Set `DEMO_ACCESS_PASSWORD` to a random string of at least 24 characters to enable the additional demo gate (username `demo`). The gate does not replace session or tenant authorization.
 
-**AI provider.** `AI_PROVIDER` is `stub` (offline fixtures, never allowed in production), `anthropic`, or `deepinfra`. Both real providers use the Anthropic Messages protocol through the same SDK; `AI_MODEL` is the single model setting.
+**AI provider.** `AI_PROVIDER` is `stub` (offline fixtures, never allowed in production), `anthropic`, or `deepinfra`. Both real providers use the Anthropic Messages protocol through the same SDK. `AI_MODEL` is the model for every stage except the long To-Be design stage, which uses `AI_MODEL_DESIGN` when it is set (and `AI_MODEL` when it is not).
 
 | `AI_PROVIDER` | Key | `AI_MODEL` | Admin cost estimate (USD per M tokens) |
 | --- | --- | --- | --- |
 | `anthropic` | `ANTHROPIC_API_KEY` | `claude-sonnet-5-5` | `AI_PRICE_INPUT_USD_PER_MTOK=2`, `AI_PRICE_OUTPUT_USD_PER_MTOK=10` (defaults) |
-| `deepinfra` | `DEEPINFRA_API_KEY` | `XiaomiMiMo/MiMo-V2.6-Pro` | `AI_PRICE_INPUT_USD_PER_MTOK=0.43`, `AI_PRICE_OUTPUT_USD_PER_MTOK=0.87` |
+| `deepinfra` | `DEEPINFRA_API_KEY` | `XiaomiMiMo/MiMo-V2.6-Flash` (`AI_MODEL_DESIGN=XiaomiMiMo/MiMo-V2.6-Pro`) | `AI_MODEL_PRICES`, below |
+
+**Model per stage.** The fast chat stages (interview turn, problem analysis) need low latency; the To-Be design stage needs the stronger, slower model. Measured on DeepInfra on 2026-10-22: MiMo-V2.6-Flash about 48 output tokens/s, MiMo-V2.6-Pro about 12. Recommended for `AI_PROVIDER=deepinfra`:
+
+```sh
+AI_MODEL=XiaomiMiMo/MiMo-V2.6-Flash
+AI_MODEL_DESIGN=XiaomiMiMo/MiMo-V2.6-Pro
+AI_MODEL_PRICES={"XiaomiMiMo/MiMo-V2.6-Flash":[0.14,0.28],"XiaomiMiMo/MiMo-V2.6-Pro":[0.43,0.87]}
+```
+
+`AI_MODEL_DESIGN` is optional; unset, `AI_MODEL` runs every stage. Which stages count as design stages is defined once in `src/lib/ai/runStage.ts` (`DESIGN_STAGES`, currently `to_be`); the same set also selects `AI_DESIGN_CALL_TIMEOUT_SECONDS`. The model actually used is recorded in each job's metrics, and its `count_tokens` guard uses the same model as the call.
+
+**Cost estimate.** `AI_MODEL_PRICES` is an optional JSON object mapping a model id to `[inputUsdPerMTok, outputUsdPerMTok]` (positive numbers, at most 1000). The `/admin` estimate prices each job's tokens by the model recorded in its metrics and falls back to `AI_PRICE_INPUT_USD_PER_MTOK` / `AI_PRICE_OUTPUT_USD_PER_MTOK` (defaults 2 / 10) for a model without an entry and for jobs recorded before models were stored. It remains an estimate, not a bill. Per-model usage comes from the SQL function added in migration `0011_platform_admin_usage_by_model.sql`.
 
 DeepInfra requests go to `https://api.deepinfra.com/anthropic` and carry no Claude-specific parameters (thinking, effort, betas, cache control). The model's `thinking` blocks are ignored. Provider failures stay generic for users; the server logs one JSON line per failure (`ai_provider_error` with provider, model, stage, HTTP status, error type and a category: credit, auth, rate_limit, overloaded, invalid_request, timeout, unknown) and never the prompt or key.
 
@@ -82,7 +94,7 @@ DeepInfra requests go to `https://api.deepinfra.com/anthropic` and carry no Clau
 | `AI_CALL_TIMEOUT_SECONDS` | 120 | 30-1500 | One model call, ordinary stages (problem analysis, interview turn) |
 | `AI_DESIGN_CALL_TIMEOUT_SECONDS` | 240 | 30-1500 | One model call, the To-Be design stage (up to 24000 output tokens) |
 
-The defaults suit Claude. A slow model needs more: MiMo-V2.6-Pro on DeepInfra produces about 20-40 output tokens/s, so a 24000-token To-Be call can take about 800 s. Recommended for `AI_PROVIDER=deepinfra`: `AI_STAGE_BUDGET_SECONDS=1200`, `AI_CALL_TIMEOUT_SECONDS=300`, `AI_DESIGN_CALL_TIMEOUT_SECONDS=1000`. The provider choice no longer changes any timeout by itself.
+The defaults suit Claude. A slow model needs more: MiMo-V2.6-Pro on DeepInfra produces about 12-40 output tokens/s (12 measured on 2026-10-22), so a 24000-token To-Be call can take 800 s or more. Recommended for `AI_PROVIDER=deepinfra`: `AI_STAGE_BUDGET_SECONDS=1200`, `AI_CALL_TIMEOUT_SECONDS=300`, `AI_DESIGN_CALL_TIMEOUT_SECONDS=1000`. The provider choice no longer changes any timeout by itself.
 
 The job row deadline is the stage budget plus 60 s, and the pg-boss expiry is the deadline plus 60 s (defaults: 360 s and 420 s). Both follow `AI_STAGE_BUDGET_SECONDS` for the web and worker processes, so set it identically on both. `createQueue` does not change an existing queue's expiry; the per-job expiry sent with every job is the authoritative value. Trade-off: a larger budget means a job whose worker died, or a model that hangs, is reported as timed out later (up to the budget plus 60 s). The browser only polls job status and Cloud Run worker pools have no request timeout, so long stages are safe.
 
@@ -112,4 +124,4 @@ node --import tsx scripts/test-live-demo.ts --create-synthetic-data
 
 This creates a fresh fictional tenant and three projects, invokes real AI (billable), and checks signup/login/logout, persisted inputs, idempotent saves, duplicate jobs, live completion status, schema/hierarchy/source quotes, reload persistence, mobile layout, and tenant isolation. Each run retains its synthetic inputs, outputs, screenshots and JSON report in `test-results/live-audit/<timestamp>/`. The latest QA account credentials stay in ignored `.env.live-test`; existing presenter credentials remain in `.env.demo-access`. Synthetic workspaces are retained for inspection. The script only targets the known demo URL and requires the explicit flag.
 
-The production web and worker configuration was checked on 2026-10-20: `AI_PROVIDER=anthropic`, `AI_MODEL=claude-sonnet-5-5`. This powers **problem/scope analysis** and the consultant workflow. The live audit script covers problem analysis only; passing it does not certify the complete Blueprint journey or the semantic accuracy of every SAP recommendation.
+The production web and worker configuration was last checked on 2026-10-20 as `AI_PROVIDER=anthropic`, `AI_MODEL=claude-sonnet-5-5`; that is the deployed state until the DeepInfra values above (Flash for chat stages, Pro for To-Be design) are set on both services and re-checked. This powers **problem/scope analysis** and the consultant workflow. The live audit script covers problem analysis only; passing it does not certify the complete Blueprint journey or the semantic accuracy of every SAP recommendation.

@@ -19,9 +19,11 @@ export class AIStageError extends Error {
     super(code); this.name = "AIStageError";
   }
 }
-type Config = Pick<Environment, "NODE_ENV" | "AI_PROVIDER" | "ANTHROPIC_API_KEY" | "DEEPINFRA_API_KEY" | "AI_MODEL" | "AI_MAX_INPUT_TOKENS" | "AI_MAX_CONCURRENCY" | "AI_FAULT_INJECTION"
+type Config = Pick<Environment, "NODE_ENV" | "AI_PROVIDER" | "ANTHROPIC_API_KEY" | "DEEPINFRA_API_KEY" | "AI_MODEL" | "AI_MODEL_DESIGN" | "AI_MAX_INPUT_TOKENS" | "AI_MAX_CONCURRENCY" | "AI_FAULT_INJECTION"
   | "AI_STAGE_BUDGET_SECONDS" | "AI_CALL_TIMEOUT_SECONDS" | "AI_DESIGN_CALL_TIMEOUT_SECONDS">;
 const SDK_TIMEOUT_MARGIN_MS = 5000;
+/** The long design stages: the only place that decides which stages use the design timeout and AI_MODEL_DESIGN. */
+const DESIGN_STAGES: ReadonlySet<Stage> = new Set<Stage>(["to_be"]);
 type Options = { fetch?: typeof fetch; sapCatalogDir?: string };
 
 function pause(ms: number, signal: AbortSignal): Promise<void> {
@@ -82,7 +84,9 @@ export function createStageRunner(config: Config, options: Options = {}) {
 
   return async function runStage<S extends Stage>(stage: S, rawInput: unknown, externalSignal?: AbortSignal): Promise<{ payload: Payloads[S]; metrics: StageMetrics }> {
     const started = Date.now();
-    const metrics: StageMetrics = { stage, provider, model: config.AI_MODEL, inputTokens: 0, outputTokens: 0,
+    const isDesign = DESIGN_STAGES.has(stage);
+    const model = isDesign ? config.AI_MODEL_DESIGN ?? config.AI_MODEL : config.AI_MODEL;
+    const metrics: StageMetrics = { stage, provider, model, inputTokens: 0, outputTokens: 0,
       latencyMs: 0, attempts: 0, validationErrors: [] };
     const fail = (code: Code) => new AIStageError(code, metrics);
     const deadline = new AbortController();
@@ -115,10 +119,10 @@ export function createStageRunner(config: Config, options: Options = {}) {
         catch (error) {
           if (signal.aborted) throw error;
           if (error instanceof AIStageError) throw error;
-          if (error instanceof Anthropic.APIConnectionTimeoutError) { logProviderFailure(provider, config.AI_MODEL, stage, error); throw fail("AI_TIMEOUT"); }
+          if (error instanceof Anthropic.APIConnectionTimeoutError) { logProviderFailure(provider, model, stage, error); throw fail("AI_TIMEOUT"); }
           const retryable = error instanceof Anthropic.APIConnectionError ||
             (error instanceof Anthropic.APIError && (error.status === 429 || (error.status ?? 0) >= 500));
-          if (!retryable || retry >= 2) { logProviderFailure(provider, config.AI_MODEL, stage, error); throw fail("AI_PROVIDER_ERROR"); }
+          if (!retryable || retry >= 2) { logProviderFailure(provider, model, stage, error); throw fail("AI_PROVIDER_ERROR"); }
           await pause(retry === 0 ? 2000 : 8000, signal);
         }
       }
@@ -153,7 +157,7 @@ export function createStageRunner(config: Config, options: Options = {}) {
       let inputTruncated = false;
       const count = async (source: string) => {
         if (!client) return Buffer.byteLength(source, "utf8"); // Conservative byte cap in offline tests; not reported as measured tokens.
-        const result = await transport((signal) => client.messages.countTokens({ model: config.AI_MODEL,
+        const result = await transport((signal) => client.messages.countTokens({ model,
           messages: [{ role: "user", content: source }] }, { signal }));
         if (!Number.isSafeInteger(result.input_tokens) || result.input_tokens < 0) throw fail("AI_PROVIDER_ERROR");
         return result.input_tokens;
@@ -191,7 +195,7 @@ export function createStageRunner(config: Config, options: Options = {}) {
           // Count the whole request, including schema and repair instructions.
           // Never truncate source evidence, requirements or unresolved policies.
           const counted = await transport(signal => client!.messages.countTokens({
-            model: config.AI_MODEL, system, messages, tools, tool_choice: toolChoice,
+            model, system, messages, tools, tool_choice: toolChoice,
           }, { signal }));
           if (!Number.isSafeInteger(counted.input_tokens) || counted.input_tokens < 0) throw fail("AI_PROVIDER_ERROR");
           if (counted.input_tokens > config.AI_MAX_INPUT_TOKENS) throw fail("AI_INPUT_TOO_LARGE");
@@ -210,12 +214,12 @@ export function createStageRunner(config: Config, options: Options = {}) {
           const message = await transport((signal) => {
             metrics.attempts++;
             // Streaming keeps the connection alive during long generations; finalMessage() assembles the same Message.
-            return client!.messages.stream({ model: config.AI_MODEL, max_tokens: designInput ? 24000 : interviewInput ? 8000 : 12000, system,
+            return client!.messages.stream({ model, max_tokens: designInput ? 24000 : interviewInput ? 8000 : 12000, system,
               messages, tools,
               // Sonnet 5.5 rejects forced tool selection. The prompt requests the
               // tool; validation still requires exactly one complete tool payload.
-              tool_choice: toolChoice }, { signal, timeout: designInput ? designCallTimeout : callTimeout }).finalMessage();
-          }, designInput ? designCallTimeout : callTimeout);
+              tool_choice: toolChoice }, { signal, timeout: isDesign ? designCallTimeout : callTimeout }).finalMessage();
+          }, isDesign ? designCallTimeout : callTimeout);
           const usage = z.object({ input_tokens: z.number().int().nonnegative(), output_tokens: z.number().int().nonnegative(),
             cache_creation_input_tokens: z.number().int().nonnegative().nullish(), cache_read_input_tokens: z.number().int().nonnegative().nullish(),
           }).safeParse(message.usage);
@@ -248,7 +252,7 @@ export function createStageRunner(config: Config, options: Options = {}) {
       throw fail("AI_INVALID_OUTPUT");
     } catch (error) {
       if (deadline.signal.aborted) {
-        logStageTimeout(provider, config.AI_MODEL, stage, Date.now() - started, metrics.attempts);
+        logStageTimeout(provider, model, stage, Date.now() - started, metrics.attempts);
         throw fail("AI_TIMEOUT");
       }
       if (externalSignal?.aborted) throw fail("AI_CANCELLED");
