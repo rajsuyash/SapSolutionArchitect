@@ -7,7 +7,7 @@ import { ProblemAnalysisInputSchema, ProblemAnalysisSchema, redactInput, schemaI
 import { createProviderClient, logProviderFailure, logStageTimeout, type Provider } from "./provider";
 import { DetailedDesignSchema } from "./design-quality";
 import { loadToBeReferences, parseToBeInput, validateToBeOutput, type ToBeOutput } from "./to-be";
-import { InterviewTurnSchema, parseInterviewInput, validateInterviewTurn, type InterviewInput, type InterviewTurn } from "./discovery-interview";
+import { InterviewTurnRawSchema, InterviewTurnToolSchema, parseInterviewInput, validateInterviewTurn, type InterviewInput, type InterviewTurn } from "./discovery-interview";
 
 type Stage = "problem_analysis" | "to_be" | "interview_turn";
 type Payloads = { problem_analysis: ProblemAnalysis; to_be: ToBeOutput; interview_turn: InterviewTurn };
@@ -15,7 +15,12 @@ type Code = "AI_INPUT_INVALID" | "AI_INPUT_TOO_LARGE" | "AI_INVALID_OUTPUT" | "A
 export type StageMetrics = { stage: Stage; provider: Provider; model: string; inputTokens: number;
   outputTokens: number; latencyMs: number; attempts: number; validationErrors: ValidationIssue[];
   /** The same issues grouped per failed attempt (validationErrors is their flat concatenation). */
-  attemptIssues?: ValidationIssue[][] };
+  attemptIssues?: ValidationIssue[][];
+  /** The provider's stop_reason for each completed provider response, in attempt order (aligned with attemptIssues);
+   * null when the provider sent none. A response that never completed (timeout, transport error) adds no entry. */
+  stopReasons?: (string | null)[];
+  /** Interview turns only: server-side repairs applied to an accepted turn (off-list reply, dropped question, normalized quote). */
+  warnings?: ValidationIssue[] };
 export class AIStageError extends Error {
   constructor(public readonly code: Code, public readonly metrics: StageMetrics) {
     super(code); this.name = "AIStageError";
@@ -24,6 +29,8 @@ export class AIStageError extends Error {
 type Config = Pick<Environment, "NODE_ENV" | "AI_PROVIDER" | "ANTHROPIC_API_KEY" | "DEEPINFRA_API_KEY" | "AI_MODEL" | "AI_MODEL_DESIGN" | "AI_MAX_INPUT_TOKENS" | "AI_MAX_CONCURRENCY" | "AI_FAULT_INJECTION"
   | "AI_STAGE_BUDGET_SECONDS" | "AI_CALL_TIMEOUT_SECONDS" | "AI_DESIGN_CALL_TIMEOUT_SECONDS">;
 const SDK_TIMEOUT_MARGIN_MS = 5000;
+/** An interview turn carries up to 12 quoted proposals; 8000 truncated some turns into an empty tool payload. */
+const INTERVIEW_MAX_TOKENS = 16000;
 /** The long design stages: the only place that decides which stages use the design timeout and AI_MODEL_DESIGN. */
 const DESIGN_STAGES: ReadonlySet<Stage> = new Set<Stage>(["to_be"]);
 /** issueDetail: eval harness only. Adds the schema's own message (never the received value) to interview_turn issues
@@ -91,7 +98,7 @@ export function createStageRunner(config: Config, options: Options = {}) {
     const isDesign = DESIGN_STAGES.has(stage);
     const model = isDesign ? config.AI_MODEL_DESIGN ?? config.AI_MODEL : config.AI_MODEL;
     const metrics: StageMetrics = { stage, provider, model, inputTokens: 0, outputTokens: 0,
-      latencyMs: 0, attempts: 0, validationErrors: [], attemptIssues: [] };
+      latencyMs: 0, attempts: 0, validationErrors: [], attemptIssues: [], stopReasons: [] };
     const fail = (code: Code) => new AIStageError(code, metrics);
     const deadline = new AbortController();
     const timer = setTimeout(() => deadline.abort(fail("AI_TIMEOUT")), stageBudget);
@@ -183,7 +190,7 @@ export function createStageRunner(config: Config, options: Options = {}) {
         readFile(new URL("../../../prompts/problem_analysis.user.md", import.meta.url), "utf8"),
       ]));
       if (analysisInput && (!template.includes("{{input}}") || !template.includes("{{validationErrors}}"))) throw fail("AI_PROVIDER_ERROR");
-      const jsonSchema = z.toJSONSchema(designInput ? DetailedDesignSchema : interviewInput ? InterviewTurnSchema : ProblemAnalysisSchema);
+      const jsonSchema = z.toJSONSchema(designInput ? DetailedDesignSchema : interviewInput ? InterviewTurnToolSchema : ProblemAnalysisSchema);
       const tool = designInput ? "submit_to_be" : interviewInput ? "submit_interview_turn" : "submit_analysis";
       const tools: Anthropic.Tool[] = [{ name: tool, input_schema: { ...jsonSchema, type: "object" } }];
       const toolChoice = { type: "auto" as const, disable_parallel_tool_use: true };
@@ -218,7 +225,7 @@ export function createStageRunner(config: Config, options: Options = {}) {
           const message = await transport((signal) => {
             metrics.attempts++;
             // Streaming keeps the connection alive during long generations; finalMessage() assembles the same Message.
-            return client!.messages.stream({ model, max_tokens: designInput ? 24000 : interviewInput ? 8000 : 12000, system,
+            return client!.messages.stream({ model, max_tokens: designInput ? 24000 : interviewInput ? INTERVIEW_MAX_TOKENS : 12000, system,
               messages, tools,
               // Sonnet 5.5 rejects forced tool selection. The prompt requests the
               // tool; validation still requires exactly one complete tool payload.
@@ -230,6 +237,7 @@ export function createStageRunner(config: Config, options: Options = {}) {
           if (!usage.success) throw fail("AI_PROVIDER_ERROR");
           metrics.inputTokens += usage.data.input_tokens + (usage.data.cache_creation_input_tokens ?? 0) + (usage.data.cache_read_input_tokens ?? 0);
           metrics.outputTokens += usage.data.output_tokens;
+          metrics.stopReasons!.push(message.stop_reason ?? null);
           const toolCalls = message.content.filter((block) => block.type === "tool_use");
           output = message.stop_reason === "tool_use" && toolCalls.length === 1 && toolCalls[0]!.name === tool ? toolCalls[0]!.input : null;
         }
@@ -240,7 +248,7 @@ export function createStageRunner(config: Config, options: Options = {}) {
           errors = result.errors;
         } else if (interviewInput) {
           const result = validateInterviewTurn(interviewInput, output);
-          if (result.success) return { payload: result.data as Payloads[S], metrics };
+          if (result.success) { metrics.warnings = result.warnings; return { payload: result.data as Payloads[S], metrics }; }
           errors = result.errors;
         } else {
           const result = validateProblemAnalysis(output, analysisInput!.problemStatement);
@@ -252,7 +260,7 @@ export function createStageRunner(config: Config, options: Options = {}) {
           if (result.success && !errors.length) return { payload: { ...result.data, inputTruncated } as Payloads[S], metrics };
         }
         metrics.validationErrors.push(...errors);
-        const schema = options.issueDetail && interviewInput ? InterviewTurnSchema.safeParse(output) : null;
+        const schema = options.issueDetail && interviewInput ? InterviewTurnRawSchema.safeParse(output) : null;
         metrics.attemptIssues!.push(schema && !schema.success
           ? schemaIssues(schema.error.issues).map((issue, i) => ({ ...issue, detail: schema.error.issues[i]!.message })) : errors);
       }

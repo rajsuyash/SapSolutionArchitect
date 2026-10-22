@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { buildInterviewInput, compileDiscovery, createWorkspace, getWorkspaceReadiness,
-  applyWorkspaceCommand, recordInterviewTurn, type WorkspaceMeta, type WorkspaceState } from "../src/lib/discovery-workspace-model";
+  applyWorkspaceCommand, recordInterviewTurn, WorkspaceStateSchema, type WorkspaceMeta, type WorkspaceState } from "../src/lib/discovery-workspace-model";
 
 let sequence = 0;
 const meta = (): WorkspaceMeta => ({ actorId: "consultant", at: "2026-10-21T10:00:00.000Z", id: `evt_${++sequence}` });
@@ -174,5 +174,22 @@ describe("discovery workspace model", () => {
     state = set(state, "current_trigger", "A driver checks in a return");
     expect(() => applyWorkspaceCommand(state, { type: "DECIDE_PROPOSAL", proposalId: state.proposals[0]!.id,
       decision: "ACCEPT" }, meta())).toThrow("STALE_PROPOSAL");
+  });
+
+  it("loads persisted proposals that carry a value, and stores the server-set value for a model turn without one", () => {
+    let state = start();
+    const messageMeta = meta();
+    state = applyWorkspaceCommand(state, { type: "SEND_MESSAGE",
+      text: "The clerk records physical returns in a spreadsheet." }, messageMeta);
+    const quote = "The clerk records physical returns in a spreadsheet.";
+    // Model output after the contract change: no value, scalars, and a sloppy quote.
+    state = recordInterviewTurn(state, { reply: "Thank you for that context.", questions: [], observations: [],
+      proposedUpdates: [{ fieldId: "current_systems", operation: "PROPOSE_SET", previousValue: null,
+        sourceId: messageMeta.id, quote: quote.toLowerCase() }] }, messageMeta.id, meta());
+    expect(state.proposals[0]).toMatchObject({ quote, value: quote, status: "PENDING" });
+    // State written before the change has exactly this shape (value === quote) and must still load and round-trip.
+    const reloaded = WorkspaceStateSchema.parse(JSON.parse(JSON.stringify(state)));
+    expect(getWorkspaceReadiness(reloaded).blockers.map(b => b.code)).toContain("PROPOSALS_PENDING");
+    expect(() => getWorkspaceReadiness({ ...reloaded, proposals: [{ ...reloaded.proposals[0]!, value: "changed" }] })).toThrow("INVALID_WORKSPACE_EVIDENCE");
   });
 });

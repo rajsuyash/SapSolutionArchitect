@@ -69,6 +69,33 @@ function answerFor(fixture: Fixture, state: WorkspaceState, fieldId: string): st
   const requirementIndex = state.requirementDrafts.findIndex(d => `${d.id}_statement` === fieldId);
   return requirementIndex >= 0 ? fixture.requirements[requirementIndex]?.statement ?? null : null;
 }
+const sentence = (text: string) => /[.!?]$/.test(text.trim()) ? text.trim() : `${text.trim()}.`;
+/** One step in the client's voice: asked about any field of a step, a real client describes the whole step. Deterministic. */
+function stepParagraph(step: Fixture["steps"][number]): string {
+  return [`For the "${step.name}" step, ${step.actor} does the work in ${step.system}.`, sentence(step.trigger), sentence(step.description),
+    `The inputs are ${sentence(step.inputs)}`, `The outputs are ${sentence(step.outputs)}`,
+    `The controls are ${sentence(step.controls)}`, sentence(step.exceptions)].join(" ");
+}
+/** The reply to an interviewer turn that asked about `asked`: one paragraph per asked step (all its fields), then the
+ * catalog/requirement answers for the asked keys, as one message. `answered` are the asked fields the user spoke to. */
+function composeReply(fixture: Fixture, state: WorkspaceState, asked: string[]) {
+  const paragraphs: string[] = [], singles: string[] = [], answered: string[] = [], unknown: string[] = [];
+  const stepsDone = new Set<number>();
+  for (const fieldId of asked) {
+    const stepIndex = state.stepDrafts.findIndex(d => fieldId.startsWith(`${d.id}_`));
+    const step = stepIndex >= 0 ? fixture.steps[stepIndex] : undefined;
+    if (step) {
+      if (!stepsDone.has(stepIndex)) { stepsDone.add(stepIndex); paragraphs.push(stepParagraph(step)); }
+      answered.push(fieldId);
+      continue;
+    }
+    const answer = stepIndex >= 0 ? null : answerFor(fixture, state, fieldId);
+    if (answer) { singles.push(answer); answered.push(fieldId); } else unknown.push(fieldId);
+  }
+  const text = [...paragraphs, [...singles, ...(unknown.length ? ["I don't know the rest of that."] : [])].join(" ")]
+    .filter(Boolean).join("\n\n");
+  return { text: text || "I don't have anything more to add.", answered, unknown };
+}
 function fieldCommand(state: WorkspaceState, fieldId: string, value: string | null): Command {
   const base = { status: value === null ? "UNKNOWN" : "KNOWN", value, rationale: null, owner: null, sourceId: null, quote: null };
   if (state.facts.some(f => f.id === fieldId)) return { type: "SET_FIELD", fieldId, ...base };
@@ -118,6 +145,7 @@ function metricsRecord(m: StageMetrics) {
   const groups = m.attemptIssues ?? (m.validationErrors.length ? [m.validationErrors] : []);
   return { model: m.model, attempts: m.attempts, validationErrors: m.validationErrors.length,
     issues: groups.flatMap((group, i) => group.map(issue => ({ attempt: i + 1, ...issue }))),
+    stopReasons: m.stopReasons ?? [], warnings: (m.warnings ?? []).map(({ path, code }) => ({ path, code })),
     inputTokens: m.inputTokens, outputTokens: m.outputTokens, latencyMs: m.latencyMs };
 }
 
@@ -167,7 +195,7 @@ async function runOnce(fixture: Fixture, deps: { pool: Pool; provider: string; m
       }
       const input = buildInterviewInput(state, messageId!);
       const record: Transcript["turns"][number] = { index, userMessage: state.messages.find(m => m.id === messageId)!.text,
-        gapsAvailable: input.activeGaps.length, questions: [], proposals: 0, attempts: 0, validationErrors: 0, issues: [], error: null,
+        gapsAvailable: input.activeGaps.length, questions: [], proposals: 0, attempts: 0, validationErrors: 0, issues: [], stopReasons: [], warnings: [], error: null,
         inputTokens: 0, outputTokens: 0, latencyMs: 0 };
       transcript.turns.push(record);
       try {
@@ -212,20 +240,14 @@ async function runOnce(fixture: Fixture, deps: { pool: Pool; provider: string; m
       if (capExceeded()) { transcript.aborted = `output token cap ${OUTPUT_TOKEN_CAP} exceeded`; break; }
 
       // Answer everything the interviewer asked in one message; fields without a bank answer get "I don't know".
-      const answers: string[] = [], unknown: string[] = [];
-      answeredFields = [];
-      for (const q of record.questions) {
-        const answer = answerFor(fixture, state, q.fieldId);
-        if (answer) { answers.push(answer); answeredFields.push(q.fieldId); } else unknown.push(q.fieldId);
-      }
-      if (!record.questions.length) {
+      let asked = record.questions.map(q => q.fieldId);
+      if (!asked.length) {
         // No question asked: volunteer the next few open details so the conversation keeps moving.
-        for (const gap of input.activeGaps) {
-          const answer = factStatus(state, gap.fieldId) === "EMPTY" ? answerFor(fixture, state, gap.fieldId) : null;
-          if (answer && answers.length < 3) { answers.push(answer); answeredFields.push(gap.fieldId); }
-        }
+        asked = input.activeGaps.map(g => g.fieldId).filter(id => factStatus(state, id) === "EMPTY" && answerFor(fixture, state, id)).slice(0, 3);
       }
-      outgoing = [...answers, ...(unknown.length ? ["I don't know the rest of that."] : [])].join(" ") || "I don't have anything more to add.";
+      const reply = composeReply(fixture, state, asked);
+      answeredFields = reply.answered; outgoing = reply.text;
+      const unknown = reply.unknown;
       for (const fieldId of unknown) await run(fieldCommand(state, fieldId, null));
     }
 

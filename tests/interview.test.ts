@@ -3,7 +3,8 @@ import { parseEnv } from "node:util";
 import { describe, expect, it, vi } from "vitest";
 import { parseEnvironment } from "../src/lib/env";
 import { createStageRunner } from "../src/lib/ai/runStage";
-import { InterviewTurnSchema, parseInterviewInput, validateInterviewTurn,
+import { z } from "zod";
+import { InterviewTurnSchema, InterviewTurnToolSchema, parseInterviewInput, validateInterviewTurn,
   type InterviewTurn } from "../src/lib/ai/discovery-interview";
 import { fixture } from "./support/interview-input";
 import { asStream } from "./support/sse";
@@ -26,7 +27,7 @@ describe("interview turn contract", () => {
     const input = fixture();
     expect(parseInterviewInput(input)).toEqual(input);
     expect(parseInterviewInput(input).evidence[0]!.text).toContain("\r\n");
-    expect(valid(proposal())).toEqual({ success: true, data: proposal() });
+    expect(valid(proposal())).toEqual({ success: true, data: proposal(), warnings: [] });
     expect(valid({ ...proposal(), questions: [], observations: [] }).success).toBe(true);
   });
   it.each(["approved", "readiness", "status", "sourceDigests"]) ("rejects model-controlled %s key", key => {
@@ -55,7 +56,6 @@ describe("interview turn contract", () => {
     expect(() => parseInterviewInput(input)).toThrow("INVALID_INTERVIEW_INPUT");
   });
   it("rejects stale revision, inactive and repeated questions", () => {
-    expect(valid({ ...proposal(), contextRevision: 2 }).success).toBe(false);
     const closed = proposal(); closed.questions[0]!.gapKey = "known-actor-gap";
     expect(valid(closed).success).toBe(false);
     const repeated = proposal(); repeated.questions.push({ ...repeated.questions[0]! });
@@ -89,16 +89,94 @@ describe("interview turn contract", () => {
   it("enforces output limits and strict structure", () => {
     const manyQuestions = proposal(); manyQuestions.questions = Array.from({ length: 4 }, () => ({ ...proposal().questions[0]! }));
     expect(InterviewTurnSchema.safeParse(manyQuestions).success).toBe(false);
-    expect(valid({ ...proposal(), reply: "x".repeat(2001) }).success).toBe(false);
+    expect(valid({ ...proposal(), questions: [{ ...proposal().questions[0]!, extra: "x" }] }).success).toBe(false);
   });
-  it("rejects unsupported paraphrases even when a real source quote is cited", () => {
-    const invented = proposal(); invented.proposedUpdates[0]!.value = "Auto-approve every invoice";
-    expect(valid(invented)).toMatchObject({ success: false,
-      errors: [{ path: "proposedUpdates.0.value", code: "value_must_equal_quote" }] });
+  it("ignores model-supplied scalars: contextRevision and schemaVersion come from the input", () => {
+    const result = valid({ ...proposal(), contextRevision: 2, schemaVersion: 7 });
+    expect(result).toMatchObject({ success: true, data: { contextRevision: 3, schemaVersion: 1 }, warnings: [] });
+    const omitted: Record<string, unknown> = { ...proposal() }; delete omitted.contextRevision; delete omitted.schemaVersion;
+    expect(valid(omitted)).toMatchObject({ success: true, data: { contextRevision: 3, schemaVersion: 1 } });
   });
-  it.each(["Which clerk records the return?", "Your changes are saved and approved."])
-    ("rejects question or status claims in acknowledgement: %s", reply => {
-      expect(valid({ ...proposal(), reply, questions: [] }).success).toBe(false);
+  it("replaces an off-list reply with the first acknowledgement and records a warning", () => {
+    for (const reply of ["Which clerk records the return?", "Your changes are saved and approved.", "x".repeat(2001), undefined]) {
+      expect(valid({ ...proposal(), reply })).toMatchObject({ success: true,
+        data: { reply: "Thank you for that context." }, warnings: [{ path: "reply", code: "reply_replaced" }] });
+    }
+    expect(valid({ ...proposal(), reply: "We can take this one step at a time." })).toMatchObject({
+      success: true, data: { reply: "We can take this one step at a time." }, warnings: [] });
+  });
+  it("drops a question without whyItMatters with a warning, but fails when that leaves no question while gaps are active", () => {
+    const two = proposal();
+    two.questions.push({ gapKey: "return-action-gap", question: "How is the return recorded today?", whyItMatters: "x" });
+    const raw = JSON.parse(JSON.stringify(two)); delete raw.questions[0].whyItMatters;
+    expect(valid(raw)).toMatchObject({ success: true, warnings: [{ path: "questions.0.whyItMatters", code: "question_dropped" }] });
+    expect((valid(raw) as { data: InterviewTurn }).data.questions.map(q => q.gapKey)).toEqual(["return-action-gap"]);
+    const blank = JSON.parse(JSON.stringify(proposal())); blank.questions[0].whyItMatters = "  ";
+    expect(valid(blank)).toEqual({ success: false, errors: [{ path: "questions.0.whyItMatters", code: "missing_why_it_matters" }] });
+    const noGaps = fixture(); noGaps.activeGaps = [];
+    expect(valid(blank, noGaps)).toMatchObject({ success: true, data: { questions: [] } });
+    // A turn that asks nothing was never "dropped to zero": still valid.
+    expect(valid({ ...proposal(), questions: [] }).success).toBe(true);
+  });
+  it("keeps inactive_gap a hard error for a question that has its explanation", () => {
+    const closed = proposal(); closed.questions[0]!.gapKey = "known-actor-gap";
+    expect(valid(closed)).toMatchObject({ success: false, errors: [{ path: "questions.0.gapKey", code: "inactive_gap" }] });
+  });
+});
+
+describe("server-owned proposal value and quote resolution", () => {
+  const withSource = (text: string, quote: string, value?: string) => {
+    const input = fixture(); input.currentMessage.text = text;
+    const turn = JSON.parse(JSON.stringify(proposal()));
+    turn.proposedUpdates[0].quote = quote; if (value !== undefined) turn.proposedUpdates[0].value = value; else delete turn.proposedUpdates[0].value;
+    return valid(turn, input);
+  };
+  const update = (result: ReturnType<typeof valid>) => (result as { data: InterviewTurn }).data.proposedUpdates[0]!;
+  it("sets value from the quote when the model supplies none", () => {
+    const result = valid({ ...proposal(), proposedUpdates: [{ ...proposal().proposedUpdates[0]!, value: undefined }] });
+    expect(result).toMatchObject({ success: true, warnings: [] });
+    expect(update(result)).toMatchObject({ quote: "The clerk records physical returns in the spreadsheet.", value: "The clerk records physical returns in the spreadsheet." });
+  });
+  it("ignores a model-supplied value that differs from the quote", () => {
+    const result = valid({ ...proposal(), proposedUpdates: [{ ...proposal().proposedUpdates[0]!, value: "Auto-approve every invoice" }] });
+    expect(update(result).value).toBe(update(result).quote);
+    expect(update(result).value).toBe("The clerk records physical returns in the spreadsheet.");
+  });
+  it("normalizes case and doubled whitespace to the exact original span", () => {
+    const result = withSource("Intro. The clerk records physical returns in the spreadsheet. Then billing runs.",
+      "the clerk records  physical\nreturns in the spreadsheet.");
+    expect(result).toMatchObject({ success: true, warnings: [{ path: "proposedUpdates.0.quote", code: "quote_normalized" }] });
+    expect(update(result)).toMatchObject({ quote: "The clerk records physical returns in the spreadsheet.", value: "The clerk records physical returns in the spreadsheet." });
+  });
+  it("normalizes curly quotes and dashes in either direction and stores the original text", () => {
+    const original = "The clerk says \u201Cclose the hire\u201D when it\u2019s back \u2014 never earlier.";
+    const straight = withSource(`Note: ${original} End.`, `The clerk says "close the hire" when it's back - never earlier.`);
+    expect(update(straight).quote).toBe(original);
+    const reverse = withSource(`Note: The clerk says "close the hire" - never earlier.`, "The clerk says \u201Cclose the hire\u201D \u2013 never earlier.");
+    expect(update(reverse).quote).toBe(`The clerk says "close the hire" - never earlier.`);
+  });
+  it("rejects a normalized quote that matches several spans of the source", () => {
+    expect(withSource("Returns go to stores. returns go to stores.", "RETURNS GO TO STORES.")).toEqual({
+      success: false, errors: [{ path: "proposedUpdates.0.quote", code: "ambiguous_quote" }] });
+  });
+  it("accepts a verbatim quote that repeats in the source, exactly as before", () => {
+    expect(withSource("Returns go to stores. Returns go to stores.", "Returns go to stores.").success).toBe(true);
+  });
+  it("still rejects a quote that matches nothing, even after normalization, or cites an unknown source", () => {
+    expect(withSource("The clerk records physical returns.", "The clerk approves every return.")).toMatchObject({
+      success: false, errors: [{ path: "proposedUpdates.0.quote", code: "quote_not_in_source" }] });
+    const unknownSource = JSON.parse(JSON.stringify(proposal())); unknownSource.proposedUpdates[0].sourceId = "nope";
+    expect(valid(unknownSource)).toMatchObject({ success: false, errors: [{ code: "quote_not_in_source" }] });
+  });
+  it("is stable: an accepted turn validates again unchanged", () => {
+    const result = withSource("Intro. The clerk records physical returns in the spreadsheet.", "the clerk records physical returns in the spreadsheet.");
+    const again = valid((result as { data: InterviewTurn }).data, (() => { const i = fixture(); i.currentMessage.text = "Intro. The clerk records physical returns in the spreadsheet."; return i; })());
+    expect(again).toMatchObject({ success: true, warnings: [], data: (result as { data: InterviewTurn }).data });
+  });
+  it("shows the model no value, schemaVersion or contextRevision in its tool schema", () => {
+    const schema = JSON.stringify(z.toJSONSchema(InterviewTurnToolSchema));
+    expect(schema).not.toMatch(/"value"|schemaVersion|contextRevision/);
+    expect(schema).toContain("quote");
   });
 });
 
@@ -147,14 +225,34 @@ describe("interview stage transport", () => {
     expect(JSON.parse(h.sent[1]!.messages[0]!.content).input).toEqual(fixture());
     expect(h.sent[1]!.messages[0]!.content).not.toContain("private-invalid-output");
   });
-  it.each(["wrong tool", "stale revision", "invented quote", "no tool"]) ("rejects %s after bounded repair", async kind => {
+  it.each(["wrong tool", "invented quote", "no tool"]) ("rejects %s after bounded repair", async kind => {
     const wrong = proposal();
-    if (kind === "stale revision") wrong.contextRevision = 2;
     if (kind === "invented quote") wrong.proposedUpdates[0]!.quote = "not said";
     const h = harness(() => response(wrong, kind === "no tool" ? "end_turn" : "tool_use",
       kind === "wrong tool" ? "other_tool" : "submit_interview_turn"));
     await expect(h.run(fixture())).rejects.toMatchObject({ code: "AI_INVALID_OUTPUT", metrics: { attempts: 2 } });
     expect(h.sent).toHaveLength(2);
+  });
+  it("requests 16000 output tokens for an interview turn and records the stop reason per attempt", async () => {
+    const h = harness(attempt => response(attempt === 1 ? { ...proposal(), proposedUpdates: [{ fieldId: "return-action" }] } : proposal(),
+      attempt === 1 ? "max_tokens" : "tool_use"));
+    const result = await h.run(fixture());
+    expect((h.sent[0] as unknown as { max_tokens: number }).max_tokens).toBe(16000);
+    expect(result.metrics.stopReasons).toEqual(["max_tokens", "tool_use"]);
+  });
+  it("records stop reasons on the failure path too", async () => {
+    const h = harness(() => response(null, "max_tokens"));
+    await expect(h.run(fixture())).rejects.toMatchObject({ code: "AI_INVALID_OUTPUT",
+      metrics: { stopReasons: ["max_tokens", "max_tokens"], attemptIssues: [[{ path: "", code: "invalid_type" }], [{ path: "", code: "invalid_type" }]] } });
+  });
+  it("accepts a turn whose scalars, reply and quote the server repairs, and reports the repairs in metrics", async () => {
+    const sloppy = { ...JSON.parse(JSON.stringify(proposal())), contextRevision: 99, reply: "Sure thing." };
+    delete sloppy.schemaVersion; sloppy.proposedUpdates[0].quote = sloppy.proposedUpdates[0].quote.toUpperCase();
+    const h = harness(() => response(sloppy));
+    const result = await h.run(fixture());
+    expect(result.metrics.attempts).toBe(1);
+    expect(result.payload).toEqual(proposal());
+    expect(result.metrics.warnings).toEqual([{ path: "reply", code: "reply_replaced" }, { path: "proposedUpdates.0.quote", code: "quote_normalized" }]);
   });
   it("rejects oversized complete request without truncating sources", async () => {
     const h = harness(() => response(), () => 60001);

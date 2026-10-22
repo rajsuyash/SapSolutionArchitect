@@ -17,6 +17,10 @@ export const TurnRecordSchema = z.object({
   model: z.string().optional(),
   /** Every validation issue runStage produced, tagged with the 1-based attempt it came from (absent in older transcripts). */
   issues: z.array(z.object({ attempt: z.number().int().positive(), path: z.string(), code: z.string(), detail: z.string().optional() })).default([]),
+  /** stop_reason of each provider response for this turn, in attempt order (absent in older transcripts). */
+  stopReasons: z.array(z.string().nullable()).default([]),
+  /** Server-side repairs applied to the accepted turn (reply_replaced, question_dropped, quote_normalized). */
+  warnings: z.array(z.object({ path: z.string(), code: z.string() })).default([]),
   /** Stage error code when the turn failed (AI_INVALID_OUTPUT, AI_PROVIDER_ERROR, ...). */
   error: z.string().nullable(),
   inputTokens: count, outputTokens: count, latencyMs: count,
@@ -79,6 +83,10 @@ export function jaccard(a: string, b: string): number {
 type Step = NonNullable<NonNullable<Transcript["toBe"]>["design"]>["steps"][number];
 const stepText = (step: Step) => [step.title, ...step.actions.flatMap(a => [a.operation, a.system ?? "", ...(a.fields ?? [])]),
   step.implementation.detail].join("\n");
+
+const count_ = (values: string[]) => Object.fromEntries(Object.entries(values.reduce<Record<string, number>>((acc, v) => {
+  acc[v] = (acc[v] ?? 0) + 1; return acc;
+}, {})).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])));
 
 export function scoreRun(rawTranscript: unknown, rawCase: unknown) {
   const transcript = TranscriptSchema.parse(rawTranscript);
@@ -161,6 +169,8 @@ export function scoreRun(rawTranscript: unknown, rawCase: unknown) {
     },
     repeatedGapKeys, nearDuplicateCount: nearDuplicates.length, nearDuplicates: nearDuplicates.slice(0, 20), // sample only
     validationErrorCodes, validationErrorPaths,
+    stopReasons: count_(turns.flatMap(t => t.stopReasons.map(r => r ?? "none"))),
+    warningCodes: count_(turns.flatMap(t => t.warnings.map(w => w.code))),
     firstAttemptValidRate: Number(firstAttemptValidRate.toFixed(3)),
     toBeValid, capabilities, capabilityCount, kpis, kpiCount, salesforce,
     outputTokens: turns.reduce((n, t) => n + t.outputTokens, 0) + (toBe?.outputTokens ?? 0),
@@ -182,6 +192,8 @@ export function summarize(score: Score): string {
   if (Object.keys(score.validationErrorCodes).length) {
     lines.push(`  validation error codes: ${top(score.validationErrorCodes)}`, `  validation error paths: ${top(score.validationErrorPaths)}`);
   }
+  if (Object.keys(score.stopReasons).length) lines.push(`  stop reasons: ${top(score.stopReasons)}`);
+  if (Object.keys(score.warningCodes).length) lines.push(`  server repairs (warnings): ${top(score.warningCodes)}`);
   if (score.aborted) lines.push(`  aborted: ${score.aborted}`);
   return lines.join("\n");
 }

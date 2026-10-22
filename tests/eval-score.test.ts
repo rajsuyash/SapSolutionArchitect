@@ -28,7 +28,7 @@ function step(i: number, title: string, detail: string, requirementKey: string, 
 const turn = (index: number, gapKeys: string[], extra: Partial<Transcript["turns"][number]> = {}): Transcript["turns"][number] => ({
   index, userMessage: `message ${index}`, gapsAvailable: 5,
   questions: gapKeys.map(k => ({ gapKey: k, fieldId: k.slice(2), question: `Distinct question about ${k.slice(2)} topic number ${index}` })),
-  proposals: 1, attempts: 1, validationErrors: 0, issues: [], error: null, inputTokens: 100, outputTokens: 50, latencyMs: 10, ...extra });
+  proposals: 1, attempts: 1, validationErrors: 0, issues: [], stopReasons: ["tool_use"], warnings: [], error: null, inputTokens: 100, outputTokens: 50, latencyMs: 10, ...extra });
 
 /** A passing run; each test mutates a private copy. */
 function goodTranscript(): Transcript {
