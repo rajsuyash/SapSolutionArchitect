@@ -150,6 +150,14 @@ test("a consultant conversation builds, confirms and generates from reviewed dis
     await answer(page, "Current initiating event", "A customer requests equipment");
     await answer(page, "Desired business outcome", "Accurate final invoices");
     await answer(page, "Desired controls", "A dated return record is required for audit");
+    // Company context the interviewer now requires before confirmation (see CONTEXT_FIELD_IDS).
+    for (const [label, text] of [["Process overview", "Dispatch, hire, return, then invoice"], ["Operating scale and volumes", "About 400 hires a month"],
+      ["Retained and non-SAP systems and integrations", "The telematics system stays and sends usage"], ["Legal entities, sites and organisation structure", "One company with two depots"],
+      ["Target SAP organisational units", "One company code and two plants"], ["SAP modules in scope", "Sales and Distribution, Finance"],
+      ["External parties involved", "Hire customers and a courier"], ["Approval and delegation-of-authority rules", "Invoices above 5,000 need manager approval"],
+      ["Localisation and compliance", "Local VAT and e-invoicing"], ["KPI baselines", "Invoice error rate is 8 percent"], ["KPI targets", "Invoice error rate below 1 percent"],
+      ["Constraints", "Standard SAP only, no custom development"], ["Timeline and go-live", "Go live next January"], ["Required outputs", "Final invoice and return report"],
+    ] as const) await answer(page, label, text);
     await page.getByRole("button", { name: "Add a current step", exact: true }).click();
     // Each step is one card: a heading, a definition list and a single edit toggle, never "Step 1 (...)" repeated per field.
     const card = page.getByRole("article", { name: /^Step 1/ });
@@ -278,5 +286,36 @@ test.describe("small screens", () => {
       await expect(chat).toHaveAttribute("aria-selected", "true");
       await expect(page.getByLabel("Your message")).toBeVisible();
     });
+  });
+});
+
+test("accepting every pending proposal at once records the field, the proposed step and the proposed requirement", async ({ page }) => {
+  test.setTimeout(90000);
+  const walkthrough = "Dispatch books the truck by phone. The clerk logs the return in a spreadsheet. Invoices are wrong when the return is late.";
+  await setup(page);
+  await startConversation(page);
+  await withWorker(async () => {
+    await say(page, walkthrough, 1);
+    const proposals = page.getByTestId("proposal");
+    await expect(proposals).toHaveCount(3);
+    await expect(proposals.filter({ hasText: "New current step: logs the return" })).toHaveCount(1);
+    await expect(proposals.filter({ hasText: /Pain point for proposed step logs the return/i })).toHaveCount(1);
+    await expect(proposals.filter({ hasText: "Current systems and handoffs" })).toHaveCount(1);
+    const summary = page.getByRole("tabpanel", { name: "Summary" });
+    await expect(summary.getByRole("article", { name: /^Step 1/ })).toHaveCount(0);
+
+    await page.getByTestId("accept-all").click();
+
+    await expect(proposals).toHaveCount(0);
+    await expect(page.getByTestId("accept-all")).toHaveCount(0);
+    const step = summary.getByRole("article", { name: /^Step 1/ });
+    await expect(step).toBeVisible();
+    await expect(step).toContainText("The clerk logs the return in a spreadsheet.");
+    await expect(summary.getByText("Invoices are wrong when the return is late.")).toBeVisible();
+    await expect(group(page, "Current systems and handoffs")).toContainText("Dispatch books the truck by phone.");
+    // Durable: the decision survives a reload and nothing is left pending.
+    await page.reload();
+    await expect(page.getByTestId("proposal")).toHaveCount(0);
+    await expect(page.getByRole("tabpanel", { name: "Summary" }).getByRole("article", { name: /^Step 1/ })).toBeVisible();
   });
 });

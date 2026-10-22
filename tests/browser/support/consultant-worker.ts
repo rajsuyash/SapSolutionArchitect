@@ -15,6 +15,10 @@ function interviewTurn(input: InterviewInput) {
   const quote = message.text.split(/(?<=\.)\s/)[0]!.trim();
   const first = input.history.length === 0;
   const open = input.fields.find(field => field.id === "current_systems" && field.status === "EMPTY");
+  // A walkthrough message (marked by its first sentence) also yields an interviewer-proposed step and requirement:
+  // the 2nd sentence becomes the step, the 3rd a pain point on it. `new_0` is that step within this turn.
+  const sentences = message.text.split(/(?<=\.)\s/).map(sentence => sentence.trim());
+  const walkthrough = sentences[0] === "Dispatch books the truck by phone." && sentences.length >= 3;
   return {
     schemaVersion: 1 as const, contextRevision: input.contextRevision,
     reply: "Thank you for that context." as const,
@@ -23,6 +27,9 @@ function interviewTurn(input: InterviewInput) {
       whyItMatters: "This lets me describe the current process accurately before we design anything." })),
     proposedUpdates: first && open ? [{ fieldId: open.id, operation: "PROPOSE_SET" as const, previousValue: null,
       value: quote, sourceId: message.id, quote }] : [],
+    proposedSteps: walkthrough ? [{ sourceId: message.id, quote: sentences[1]!, value: sentences[1]!, nameHint: "logs the return" }] : [],
+    proposedRequirements: walkthrough ? [{ stepRef: "new_0", kind: "PAIN_POINT" as const, critical: false,
+      sourceId: message.id, quote: sentences[2]!, value: sentences[2]! }] : [],
     observations: first && open ? [{ kind: "FOLLOW_UP_SUGGESTION" as const, fieldIds: [open.id],
       detail: "Check whether late returns are logged anywhere other than the spreadsheet." }] : [],
   };
