@@ -14,6 +14,11 @@ const modelPrices = z.preprocess((value) => {
   if (typeof value !== "string" || !value.trim()) return undefined;
   try { return JSON.parse(value); } catch { return value; }
 }, z.record(z.string().trim().min(1), z.tuple([z.number().positive().max(1000), z.number().positive().max(1000)])).default({}));
+/** The AI stages the runner knows; runStage derives its Stage type from this list. */
+export const STAGE_NAMES = ["problem_analysis", "to_be", "interview_turn"] as const;
+// Comma-separated stage names; blank or unset means none. Unknown names are rejected.
+const stageList = z.preprocess((value) => typeof value === "string"
+  ? value.split(",").map((name) => name.trim()).filter(Boolean) : value, z.array(z.enum(STAGE_NAMES)).default([]));
 const schema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
   DATABASE_URL: z.url({ protocol: /^postgres(ql)?$/ }),
@@ -33,6 +38,8 @@ const schema = z.object({
   AI_STAGE_BUDGET_SECONDS: seconds(300, 60, 1800),
   AI_CALL_TIMEOUT_SECONDS: seconds(120, 30, 1500),
   AI_DESIGN_CALL_TIMEOUT_SECONDS: seconds(240, 30, 1500),
+  // Stages run with model reasoning off (DeepInfra only; `thinking: {type: "disabled"}`). Empty = every stage keeps default reasoning.
+  AI_NO_THINKING_STAGES: stageList,
   AI_FAULT_INJECTION: z.string().regex(
     /^(problem_analysis|as_is|gap|to_be|change_doc|blueprint_narrative):(timeout|invalid|error)(:once)?$/,
   ).optional(),
@@ -59,6 +66,8 @@ const schema = z.object({
   const invalid = (name: string) => context.addIssue({ code: "custom", path: [name], message: "Invalid configuration" });
   if (config.AI_PROVIDER === "anthropic" && !config.ANTHROPIC_API_KEY?.trim()) invalid("ANTHROPIC_API_KEY");
   if (config.AI_PROVIDER === "deepinfra" && !config.DEEPINFRA_API_KEY?.trim()) invalid("DEEPINFRA_API_KEY");
+  // Claude rejects thinking: {type: "disabled"} with a 400, so the setting is refused rather than silently ignored.
+  if (config.AI_PROVIDER === "anthropic" && config.AI_NO_THINKING_STAGES.length) invalid("AI_NO_THINKING_STAGES");
   // A single call can never outlive the stage that contains it.
   if (config.AI_CALL_TIMEOUT_SECONDS > config.AI_STAGE_BUDGET_SECONDS) invalid("AI_CALL_TIMEOUT_SECONDS");
   if (config.AI_DESIGN_CALL_TIMEOUT_SECONDS > config.AI_STAGE_BUDGET_SECONDS) invalid("AI_DESIGN_CALL_TIMEOUT_SECONDS");

@@ -37,6 +37,9 @@ function harness(generate: (attempt: number) => Response = () => reply([thinking
 const deepinfra = () => parseEnvironment(env({ AI_PROVIDER: "deepinfra", DEEPINFRA_API_KEY: "di-test-key", AI_MODEL: "XiaomiMiMo/MiMo-V2.6-Pro" }));
 const anthropic = () => parseEnvironment(env({ AI_PROVIDER: "anthropic", ANTHROPIC_API_KEY: "an-test-key" }));
 const ALLOWED_KEYS = ["max_tokens", "messages", "model", "stream", "system", "tool_choice", "tools"];
+const noThinking = (stages: string, provider: "deepinfra" | "anthropic" = "deepinfra") => provider === "deepinfra"
+  ? parseEnvironment(env({ AI_PROVIDER: "deepinfra", DEEPINFRA_API_KEY: "di-test-key", AI_NO_THINKING_STAGES: stages }))
+  : { ...anthropic(), AI_NO_THINKING_STAGES: stages.split(",") as ["problem_analysis"] };
 afterEach(() => vi.restoreAllMocks());
 
 describe("provider request shape", () => {
@@ -68,6 +71,35 @@ describe("provider request shape", () => {
     expect((await createStageRunner(prod, { fetch: h.fetch })("problem_analysis", input)).metrics.provider).toBe("deepinfra");
     const stub = { ...anthropic(), NODE_ENV: "production" as const, AI_PROVIDER: "stub" as const };
     expect((await createStageRunner(stub, { fetch: harness().fetch })("problem_analysis", input)).metrics.provider).toBe("anthropic");
+  });
+});
+
+describe("AI_NO_THINKING_STAGES", () => {
+  it("sends thinking disabled, and only that extra key, for a listed stage on DeepInfra, and records it in the metrics", async () => {
+    const h = harness();
+    const result = await createStageRunner(noThinking("problem_analysis"), { fetch: h.fetch })("problem_analysis", input);
+    expect(Object.keys(h.bodies[0]!).sort()).toEqual([...ALLOWED_KEYS, "thinking"].sort());
+    expect(h.bodies[0]!.thinking).toEqual({ type: "disabled" });
+    expect(result.metrics.thinkingDisabled).toBe(true);
+  });
+  it("sends no thinking key for a stage that is not listed", async () => {
+    const h = harness();
+    const result = await createStageRunner(noThinking("interview_turn,to_be"), { fetch: h.fetch })("problem_analysis", input);
+    expect(Object.keys(h.bodies[0]!).sort()).toEqual(ALLOWED_KEYS);
+    expect(result.metrics.thinkingDisabled).toBe(false);
+  });
+  it("never sends it to Anthropic, even if a caller bypasses the environment check", async () => {
+    const h = harness();
+    const result = await createStageRunner(noThinking("problem_analysis", "anthropic"), { fetch: h.fetch })("problem_analysis", input);
+    expect(Object.keys(h.bodies[0]!).sort()).toEqual(ALLOWED_KEYS);
+    expect(result.metrics.thinkingDisabled).toBe(false);
+  });
+  it("rejects the setting for provider anthropic, defaults to none, and rejects unknown stage names", () => {
+    expect(() => parseEnvironment(env({ AI_PROVIDER: "anthropic", ANTHROPIC_API_KEY: "k", AI_NO_THINKING_STAGES: "interview_turn" }))).toThrow("AI_NO_THINKING_STAGES");
+    expect(anthropic().AI_NO_THINKING_STAGES).toEqual([]);
+    expect(noThinking(" interview_turn , problem_analysis ,").AI_NO_THINKING_STAGES).toEqual(["interview_turn", "problem_analysis"]);
+    expect(noThinking("  ").AI_NO_THINKING_STAGES).toEqual([]);
+    expect(() => noThinking("interview_turn,chat")).toThrow("AI_NO_THINKING_STAGES");
   });
 });
 

@@ -27,6 +27,8 @@ export const InterviewInputSchema = z.strictObject({
 });
 export type InterviewInput = z.infer<typeof InterviewInputSchema>;
 
+/** Most proposals one turn may carry; extra ones are dropped (see validateInterviewTurn), never an error. */
+const MAX_PROPOSALS = 12;
 const REPLIES = ["Thank you for that context.", "Let's review what you've shared.", "We can take this one step at a time."] as const;
 const observationShape = z.strictObject({
   kind: z.enum(["POSSIBLE_CONFLICT", "FOLLOW_UP_SUGGESTION"]),
@@ -48,14 +50,14 @@ export const InterviewTurnSchema = z.strictObject({
   questions: z.array(z.strictObject({
     gapKey: identifier, question: content(500), whyItMatters: content(500),
   })).max(3),
-  proposedUpdates: z.array(z.strictObject({ ...updateShape, value: fieldValue })).max(12),
+  proposedUpdates: z.array(z.strictObject({ ...updateShape, value: fieldValue })).max(MAX_PROPOSALS),
   observations: z.array(observationShape).max(6),
 });
 /** The contract shown to the model as the tool schema: no server-owned scalars and no `value`. */
 export const InterviewTurnToolSchema = z.strictObject({
   reply: z.enum(REPLIES),
   questions: z.array(z.strictObject({ gapKey: identifier, question: content(500), whyItMatters: content(500) })).max(3),
-  proposedUpdates: z.array(z.strictObject(updateShape)).max(12),
+  proposedUpdates: z.array(z.strictObject(updateShape)).max(MAX_PROPOSALS),
   observations: z.array(observationShape).max(6),
 });
 /** What the validator accepts from the model. Server-owned scalars and `value` may be present (and are then ignored);
@@ -63,12 +65,12 @@ export const InterviewTurnToolSchema = z.strictObject({
 export const InterviewTurnRawSchema = z.strictObject({
   schemaVersion: z.unknown().optional(), contextRevision: z.unknown().optional(), reply: z.unknown().optional(),
   questions: z.array(z.strictObject({ gapKey: identifier, question: content(500), whyItMatters: z.unknown().optional() })).max(3),
-  proposedUpdates: z.array(z.strictObject({ ...updateShape, value: z.unknown().optional() })).max(12),
+  proposedUpdates: z.array(z.strictObject({ ...updateShape, value: z.unknown().optional() })).max(MAX_PROPOSALS),
   observations: z.array(observationShape).max(6),
 });
 export type InterviewTurn = z.infer<typeof InterviewTurnSchema>;
 export type InterviewIssue = { path: string; code: string };
-export type InterviewWarning = { path: string; code: string };
+export type InterviewWarning = { path: string; code: string; detail?: string };
 
 // Defense in depth for common identifiers/credential formats, not a complete
 // secret detector. Authorized context assembly must exclude credential stores.
@@ -149,14 +151,18 @@ const usableWhy = (value: unknown): value is string =>
  * relevance of a selected passage; a user must still review each proposal before a separate authorized apply. */
 export function validateInterviewTurn(input: InterviewInput, raw: unknown):
   { success: true; data: InterviewTurn; warnings: InterviewWarning[] } | { success: false; errors: InterviewIssue[] } {
-  const parsed = InterviewTurnRawSchema.safeParse(raw);
+  // Over the proposal cap: keep the first MAX_PROPOSALS in model order. Dropped proposals are simply never offered;
+  // every kept one still goes through quote resolution and user acceptance.
+  const all = (raw as { proposedUpdates?: unknown } | null)?.proposedUpdates;
+  const dropped = Array.isArray(all) ? Math.max(0, all.length - MAX_PROPOSALS) : 0;
+  const parsed = InterviewTurnRawSchema.safeParse(dropped ? { ...(raw as object), proposedUpdates: (all as unknown[]).slice(0, MAX_PROPOSALS) } : raw);
   if (!parsed.success) return { success: false, errors: parsed.error.issues.slice(0, 30).map(issue => ({
     path: issue.path.filter(part => typeof part === "number" ||
       (typeof part === "string" && /^[a-zA-Z][a-zA-Z0-9]{0,30}$/.test(part))).join("."), code: issue.code,
   })) };
   const model = parsed.data;
   const errors: InterviewIssue[] = [];
-  const warnings: InterviewWarning[] = [];
+  const warnings: InterviewWarning[] = dropped ? [{ path: "proposedUpdates", code: "proposals_truncated", detail: `dropped ${dropped}` }] : [];
   const invalid = (path: string, code: string) => errors.push({ path, code });
   const reply = REPLIES.find(allowed => allowed === model.reply);
   if (!reply) warnings.push({ path: "reply", code: "reply_replaced" });

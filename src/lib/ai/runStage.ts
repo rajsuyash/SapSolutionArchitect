@@ -1,7 +1,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { readFile } from "node:fs/promises";
 import { z } from "zod";
-import { parseEnvironment, type Environment } from "../env";
+import { parseEnvironment, STAGE_NAMES, type Environment } from "../env";
 import { ProblemAnalysisInputSchema, ProblemAnalysisSchema, redactInput, schemaIssues, validateProblemAnalysis,
   type ProblemAnalysis, type ValidationIssue } from "./problem-analysis";
 import { createProviderClient, logProviderFailure, logStageTimeout, type Provider } from "./provider";
@@ -9,7 +9,7 @@ import { DetailedDesignSchema } from "./design-quality";
 import { loadToBeReferences, parseToBeInput, validateToBeOutput, type ToBeOutput } from "./to-be";
 import { InterviewTurnRawSchema, InterviewTurnToolSchema, parseInterviewInput, validateInterviewTurn, type InterviewInput, type InterviewTurn } from "./discovery-interview";
 
-type Stage = "problem_analysis" | "to_be" | "interview_turn";
+type Stage = (typeof STAGE_NAMES)[number];
 type Payloads = { problem_analysis: ProblemAnalysis; to_be: ToBeOutput; interview_turn: InterviewTurn };
 type Code = "AI_INPUT_INVALID" | "AI_INPUT_TOO_LARGE" | "AI_INVALID_OUTPUT" | "AI_PROVIDER_ERROR" | "AI_TIMEOUT" | "AI_CANCELLED";
 export type StageMetrics = { stage: Stage; provider: Provider; model: string; inputTokens: number;
@@ -20,14 +20,16 @@ export type StageMetrics = { stage: Stage; provider: Provider; model: string; in
    * null when the provider sent none. A response that never completed (timeout, transport error) adds no entry. */
   stopReasons?: (string | null)[];
   /** Interview turns only: server-side repairs applied to an accepted turn (off-list reply, dropped question, normalized quote). */
-  warnings?: ValidationIssue[] };
+  warnings?: ValidationIssue[];
+  /** True when this stage's requests carried `thinking: {type: "disabled"}` (AI_NO_THINKING_STAGES, DeepInfra only). */
+  thinkingDisabled?: boolean };
 export class AIStageError extends Error {
   constructor(public readonly code: Code, public readonly metrics: StageMetrics) {
     super(code); this.name = "AIStageError";
   }
 }
 type Config = Pick<Environment, "NODE_ENV" | "AI_PROVIDER" | "ANTHROPIC_API_KEY" | "DEEPINFRA_API_KEY" | "AI_MODEL" | "AI_MODEL_DESIGN" | "AI_MAX_INPUT_TOKENS" | "AI_MAX_CONCURRENCY" | "AI_FAULT_INJECTION"
-  | "AI_STAGE_BUDGET_SECONDS" | "AI_CALL_TIMEOUT_SECONDS" | "AI_DESIGN_CALL_TIMEOUT_SECONDS">;
+  | "AI_NO_THINKING_STAGES" | "AI_STAGE_BUDGET_SECONDS" | "AI_CALL_TIMEOUT_SECONDS" | "AI_DESIGN_CALL_TIMEOUT_SECONDS">;
 const SDK_TIMEOUT_MARGIN_MS = 5000;
 /** An interview turn carries up to 12 quoted proposals; 8000 truncated some turns into an empty tool payload. */
 const INTERVIEW_MAX_TOKENS = 16000;
@@ -64,14 +66,16 @@ export function createStageRunner(config: Config, options: Options = {}) {
   let faultUsed = false;
   // SDK retries and logs are disabled: this boundary owns the bounded policy and
   // SDK debug output can contain bodies. Never inherit API base URLs from env.
-  // The request sends only model, max_tokens, system, messages, tools and tool_choice: no Claude-specific
-  // thinking, effort, beta or cache_control settings, so any Messages-compatible provider accepts it.
+  // The request sends only model, max_tokens, system, messages, tools and tool_choice, plus `thinking: {type: "disabled"}`
+  // for stages listed in AI_NO_THINKING_STAGES on DeepInfra only (Claude rejects that form with a 400). No effort, beta or
+  // cache_control settings, so any Messages-compatible provider accepts it.
   // DeepInfra may return `thinking` blocks first; only tool_use blocks are read, all others are ignored.
   // Calls are streamed: headers arrive immediately, so Node's 300 s fetch headersTimeout (undici default)
   // cannot cut a long generation. The SDK timeout then only covers the wait for headers; our own
   // AbortSignal in call() bounds the whole stream. Keep the SDK value above both per-call limits.
   const sdkTimeout = Math.max(callTimeout, designCallTimeout) + SDK_TIMEOUT_MARGIN_MS;
   const client = provider === "stub" ? undefined : createProviderClient(provider, apiKey!, sdkTimeout, options.fetch);
+  const noThinking = new Set<Stage>(provider === "deepinfra" ? config.AI_NO_THINKING_STAGES ?? [] : []);
   let active = 0;
   const waiters: Array<{ ready: () => void; abort: () => void; signal: AbortSignal }> = [];
   const release = () => {
@@ -98,7 +102,7 @@ export function createStageRunner(config: Config, options: Options = {}) {
     const isDesign = DESIGN_STAGES.has(stage);
     const model = isDesign ? config.AI_MODEL_DESIGN ?? config.AI_MODEL : config.AI_MODEL;
     const metrics: StageMetrics = { stage, provider, model, inputTokens: 0, outputTokens: 0,
-      latencyMs: 0, attempts: 0, validationErrors: [], attemptIssues: [], stopReasons: [] };
+      latencyMs: 0, attempts: 0, validationErrors: [], attemptIssues: [], stopReasons: [], thinkingDisabled: noThinking.has(stage) };
     const fail = (code: Code) => new AIStageError(code, metrics);
     const deadline = new AbortController();
     const timer = setTimeout(() => deadline.abort(fail("AI_TIMEOUT")), stageBudget);
@@ -226,7 +230,7 @@ export function createStageRunner(config: Config, options: Options = {}) {
             metrics.attempts++;
             // Streaming keeps the connection alive during long generations; finalMessage() assembles the same Message.
             return client!.messages.stream({ model, max_tokens: designInput ? 24000 : interviewInput ? INTERVIEW_MAX_TOKENS : 12000, system,
-              messages, tools,
+              messages, tools, ...(metrics.thinkingDisabled ? { thinking: { type: "disabled" as const } } : {}),
               // Sonnet 5.5 rejects forced tool selection. The prompt requests the
               // tool; validation still requires exactly one complete tool payload.
               tool_choice: toolChoice }, { signal, timeout: isDesign ? designCallTimeout : callTimeout }).finalMessage();

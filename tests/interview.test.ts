@@ -91,6 +91,22 @@ describe("interview turn contract", () => {
     expect(InterviewTurnSchema.safeParse(manyQuestions).success).toBe(false);
     expect(valid({ ...proposal(), questions: [{ ...proposal().questions[0]!, extra: "x" }] }).success).toBe(false);
   });
+  it("keeps the first 12 proposals in model order and warns with the dropped count instead of failing the turn", () => {
+    const input = fixture();
+    input.fields = Array.from({ length: 15 }, (_, i) => ({ id: `f${i}`, label: `Field ${i}`, value: null, status: "EMPTY" as const }));
+    input.activeGaps = [{ key: "g1", fieldId: "f0", detail: "d", priority: "IMPORTANT" }];
+    const base = proposal().proposedUpdates[0]!;
+    const updates = Array.from({ length: 15 }, (_, i) => ({ ...base, fieldId: `f${i}` }));
+    updates[14] = { fieldId: "f14" } as typeof base; // a malformed dropped proposal must not fail the turn
+    const result = valid({ ...proposal(), questions: [], observations: [], proposedUpdates: updates }, input);
+    expect(result).toMatchObject({ success: true, warnings: [{ path: "proposedUpdates", code: "proposals_truncated", detail: "dropped 3" }] });
+    expect((result as { data: InterviewTurn }).data.proposedUpdates.map(u => u.fieldId)).toEqual(Array.from({ length: 12 }, (_, i) => `f${i}`));
+    // A kept proposal is still fully validated.
+    updates[3] = { ...base, fieldId: "f3", quote: "invented" };
+    expect(valid({ ...proposal(), questions: [], observations: [], proposedUpdates: updates }, input)).toMatchObject({ success: false });
+    // Exactly 12 is untouched: no warning.
+    expect(valid({ ...proposal(), questions: [], observations: [], proposedUpdates: updates.slice(0, 12).map((u, i) => i === 3 ? { ...base, fieldId: "f3" } : u) }, input)).toMatchObject({ success: true, warnings: [] });
+  });
   it("ignores model-supplied scalars: contextRevision and schemaVersion come from the input", () => {
     const result = valid({ ...proposal(), contextRevision: 2, schemaVersion: 7 });
     expect(result).toMatchObject({ success: true, data: { contextRevision: 3, schemaVersion: 1 }, warnings: [] });
