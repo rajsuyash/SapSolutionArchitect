@@ -70,13 +70,15 @@ describe("provider request shape", () => {
 });
 
 describe("reasoning-model latency", () => {
-  it("allows a DeepInfra call to run past 120s (the Anthropic limit) within the 240s call limit", async () => {
+  it("allows a DeepInfra call to run past 120s when AI_CALL_TIMEOUT_SECONDS is raised (recommended 300)", async () => {
     vi.useFakeTimers();
     try {
       const fetch = vi.fn<typeof globalThis.fetch>(async (url) => String(url).includes("count_tokens")
         ? new Response(JSON.stringify({ input_tokens: 10 }), json)
         : new Promise<Response>((resolve) => setTimeout(() => resolve(reply([thinking, tool()])), 150000)));
-      const pending = createStageRunner(deepinfra(), { fetch })("problem_analysis", input);
+      const slow = parseEnvironment(env({ AI_PROVIDER: "deepinfra", DEEPINFRA_API_KEY: "di-test-key", AI_MODEL: "XiaomiMiMo/MiMo-V2.6-Pro",
+        AI_STAGE_BUDGET_SECONDS: "1200", AI_CALL_TIMEOUT_SECONDS: "300", AI_DESIGN_CALL_TIMEOUT_SECONDS: "1000" }));
+      const pending = createStageRunner(slow, { fetch })("problem_analysis", input);
       await vi.waitFor(() => expect(fetch.mock.calls.some(([url]) => !String(url).includes("count_tokens"))).toBe(true));
       await vi.advanceTimersByTimeAsync(151000);
       expect((await pending).metrics.attempts).toBe(1);

@@ -44,9 +44,10 @@ function createRuntime() {
   const projects = createProjectRepository(services.pool, auth);
   const discovery = createDiscoveryRepository(services.pool, auth);
   const workspaces = createDiscoveryWorkspaceRepository(services.pool, auth);
-  const jobs = createJobService(services.pool, auth, services.queue, startQueue);
+  const jobs = createJobService(services.pool, auth, services.queue, startQueue,
+    { stageBudgetSeconds: config.AI_STAGE_BUDGET_SECONDS });
   const consultantJobs = createConsultantJobs(services.pool, auth, services.queue, startQueue,
-    { dailyJobLimit: config.CONSULTANT_DAILY_JOB_LIMIT });
+    { dailyJobLimit: config.CONSULTANT_DAILY_JOB_LIMIT, stageBudgetSeconds: config.AI_STAGE_BUDGET_SECONDS });
   const platformAdmin = createPlatformAdmin(services.pool, auth, config);
   let queueStart: Promise<void> | undefined;
   let pendingHealth: Promise<Health> | undefined;

@@ -10,15 +10,11 @@ import { loadWorkspaceForWorker, persistWorkspaceTurn } from "./discovery-worksp
 import { buildInterviewInput } from "./discovery-workspace-model";
 import { loadToBeReferences, parseToBeInput, validateToBeOutput } from "./ai/to-be";
 import { loadSapReferences, type SapReferenceOptions } from "./ai/sap-references";
-import { STAGE_BUDGET_MS } from "./ai/timeouts";
+import { DEFAULT_STAGE_BUDGET_SECONDS, jobTiming } from "./ai/timeouts";
 import { parseStoredToBe, type ReportData } from "./consultant-report";
 import type { createStageRunner } from "./ai/runStage";
 
 export const CONSULTANT_QUEUE = "consultant.discovery";
-/** The stage runner owns STAGE_BUDGET_MS. The row deadline and queue expiry add headroom for the
- * pre-stage transaction and the completion transaction, so a valid late result is not fenced out. */
-const DEADLINE_SECONDS = STAGE_BUDGET_MS / 1000 + 60;
-const QUEUE_EXPIRE_SECONDS = DEADLINE_SECONDS + 60;
 const timeoutError = () => Object.assign(new Error("AI_TIMEOUT"), { code: "AI_TIMEOUT" as const });
 const scope = z.strictObject({ projectId: z.uuid(), variantCode: z.string().regex(/^[A-Z][A-Z0-9_-]{0,39}$/) });
 const request = z.discriminatedUnion("kind", [
@@ -56,10 +52,13 @@ async function designInput(client: PoolClient, job: StoredJob) {
  * successful completion rechecks authorization, revision, deadline and run token. */
 export const DEFAULT_DAILY_JOB_LIMIT = 200;
 export function createConsultantJobs(pool: Pool, auth: AuthService, queue: PgBoss, startQueue: () => Promise<void>,
-  { dailyJobLimit = DEFAULT_DAILY_JOB_LIMIT }: { dailyJobLimit?: number } = {}) {
+  { dailyJobLimit = DEFAULT_DAILY_JOB_LIMIT, stageBudgetSeconds = DEFAULT_STAGE_BUDGET_SECONDS }:
+    { dailyJobLimit?: number; stageBudgetSeconds?: number } = {}) {
+  // The stage runner owns the budget; the row deadline and queue expiry add headroom (see jobTiming).
+  const { deadlineSeconds, queueExpireSeconds } = jobTiming(stageBudgetSeconds);
   return {
     async initialize() {
-      await queue.createQueue(CONSULTANT_QUEUE, { retryLimit: 0, expireInSeconds: QUEUE_EXPIRE_SECONDS, retentionSeconds: 3600, deleteAfterSeconds: 604800 });
+      await queue.createQueue(CONSULTANT_QUEUE, { retryLimit: 0, expireInSeconds: queueExpireSeconds, retentionSeconds: 3600, deleteAfterSeconds: 604800 });
     },
     enqueue: (token: string | null, projectId: string, variantCode: string, raw: unknown, key: string | null) =>
       withTenantSession(pool, auth, token, async ({ client, user }) => {
@@ -106,7 +105,7 @@ export function createConsultantJobs(pool: Pool, auth: AuthService, queue: PgBos
           WHERE org_id=$1 AND created_at>clock_timestamp()-interval '24 hours'`, [user.orgId])).rows[0]!;
         if (used.n > dailyJobLimit) throw new AuthError("RATE_LIMITED", 429,
           "Your organization has reached its daily consultant limit. Try again later.", undefined, Math.max(60, used.retry ?? 3600));
-        const queued = await queue.send(CONSULTANT_QUEUE, { jobId: id }, { id, retryLimit: 0, expireInSeconds: QUEUE_EXPIRE_SECONDS,
+        const queued = await queue.send(CONSULTANT_QUEUE, { jobId: id }, { id, retryLimit: 0, expireInSeconds: queueExpireSeconds,
           retentionSeconds: 3600, deleteAfterSeconds: 604800, db: { executeSql: (sql, values) => client.query(sql, values) } });
         if (!queued) throw new Error("Consultant enqueue failed");
         return expose(job);
@@ -164,7 +163,7 @@ export function createConsultantJobs(pool: Pool, auth: AuthService, queue: PgBos
       if (!z.uuid().safeParse(id).success) return;
       const runToken = randomUUID();
       const job = (await pool.query<StoredJob>(`UPDATE consultant_jobs SET status='RUNNING',run_token=$2,
-        deadline_at=clock_timestamp()+make_interval(secs=>$3) WHERE id=$1 AND status='QUEUED' RETURNING *`, [id, runToken, DEADLINE_SECONDS])).rows[0];
+        deadline_at=clock_timestamp()+make_interval(secs=>$3) WHERE id=$1 AND status='QUEUED' RETURNING *`, [id, runToken, deadlineSeconds])).rows[0];
       if (!job) return;
       try {
         signal.throwIfAborted();

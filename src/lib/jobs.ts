@@ -7,6 +7,7 @@ import { withTenantSession } from "./tenant";
 import { assertOrgCanRunAi } from "./org-limits";
 import { validateProblemAnalysis, type ProblemAnalysis } from "./ai/problem-analysis";
 import type { createStageRunner } from "./ai/runStage";
+import { DEFAULT_STAGE_BUDGET_SECONDS, jobTiming } from "./ai/timeouts";
 
 export const ANALYSIS_QUEUE = "analysis.problem";
 const uuid = z.uuid();
@@ -25,7 +26,9 @@ type StoredJob = { id: string; org_id: string; project_id: string; requested_by:
  * have no route, and derive org/project only from a persisted queue-bound job.
  * Provider code is imported by the worker only, not by the Next runtime.
  */
-export function createJobService(pool: Pool, auth: AuthService, queue: PgBoss, startQueue: () => Promise<void>) {
+export function createJobService(pool: Pool, auth: AuthService, queue: PgBoss, startQueue: () => Promise<void>,
+  { stageBudgetSeconds = DEFAULT_STAGE_BUDGET_SECONDS }: { stageBudgetSeconds?: number } = {}) {
+  const { deadlineSeconds, queueExpireSeconds } = jobTiming(stageBudgetSeconds);
   async function authorize(client: PoolClient, user: SessionUser, projectId: string) {
     if (!uuid.safeParse(projectId).success) throw notFound("PROJECT");
     const project = (await client.query<{ is_demo: boolean; setup_status: string; project_role: string | null }>(
@@ -54,7 +57,7 @@ export function createJobService(pool: Pool, auth: AuthService, queue: PgBoss, s
     // The sole privilege restoration is for trusted pg-boss SQL. Both inserts use
     // this checked-out transaction; no caller SQL or subsequent tenant reads run here.
     await client.query("SET LOCAL ROLE NONE");
-    const queued = await queue.send(ANALYSIS_QUEUE, { jobId: id }, { id, retryLimit: 0, expireInSeconds: 330,
+    const queued = await queue.send(ANALYSIS_QUEUE, { jobId: id }, { id, retryLimit: 0, expireInSeconds: queueExpireSeconds,
       retentionSeconds: 3600, deleteAfterSeconds: 604800, db: { executeSql: (text, values) => client.query(text, values) } });
     if (!queued) throw new Error("Analysis enqueue failed");
     return { jobId: id };
@@ -92,7 +95,7 @@ export function createJobService(pool: Pool, auth: AuthService, queue: PgBoss, s
       return enqueue(client, user, job.project_id, requestId, job.id);
     }),
     async initialize() {
-      await queue.createQueue(ANALYSIS_QUEUE, { retryLimit: 0, expireInSeconds: 330, retentionSeconds: 3600, deleteAfterSeconds: 604800 });
+      await queue.createQueue(ANALYSIS_QUEUE, { retryLimit: 0, expireInSeconds: queueExpireSeconds, retentionSeconds: 3600, deleteAfterSeconds: 604800 });
     },
     async recover() {
       // A dead process cannot execute catch/finally. Reconcile durable queue failures
@@ -108,8 +111,8 @@ export function createJobService(pool: Pool, auth: AuthService, queue: PgBoss, s
       const runToken = randomUUID();
       const claimed = await transaction(pool, async (client) => {
         const job = (await client.query<StoredJob>(`UPDATE jobs SET status='RUNNING',run_token=$2,
-          deadline_at=now()+interval '300 seconds',progress_label='Analyzing the business problem'
-          WHERE id=$1 AND status='QUEUED' RETURNING *`, [id, runToken])).rows[0];
+          deadline_at=now()+make_interval(secs=>$3),progress_label='Analyzing the business problem'
+          WHERE id=$1 AND status='QUEUED' RETURNING *`, [id, runToken, deadlineSeconds])).rows[0];
         if (!job) return null;
         const project = (await client.query(`SELECT p.name,p.client_name AS "clientName",p.problem_statement AS "problemStatement",
           p.target_product AS "targetProduct",p.starting_landscape AS "startingLandscape",p.modules

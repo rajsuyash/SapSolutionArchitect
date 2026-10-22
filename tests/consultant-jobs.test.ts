@@ -234,6 +234,23 @@ describe.skipIf(process.env.RUN_DB_TESTS !== "1")("durable consultant conversati
     expect((await jobs.latest(owner.token, owner.project.id, "RENTAL")).jobs[0]).toMatchObject({ status: "FAILED", error: { code: "AI_TIMEOUT" }, result: null });
   });
 
+  it("derives the consultant deadline and queue expiry from the configured stage budget", async () => {
+    const read = async (service: typeof jobs) => {
+      const owner = await draft(); const job = await service.enqueue(owner.token, owner.project.id, "RENTAL",
+        { kind: "INTERVIEW", expectedRevision: owner.state.revision, messageId: owner.messageId }, randomUUID());
+      const expire = Number((await pool.query("SELECT expire_seconds FROM pgboss.job WHERE name=$1 AND id=$2", [CONSULTANT_QUEUE, job.id])).rows[0].expire_seconds);
+      let left = 0;
+      await service.execute(job.id, new AbortController().signal, runner(async () => {
+        left = Number((await pool.query("SELECT extract(epoch FROM deadline_at-clock_timestamp()) AS s FROM consultant_jobs WHERE id=$1", [job.id])).rows[0].s);
+      }));
+      return { expire, left };
+    };
+    const defaults = await read(jobs);
+    expect(defaults.expire).toBe(420); expect(defaults.left).toBeGreaterThan(355); expect(defaults.left).toBeLessThanOrEqual(360);
+    const slow = await read(createConsultantJobs(pool, auth, queue, async () => {}, { stageBudgetSeconds: 1200 }));
+    expect(slow.expire).toBe(1320); expect(slow.left).toBeGreaterThan(1255); expect(slow.left).toBeLessThanOrEqual(1260);
+  });
+
   it("rejects a job pinned to another project's snapshot and a confirmed revision without a confirmation", async () => {
     const a = await confirmed(); const b = await confirmed();
     const bad = pool.query(`INSERT INTO consultant_jobs(id,org_id,project_id,variant_code,kind,input_revision,snapshot_id,requested_by,request_key,request_hash)

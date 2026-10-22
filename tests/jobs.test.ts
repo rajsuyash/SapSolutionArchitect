@@ -159,6 +159,23 @@ describe.skipIf(process.env.RUN_DB_TESTS !== "1")("durable analysis jobs on Post
     await expect(jobs.latest(owner.token, owner.project.id)).rejects.toMatchObject({ code: "PROJECT_NOT_FOUND" });
   });
 
+  it("derives the job deadline and queue expiry from the configured stage budget", async () => {
+    const read = async (service: ReturnType<typeof createJobService>) => {
+      const owner = await draft(); const { jobId } = await service.enqueue(owner.token, owner.project.id, randomUUID());
+      const expire = Number((await pool.query("SELECT expire_seconds FROM pgboss.job WHERE name=$1 AND id=$2", [ANALYSIS_QUEUE, jobId])).rows[0].expire_seconds);
+      let left = 0;
+      await service.execute(jobId, new AbortController().signal, (async () => {
+        left = Number((await pool.query("SELECT extract(epoch FROM deadline_at-now()) AS s FROM jobs WHERE id=$1", [jobId])).rows[0].s);
+        throw new Error("stop after reading the deadline");
+      }) as unknown as ReturnType<typeof createStageRunner>);
+      return { expire, left };
+    };
+    const defaults = await read(jobs);
+    expect(defaults.expire).toBe(420); expect(defaults.left).toBeGreaterThan(355); expect(defaults.left).toBeLessThanOrEqual(360);
+    const slow = await read(createJobService(pool, auth, queue, async () => {}, { stageBudgetSeconds: 1200 }));
+    expect(slow.expire).toBe(1320); expect(slow.left).toBeGreaterThan(1255); expect(slow.left).toBeLessThanOrEqual(1260);
+  });
+
   it("persists failures without scope changes and retries with a new durable job", async () => {
     const owner = await draft(); const { jobId } = await enqueue(owner);
     const fault = createStageRunner({ ...config, AI_FAULT_INJECTION: "problem_analysis:timeout:once" });

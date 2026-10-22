@@ -5,6 +5,9 @@ const httpUrl = z.url({ protocol: /^https?$/ });
 // A blank variable means "use the default", not zero.
 const price = (fallback: number) => z.preprocess((value) => (typeof value === "string" && !value.trim() ? undefined : value),
   z.coerce.number().min(0).default(fallback));
+// Whole seconds within [min, max]; a blank variable means "use the default".
+const seconds = (fallback: number, min: number, max: number) => z.preprocess((value) => (typeof value === "string" && !value.trim() ? undefined : value),
+  z.coerce.number().int().min(min).max(max).default(fallback));
 const schema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
   DATABASE_URL: z.url({ protocol: /^postgres(ql)?$/ }),
@@ -18,6 +21,10 @@ const schema = z.object({
   AI_MAX_INPUT_TOKENS: z.coerce.number().int().positive().default(60000),
   CONSULTANT_DAILY_JOB_LIMIT: z.coerce.number().int().min(1).max(100000).default(200),
   AI_MAX_CONCURRENCY: z.coerce.number().int().positive().default(4),
+  // Time budgets. The defaults are sized for Claude; slower models need more (see README, "AI time budgets").
+  AI_STAGE_BUDGET_SECONDS: seconds(300, 60, 1800),
+  AI_CALL_TIMEOUT_SECONDS: seconds(120, 30, 1500),
+  AI_DESIGN_CALL_TIMEOUT_SECONDS: seconds(240, 30, 1500),
   AI_FAULT_INJECTION: z.string().regex(
     /^(problem_analysis|as_is|gap|to_be|change_doc|blueprint_narrative):(timeout|invalid|error)(:once)?$/,
   ).optional(),
@@ -42,6 +49,9 @@ const schema = z.object({
   const invalid = (name: string) => context.addIssue({ code: "custom", path: [name], message: "Invalid configuration" });
   if (config.AI_PROVIDER === "anthropic" && !config.ANTHROPIC_API_KEY?.trim()) invalid("ANTHROPIC_API_KEY");
   if (config.AI_PROVIDER === "deepinfra" && !config.DEEPINFRA_API_KEY?.trim()) invalid("DEEPINFRA_API_KEY");
+  // A single call can never outlive the stage that contains it.
+  if (config.AI_CALL_TIMEOUT_SECONDS > config.AI_STAGE_BUDGET_SECONDS) invalid("AI_CALL_TIMEOUT_SECONDS");
+  if (config.AI_DESIGN_CALL_TIMEOUT_SECONDS > config.AI_STAGE_BUDGET_SECONDS) invalid("AI_DESIGN_CALL_TIMEOUT_SECONDS");
   if (config.EMAIL_PROVIDER === "resend" && !config.EMAIL_API_KEY?.trim()) invalid("EMAIL_API_KEY");
   // Google sign-in needs both halves of the client credential, or neither.
   if (!config.GOOGLE_CLIENT_ID?.trim() !== !config.GOOGLE_CLIENT_SECRET?.trim()) {

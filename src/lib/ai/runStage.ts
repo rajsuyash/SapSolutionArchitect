@@ -4,7 +4,6 @@ import { z } from "zod";
 import { parseEnvironment, type Environment } from "../env";
 import { ProblemAnalysisInputSchema, ProblemAnalysisSchema, redactInput, schemaIssues, validateProblemAnalysis,
   type ProblemAnalysis, type ValidationIssue } from "./problem-analysis";
-import { STAGE_BUDGET_MS } from "./timeouts";
 import { createProviderClient, logProviderFailure, type Provider } from "./provider";
 import { DetailedDesignSchema } from "./design-quality";
 import { loadToBeReferences, parseToBeInput, validateToBeOutput, type ToBeOutput } from "./to-be";
@@ -20,11 +19,9 @@ export class AIStageError extends Error {
     super(code); this.name = "AIStageError";
   }
 }
-type Config = Pick<Environment, "NODE_ENV" | "AI_PROVIDER" | "ANTHROPIC_API_KEY" | "DEEPINFRA_API_KEY" | "AI_MODEL" | "AI_MAX_INPUT_TOKENS" | "AI_MAX_CONCURRENCY" | "AI_FAULT_INJECTION">;
+type Config = Pick<Environment, "NODE_ENV" | "AI_PROVIDER" | "ANTHROPIC_API_KEY" | "DEEPINFRA_API_KEY" | "AI_MODEL" | "AI_MAX_INPUT_TOKENS" | "AI_MAX_CONCURRENCY" | "AI_FAULT_INJECTION"
+  | "AI_STAGE_BUDGET_SECONDS" | "AI_CALL_TIMEOUT_SECONDS" | "AI_DESIGN_CALL_TIMEOUT_SECONDS">;
 type Options = { fetch?: typeof fetch; sapCatalogDir?: string };
-const CALL_TIMEOUT = 120000;
-const DESIGN_CALL_TIMEOUT = 240000;
-const JOB_TIMEOUT = STAGE_BUDGET_MS;
 
 function pause(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -43,9 +40,10 @@ export function createStageRunner(config: Config, options: Options = {}) {
   if (!Number.isSafeInteger(config.AI_MAX_CONCURRENCY) || config.AI_MAX_CONCURRENCY < 1 ||
     !Number.isSafeInteger(config.AI_MAX_INPUT_TOKENS) || config.AI_MAX_INPUT_TOKENS < 1) throw new Error("Invalid AI limits");
   const provider: Provider = config.NODE_ENV === "production" && config.AI_PROVIDER === "stub" ? "anthropic" : config.AI_PROVIDER;
-  // MiMo is a reasoning model served at about 20-40 tokens/s: a 2.5k-token answer took 114s live, so the
-  // 120s limit is too tight for it. The whole-stage budget still caps the stage.
-  const callTimeout = provider === "deepinfra" ? DESIGN_CALL_TIMEOUT : CALL_TIMEOUT;
+  // Slow models (MiMo: ~20-40 tokens/s) need larger values; the operator sets them, never the provider name.
+  const callTimeout = config.AI_CALL_TIMEOUT_SECONDS * 1000;
+  const designCallTimeout = config.AI_DESIGN_CALL_TIMEOUT_SECONDS * 1000;
+  const stageBudget = config.AI_STAGE_BUDGET_SECONDS * 1000;
   const apiKey = provider === "anthropic" ? config.ANTHROPIC_API_KEY : provider === "deepinfra" ? config.DEEPINFRA_API_KEY : undefined;
   if (provider !== "stub" && !apiKey?.trim()) throw new Error(`Missing ${provider === "anthropic" ? "ANTHROPIC_API_KEY" : "DEEPINFRA_API_KEY"}`);
   const fault = config.NODE_ENV === "production" ? undefined : config.AI_FAULT_INJECTION;
@@ -83,7 +81,7 @@ export function createStageRunner(config: Config, options: Options = {}) {
       latencyMs: 0, attempts: 0, validationErrors: [] };
     const fail = (code: Code) => new AIStageError(code, metrics);
     const deadline = new AbortController();
-    const timer = setTimeout(() => deadline.abort(fail("AI_TIMEOUT")), JOB_TIMEOUT);
+    const timer = setTimeout(() => deadline.abort(fail("AI_TIMEOUT")), stageBudget);
     const signal = externalSignal ? AbortSignal.any([externalSignal, deadline.signal]) : deadline.signal;
     const pending = new Set<Promise<unknown>>();
     let acquired = false;
@@ -210,8 +208,8 @@ export function createStageRunner(config: Config, options: Options = {}) {
               messages, tools,
               // Sonnet 5.5 rejects forced tool selection. The prompt requests the
               // tool; validation still requires exactly one complete tool payload.
-              tool_choice: toolChoice }, { signal, timeout: designInput ? DESIGN_CALL_TIMEOUT : callTimeout });
-          }, designInput ? DESIGN_CALL_TIMEOUT : callTimeout);
+              tool_choice: toolChoice }, { signal, timeout: designInput ? designCallTimeout : callTimeout });
+          }, designInput ? designCallTimeout : callTimeout);
           const usage = z.object({ input_tokens: z.number().int().nonnegative(), output_tokens: z.number().int().nonnegative(),
             cache_creation_input_tokens: z.number().int().nonnegative().nullish(), cache_read_input_tokens: z.number().int().nonnegative().nullish(),
           }).safeParse(message.usage);

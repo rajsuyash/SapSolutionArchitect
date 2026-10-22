@@ -74,6 +74,18 @@ Never pass secrets as Docker build arguments or commit them. Required variables 
 
 DeepInfra requests go to `https://api.deepinfra.com/anthropic` and carry no Claude-specific parameters (thinking, effort, betas, cache control). The model's `thinking` blocks are ignored. Provider failures stay generic for users; the server logs one JSON line per failure (`ai_provider_error` with provider, model, stage, HTTP status, error type and a category: credit, auth, rate_limit, overloaded, invalid_request, timeout, unknown) and never the prompt or key.
 
+**AI time budgets.** Three variables, whole seconds, validated at startup (a per-call value above the stage budget stops the process):
+
+| Variable | Default | Range | Meaning |
+| --- | --- | --- | --- |
+| `AI_STAGE_BUDGET_SECONDS` | 300 | 60-1800 | Whole stage, including repair attempts |
+| `AI_CALL_TIMEOUT_SECONDS` | 120 | 30-1500 | One model call, ordinary stages (problem analysis, interview turn) |
+| `AI_DESIGN_CALL_TIMEOUT_SECONDS` | 240 | 30-1500 | One model call, the To-Be design stage (up to 24000 output tokens) |
+
+The defaults suit Claude. A slow model needs more: MiMo-V2.6-Pro on DeepInfra produces about 20-40 output tokens/s, so a 24000-token To-Be call can take about 800 s. Recommended for `AI_PROVIDER=deepinfra`: `AI_STAGE_BUDGET_SECONDS=1200`, `AI_CALL_TIMEOUT_SECONDS=300`, `AI_DESIGN_CALL_TIMEOUT_SECONDS=1000`. The provider choice no longer changes any timeout by itself.
+
+The job row deadline is the stage budget plus 60 s, and the pg-boss expiry is the deadline plus 60 s (defaults: 360 s and 420 s). Both follow `AI_STAGE_BUDGET_SECONDS` for the web and worker processes, so set it identically on both. `createQueue` does not change an existing queue's expiry; the per-job expiry sent with every job is the authoritative value. Trade-off: a larger budget means a job whose worker died, or a model that hangs, is reported as timed out later (up to the budget plus 60 s). The browser only polls job status and Cloud Run worker pools have no request timeout, so long stages are safe.
+
 The demo sets `AI_MAX_CONCURRENCY=1` and `AI_MAX_INPUT_TOKENS=60000` (To-Be generation needs about 45000 or more). These limit concurrency and input size, not total monthly AI spending. Do not share the invitation password publicly. Do not enable service tracing that captures request bodies or credentials.
 
 `/api/health` returns 200 only when PostgreSQL, a completed queue probe, and storage are healthy. Cloud Run checks it before routing traffic. Stopping the worker intentionally makes it return 503.
