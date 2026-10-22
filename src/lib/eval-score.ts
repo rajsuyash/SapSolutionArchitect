@@ -19,7 +19,7 @@ export const TurnRecordSchema = z.object({
   issues: z.array(z.object({ attempt: z.number().int().positive(), path: z.string(), code: z.string(), detail: z.string().optional() })).default([]),
   /** stop_reason of each provider response for this turn, in attempt order (absent in older transcripts). */
   stopReasons: z.array(z.string().nullable()).default([]),
-  /** Server-side repairs applied to the accepted turn (reply_replaced, question_dropped, quote_normalized). */
+  /** Server-side repairs applied to the accepted turn (reply_replaced, question_dropped, name_hint_dropped). */
   warnings: z.array(z.object({ path: z.string(), code: z.string() })).default([]),
   /** Stage error code when the turn failed (AI_INVALID_OUTPUT, AI_PROVIDER_ERROR, ...). */
   error: z.string().nullable(),

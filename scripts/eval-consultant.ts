@@ -23,7 +23,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { parseEnv, promisify } from "node:util";
 import { Client, Pool } from "pg";
 import { AIStageError, createStageRunner, runStage, type StageMetrics } from "../src/lib/ai/runStage";
-import { validateInterviewTurn } from "../src/lib/ai/discovery-interview";
+import { revalidateStoredTurn } from "../src/lib/ai/discovery-interview";
 import { parseEnvironment } from "../src/lib/env";
 import { loadToBeReferences, parseToBeInput, validateToBeOutput } from "../src/lib/ai/to-be";
 import { createAuthService, transaction } from "../src/lib/auth";
@@ -236,7 +236,7 @@ async function runOnce(fixture: Fixture, deps: { pool: Pool; provider: string; m
         const generated = await stage("interview_turn", input);
         Object.assign(record, metricsRecord(generated.metrics));
         outputTokens += generated.metrics.outputTokens;
-        if (!validateInterviewTurn(input, generated.payload).success) throw new Error("DRIVER_REVALIDATION_FAILED");
+        if (!revalidateStoredTurn(input, generated.payload).success) throw new Error("DRIVER_REVALIDATION_FAILED");
         await transaction(pool, client => persistWorkspaceTurn(client, { orgId: owner.user.orgId, projectId: project.id,
           variantCode: variant, requestedBy: owner.user.id, expectedRevision: state.revision, currentMessageId: messageId!,
           turn: generated.payload, requestKey: randomUUID() }));

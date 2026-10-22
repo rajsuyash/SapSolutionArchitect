@@ -14,7 +14,15 @@ import { DEFAULT_STAGE_BUDGET_SECONDS, jobTiming } from "./ai/timeouts";
 import { parseStoredToBe, type ReportData } from "./consultant-report";
 import type { createStageRunner } from "./ai/runStage";
 
-export const CONSULTANT_QUEUE = "consultant.discovery";
+/** Interview turns (about 40 s) and To-Be runs (up to 20 min) use separate queues, so a long run never waits behind or
+ * in front of a chat turn. Problem analysis has its own queue (see jobs.ts) and counts as batch work. */
+export const CONSULTANT_CHAT_QUEUE = "consultant-chat";
+export const CONSULTANT_BATCH_QUEUE = "consultant-batch";
+/** The single queue used before the split. New jobs never go there; the worker drains it so jobs queued at deploy time
+ * still run, and recovery still recognises them. Remove once no pgboss.job row with this name is created/active. */
+export const LEGACY_CONSULTANT_QUEUE = "consultant.discovery";
+export const CONSULTANT_QUEUES = [CONSULTANT_CHAT_QUEUE, CONSULTANT_BATCH_QUEUE, LEGACY_CONSULTANT_QUEUE] as const;
+export const consultantQueueFor = (kind: "INTERVIEW" | "TO_BE") => kind === "INTERVIEW" ? CONSULTANT_CHAT_QUEUE : CONSULTANT_BATCH_QUEUE;
 const timeoutError = () => Object.assign(new Error("AI_TIMEOUT"), { code: "AI_TIMEOUT" as const });
 const scope = z.strictObject({ projectId: z.uuid(), variantCode: z.string().regex(/^[A-Z][A-Z0-9_-]{0,39}$/) });
 const request = z.discriminatedUnion("kind", [
@@ -58,7 +66,9 @@ export function createConsultantJobs(pool: Pool, auth: AuthService, queue: PgBos
   const { deadlineSeconds, queueExpireSeconds } = jobTiming(stageBudgetSeconds);
   return {
     async initialize() {
-      await queue.createQueue(CONSULTANT_QUEUE, { retryLimit: 0, expireInSeconds: queueExpireSeconds, retentionSeconds: 3600, deleteAfterSeconds: 604800 });
+      for (const name of CONSULTANT_QUEUES) {
+        await queue.createQueue(name, { retryLimit: 0, expireInSeconds: queueExpireSeconds, retentionSeconds: 3600, deleteAfterSeconds: 604800 });
+      }
     },
     enqueue: (token: string | null, projectId: string, variantCode: string, raw: unknown, key: string | null) =>
       withTenantSession(pool, auth, token, async ({ client, user }) => {
@@ -105,7 +115,7 @@ export function createConsultantJobs(pool: Pool, auth: AuthService, queue: PgBos
           WHERE org_id=$1 AND created_at>clock_timestamp()-interval '24 hours'`, [user.orgId])).rows[0]!;
         if (used.n > dailyJobLimit) throw new AuthError("RATE_LIMITED", 429,
           "Your organization has reached its daily consultant limit. Try again later.", undefined, Math.max(60, used.retry ?? 3600));
-        const queued = await queue.send(CONSULTANT_QUEUE, { jobId: id }, { id, retryLimit: 0, expireInSeconds: queueExpireSeconds,
+        const queued = await queue.send(consultantQueueFor(input.kind), { jobId: id }, { id, retryLimit: 0, expireInSeconds: queueExpireSeconds,
           retentionSeconds: 3600, deleteAfterSeconds: 604800, db: { executeSql: (sql, values) => client.query(sql, values) } });
         if (!queued) throw new Error("Consultant enqueue failed");
         return expose(job);
@@ -156,7 +166,7 @@ export function createConsultantJobs(pool: Pool, auth: AuthService, queue: PgBos
         error=jsonb_build_object('code',CASE WHEN j.status='RUNNING' THEN 'AI_TIMEOUT' ELSE 'JOB_INTERRUPTED' END,
           'message','The response was interrupted. Your saved answers are safe; you can retry.')
         WHERE status IN ('QUEUED','RUNNING') AND ((status='RUNNING' AND deadline_at<=clock_timestamp()) OR NOT EXISTS (
-          SELECT 1 FROM pgboss.job q WHERE q.name=$1 AND q.id=j.id AND q.state IN ('created','retry','active')))`, [CONSULTANT_QUEUE]);
+          SELECT 1 FROM pgboss.job q WHERE q.name=ANY($1) AND q.id=j.id AND q.state IN ('created','retry','active')))`, [[...CONSULTANT_QUEUES]]);
     },
     async execute(id: string, signal: AbortSignal, runStage: ReturnType<typeof createStageRunner>,
       catalog: SapReferenceOptions = {}) {

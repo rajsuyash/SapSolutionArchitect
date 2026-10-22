@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { indexSentences, resolveSentenceIds } from "./interview-sentences";
 
 const identifier = z.string().regex(/^[A-Za-z0-9_-]{1,64}$/);
 const content = (limit: number) => z.string().min(1).max(limit)
@@ -44,14 +45,17 @@ const observationShape = z.strictObject({
   kind: z.enum(["POSSIBLE_CONFLICT", "FOLLOW_UP_SUGGESTION"]),
   fieldIds: z.array(identifier).min(1).max(10), detail: content(1000),
 });
-const updateShape = {
-  fieldId: identifier, operation: z.enum(["PROPOSE_SET", "PROPOSE_REPLACE"]),
-  previousValue: fieldValue.nullable(), sourceId: identifier, quote: content(8000),
-};
-/** PROPOSE_STEP: a new current step. The quote becomes its description; nameHint must itself be a passage of the source. */
-const stepShape = { sourceId: identifier, quote: content(8000), nameHint: content(200).nullable().optional() };
+/** The model cites 1 to 3 sentence IDs (`S7`) shown in the input; the server turns them into `sourceId` + exact `quote`.
+ * Format is checked on resolution (unknown_sentence_id), not by the schema, so a malformed ID gets a precise repair message. */
+const sentenceIds = z.array(z.string().min(1).max(16)).min(1).max(3);
+/** What the server stores for one citation: the exact source substring. */
+const storedCite = { sourceId: identifier, quote: content(8000) };
+const updateBase = { fieldId: identifier, operation: z.enum(["PROPOSE_SET", "PROPOSE_REPLACE"]), previousValue: fieldValue.nullable() };
+/** PROPOSE_STEP: a new current step. The cited sentences become its description; nameHint is a short label, kept only if
+ * it is a phrase of the source and otherwise dropped with a warning. */
+const stepBase = { nameHint: content(200).nullable().optional() };
 /** PROPOSE_REQUIREMENT: `stepRef` is an existing step id or `new_<n>`, the n-th entry (from 0) of this turn's proposedSteps. */
-const requirementShape = { stepRef: identifier, kind: requirementKind, critical: z.boolean(), sourceId: identifier, quote: content(8000) };
+const requirementBase = { stepRef: identifier, kind: requirementKind, critical: z.boolean() };
 
 /** A validated turn as the server stores it. All changes are proposals. No output field conveys approval or readiness.
  * Questions and observations remain untrusted model text, not workflow commands. `value` is server-owned: it is always
@@ -64,30 +68,33 @@ export const InterviewTurnSchema = z.strictObject({
   questions: z.array(z.strictObject({
     gapKey: identifier, question: content(500), whyItMatters: content(500),
   })).max(3),
-  proposedUpdates: z.array(z.strictObject({ ...updateShape, value: fieldValue })).max(MAX_PROPOSALS),
-  proposedSteps: z.array(z.strictObject({ sourceId: identifier, quote: content(8000), value: fieldValue, nameHint: content(200).nullable() })).max(MAX_NEW_STEPS),
-  proposedRequirements: z.array(z.strictObject({ ...requirementShape, value: fieldValue })).max(MAX_NEW_REQUIREMENTS),
+  proposedUpdates: z.array(z.strictObject({ ...updateBase, ...storedCite, value: fieldValue })).max(MAX_PROPOSALS),
+  proposedSteps: z.array(z.strictObject({ ...storedCite, value: fieldValue, nameHint: content(200).nullable() })).max(MAX_NEW_STEPS),
+  proposedRequirements: z.array(z.strictObject({ ...requirementBase, ...storedCite, value: fieldValue })).max(MAX_NEW_REQUIREMENTS),
   observations: z.array(observationShape).max(6),
 });
-/** The contract shown to the model as the tool schema: no server-owned scalars and no `value`. */
+/** The contract shown to the model as the tool schema: sentence IDs as evidence, no server-owned scalars and no `value`. */
 export const InterviewTurnToolSchema = z.strictObject({
   reply: z.enum(REPLIES),
   questions: z.array(z.strictObject({ gapKey: identifier, question: content(500), whyItMatters: content(500) })).max(3),
-  proposedUpdates: z.array(z.strictObject(updateShape)).max(MAX_PROPOSALS),
-  proposedSteps: z.array(z.strictObject(stepShape)).max(MAX_NEW_STEPS),
-  proposedRequirements: z.array(z.strictObject(requirementShape)).max(MAX_NEW_REQUIREMENTS),
+  proposedUpdates: z.array(z.strictObject({ ...updateBase, sentenceIds })).max(MAX_PROPOSALS),
+  proposedSteps: z.array(z.strictObject({ ...stepBase, sentenceIds })).max(MAX_NEW_STEPS),
+  proposedRequirements: z.array(z.strictObject({ ...requirementBase, sentenceIds })).max(MAX_NEW_REQUIREMENTS),
   observations: z.array(observationShape).max(6),
 });
-/** What the validator accepts from the model. Server-owned scalars and `value` may be present (and are then ignored);
- * a reply outside the allowed set or a question without usable whyItMatters is repaired or dropped with a warning. */
-export const InterviewTurnRawSchema = z.strictObject({
+/** What the validator accepts. Server-owned scalars and `value` may be present (and are then ignored); a reply outside
+ * the allowed set or a question without usable whyItMatters is repaired or dropped with a warning. The evidence key
+ * differs by who wrote the turn: a model cites `sentenceIds`; a turn the server already validated carries `sourceId` + `quote`. */
+const rawTurn = <C extends z.ZodRawShape>(cite: C) => z.strictObject({
   schemaVersion: z.unknown().optional(), contextRevision: z.unknown().optional(), reply: z.unknown().optional(),
   questions: z.array(z.strictObject({ gapKey: identifier, question: content(500), whyItMatters: z.unknown().optional() })).max(3),
-  proposedUpdates: z.array(z.strictObject({ ...updateShape, value: z.unknown().optional() })).max(MAX_PROPOSALS),
-  proposedSteps: z.array(z.strictObject({ ...stepShape, value: z.unknown().optional() })).max(MAX_NEW_STEPS).default([]),
-  proposedRequirements: z.array(z.strictObject({ ...requirementShape, value: z.unknown().optional() })).max(MAX_NEW_REQUIREMENTS).default([]),
+  proposedUpdates: z.array(z.strictObject({ ...updateBase, ...cite, value: z.unknown().optional() })).max(MAX_PROPOSALS),
+  proposedSteps: z.array(z.strictObject({ ...stepBase, ...cite, value: z.unknown().optional() })).max(MAX_NEW_STEPS).default([]),
+  proposedRequirements: z.array(z.strictObject({ ...requirementBase, ...cite, value: z.unknown().optional() })).max(MAX_NEW_REQUIREMENTS).default([]),
   observations: z.array(observationShape).max(6),
 });
+export const InterviewTurnRawSchema = rawTurn({ sentenceIds });
+const StoredTurnRawSchema = rawTurn(storedCite);
 export type InterviewTurn = z.infer<typeof InterviewTurnSchema>;
 export type InterviewIssue = { path: string; code: string };
 export type InterviewWarning = { path: string; code: string; detail?: string };
@@ -121,52 +128,12 @@ export function parseInterviewInput(raw: unknown): InterviewInput {
   return input;
 }
 
-/** Fold text for quote matching only: NFKC, straight quotes/dashes, case-insensitive, whitespace runs as one space.
- * Every folded character remembers the span of original code points it came from, so a match maps back to the source. */
-function fold(source: string) {
-  let text = "";
-  const start: number[] = [], end: number[] = [], first: boolean[] = [], last: boolean[] = [];
-  let offset = 0;
-  for (const point of source) {
-    const from = offset; offset += point.length;
-    const folded = [...point.normalize("NFKC").replace(/[\u2018\u2019\u201A\u201B\u2032\u00B4]/g, "'")
-      .replace(/[\u201C\u201D\u201E\u201F\u2033]/g, '"').replace(/[\u2010-\u2015\u2212]/g, "-").toLowerCase()];
-    folded.forEach((char, index) => {
-      if (/\s/.test(char)) {
-        if (text.endsWith(" ")) { end[end.length - 1] = offset; return; }
-        char = " ";
-      }
-      text += char; start.push(from); end.push(offset); first.push(index === 0); last.push(index === folded.length - 1);
-    });
-  }
-  return { text, start, end, first, last };
-}
-
-/** Resolve a model quote to the EXACT source substring. A verbatim quote is kept as is. Otherwise the folded quote must
- * match exactly one folded span of the source, and the original text of that span is returned; the model's wording is
- * never stored. Zero matches is "missing", several is "ambiguous". */
-export function resolveQuote(source: string, quote: string):
-  { kind: "exact"; quote: string } | { kind: "normalized"; quote: string } | { kind: "missing" } | { kind: "ambiguous" } {
-  if (source.includes(quote)) return { kind: "exact", quote };
-  const needle = fold(quote).text.trim();
-  if (!needle) return { kind: "missing" };
-  const haystack = fold(source);
-  const spans: [number, number][] = [];
-  for (let at = haystack.text.indexOf(needle); at >= 0; at = haystack.text.indexOf(needle, at + 1)) {
-    const last = at + needle.length - 1;
-    // A match may not begin or end inside the expansion of one source character (e.g. a ligature).
-    if (haystack.first[at] && haystack.last[last]) spans.push([haystack.start[at]!, haystack.end[last]!]);
-  }
-  if (spans.length !== 1) return { kind: spans.length ? "ambiguous" : "missing" };
-  return { kind: "normalized", quote: source.slice(spans[0]![0], spans[0]![1]) };
-}
-
 const usableWhy = (value: unknown): value is string =>
   typeof value === "string" && !!value.trim() && value.length <= 500 && !value.includes("\0");
 
 /** Repairs a model reply that is almost right, before strict parsing: a fourth question is cut, extra keys on a question
  * are removed, a missing previousValue means null, and an advisory observation or proposal that is malformed is dropped.
- * Each repair is a warning. Provenance (quotes, sources) is never repaired here. */
+ * Each repair is a warning. Provenance (cited sentences, quotes, sources) is never repaired here. */
 function tidy(raw: unknown, warnings: InterviewWarning[]): unknown {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return raw;
   const out: Record<string, unknown> = { ...raw };
@@ -178,7 +145,7 @@ function tidy(raw: unknown, warnings: InterviewWarning[]): unknown {
   if (Array.isArray(out.proposedUpdates)) {
     out.proposedUpdates = out.proposedUpdates.flatMap((u, index) => {
       if (!isObject(u)) return [u];
-      if (typeof u.sourceId !== "string" || typeof u.quote !== "string") {
+      if (!Array.isArray(u.sentenceIds) && (typeof u.sourceId !== "string" || typeof u.quote !== "string")) {
         warnings.push({ path: `proposedUpdates.${index}`, code: "update_dropped", detail: "malformed" }); return [];
       }
       return [u.previousValue === undefined ? { ...u, previousValue: null } : u];
@@ -193,15 +160,30 @@ function tidy(raw: unknown, warnings: InterviewWarning[]): unknown {
   return out;
 }
 
-/** Validate references and extractive provenance against the authorized revision, and normalise the server-owned parts
- * of the turn: schemaVersion/contextRevision come from `input`, an off-list reply becomes the first allowed one, a
- * question without whyItMatters is dropped, and each update's quote becomes the exact source substring with value set
- * equal to it. Repairs are returned as warnings, never as errors. This does not establish business truth or the
- * relevance of a selected passage; a user must still review each proposal before a separate authorized apply. */
-export function validateInterviewTurn(input: InterviewInput, raw: unknown):
-  { success: true; data: InterviewTurn; warnings: InterviewWarning[] } | { success: false; errors: InterviewIssue[] } {
+/** One citation as written in a turn: a model cites `sentenceIds`; a turn the server already validated has `sourceId` + `quote`. */
+type Cited = { sentenceIds?: string[]; sourceId?: string; quote?: string };
+type RawTurn = { reply?: unknown; questions: { gapKey: string; question: string; whyItMatters?: unknown }[];
+  proposedUpdates: (Cited & { fieldId: string; operation: "PROPOSE_SET" | "PROPOSE_REPLACE"; previousValue: string | null })[];
+  proposedSteps: (Cited & { nameHint?: string | null })[];
+  proposedRequirements: (Cited & { stepRef: string; kind: z.infer<typeof requirementKind>; critical: boolean })[];
+  observations: z.infer<typeof observationShape>[] };
+type TurnResult = { success: true; data: InterviewTurn; warnings: InterviewWarning[] } | { success: false; errors: InterviewIssue[] };
+
+/** Validate a model's turn against the authorized input: references, and extractive provenance. The model cites sentence
+ * IDs (see interview-sentences.ts); the server resolves them to the exact source slice and sets `quote` to it and `value`
+ * equal to it. schemaVersion/contextRevision come from `input`, an off-list reply becomes the first allowed one, and a
+ * question without whyItMatters is dropped. Repairs are returned as warnings, never as errors. This does not establish
+ * business truth or the relevance of a selected passage; a user must still review each proposal before a separate
+ * authorized apply. */
+export const validateInterviewTurn = (input: InterviewInput, raw: unknown): TurnResult => validate(input, raw, "model");
+
+/** Re-check a turn this server already validated (stored shape: `sourceId` + exact `quote`) against the current input,
+ * e.g. just before it is persisted. A quote must be an exact substring of its source; nothing is normalised. */
+export const revalidateStoredTurn = (input: InterviewInput, raw: unknown): TurnResult => validate(input, raw, "stored");
+
+function validate(input: InterviewInput, raw: unknown, mode: "model" | "stored"): TurnResult {
   // Over a proposal cap: keep the first entries in model order. Dropped proposals are simply never offered;
-  // every kept one still goes through quote resolution and user acceptance.
+  // every kept one still goes through citation resolution and user acceptance.
   const warnings: InterviewWarning[] = [];
   let candidate = tidy(raw, warnings);
   for (const [key, max] of [["proposedUpdates", MAX_PROPOSALS], ["proposedSteps", MAX_NEW_STEPS], ["proposedRequirements", MAX_NEW_REQUIREMENTS]] as const) {
@@ -210,12 +192,12 @@ export function validateInterviewTurn(input: InterviewInput, raw: unknown):
     warnings.push({ path: key, code: "proposals_truncated", detail: `dropped ${all.length - max}` });
     candidate = { ...(candidate as object), [key]: all.slice(0, max) };
   }
-  const parsed = InterviewTurnRawSchema.safeParse(candidate);
+  const parsed = (mode === "model" ? InterviewTurnRawSchema : StoredTurnRawSchema).safeParse(candidate);
   if (!parsed.success) return { success: false, errors: parsed.error.issues.slice(0, 30).map(issue => ({
     path: issue.path.filter(part => typeof part === "number" ||
       (typeof part === "string" && /^[a-zA-Z][a-zA-Z0-9]{0,30}$/.test(part))).join("."), code: issue.code,
   })) };
-  const model = parsed.data;
+  const model = parsed.data as unknown as RawTurn;
   const errors: InterviewIssue[] = [];
   const invalid = (path: string, code: string) => errors.push({ path, code });
   const reply = REPLIES.find(allowed => allowed === model.reply);
@@ -257,17 +239,14 @@ export function validateInterviewTurn(input: InterviewInput, raw: unknown):
   }
   const fields = new Map(input.fields.map(field => [field.id, field]));
   const sources = new Map([...input.evidence, input.currentMessage].map(item => [item.id, item.text]));
-  /** The exact source passage for a model quote, or why there is none. */
-  const resolveProposalQuote = (path: string, sourceId: string, modelQuote: string):
-    { quote: string } | { problem: "quote_not_in_source" | "ambiguous_quote" | "quote_too_long" } => {
-    const source = sources.get(sourceId);
-    const resolved = source === undefined ? { kind: "missing" as const } : resolveQuote(source, modelQuote);
-    if (resolved.kind === "missing") return { problem: "quote_not_in_source" };
-    if (resolved.kind === "ambiguous") return { problem: "ambiguous_quote" };
-    if (resolved.quote.length > 8000) return { problem: "quote_too_long" };
-    if (resolved.kind === "normalized") warnings.push({ path: `${path}.quote`, code: "quote_normalized" });
-    return { quote: resolved.quote };
+  const index = indexSentences(input);
+  /** The source and exact passage a proposal cites, or why there is none. */
+  const resolveCitation = (cited: Cited): { sourceId: string; quote: string } | { problem: string } => {
+    const found = cited.sentenceIds ? resolveSentenceIds(index, sources, cited.sentenceIds)
+      : sources.get(cited.sourceId ?? "")?.includes(cited.quote ?? "") ? { sourceId: cited.sourceId!, quote: cited.quote! } : { problem: "quote_not_in_source" };
+    return "quote" in found && found.quote.length > 8000 ? { problem: "quote_too_long" } : found;
   };
+  const citationPath = (path: string) => `${path}.${mode === "model" ? "sentenceIds" : "quote"}`;
   const updated = new Set<string>();
   const updates = model.proposedUpdates.flatMap((update, index) => {
     const path = `proposedUpdates.${index}`;
@@ -281,12 +260,12 @@ export function validateInterviewTurn(input: InterviewInput, raw: unknown):
     if (update.operation === "PROPOSE_SET"
       ? field.status !== "EMPTY" || field.value !== null || update.previousValue !== null
       : field.status !== "KNOWN" || field.value === null || update.previousValue !== field.value) return drop("invalid_previous_value");
-    const resolved = resolveProposalQuote(path, update.sourceId, update.quote);
-    // Provenance is never relaxed: a quote that is not in its source fails the turn so the model must repair it.
-    if ("problem" in resolved) { invalid(`${path}.quote`, resolved.problem); return []; }
+    const resolved = resolveCitation(update);
+    // Provenance is never relaxed: a citation that does not resolve fails the turn so the model must repair it.
+    if ("problem" in resolved) { invalid(citationPath(path), resolved.problem); return []; }
     updated.add(update.fieldId);
     return [{ fieldId: update.fieldId, operation: update.operation, previousValue: update.previousValue,
-      sourceId: update.sourceId, quote: resolved.quote, value: resolved.quote }];
+      sourceId: resolved.sourceId, quote: resolved.quote, value: resolved.quote }];
   });
   // Is `a` the same passage as `b`: one starts the other (existing summaries are truncated) or most words are shared.
   const similar = (a: string, b: string | null) => {
@@ -302,12 +281,13 @@ export function validateInterviewTurn(input: InterviewInput, raw: unknown):
   const steps: { sourceId: string; quote: string; value: string; nameHint: string | null }[] = [];
   model.proposedSteps.forEach((step, index) => {
     const path = `proposedSteps.${index}`;
-    const resolved = resolveProposalQuote(path, step.sourceId, step.quote);
-    if ("problem" in resolved) { invalid(`${path}.quote`, resolved.problem); stepFate.push(null); return; }
+    const resolved = resolveCitation(step);
+    if ("problem" in resolved) { invalid(citationPath(path), resolved.problem); stepFate.push(null); return; }
     let nameHint: string | null = null;
     if (step.nameHint) {
-      const hint = resolveQuote(sources.get(step.sourceId) ?? "", step.nameHint);
-      if (hint.kind === "exact" || hint.kind === "normalized") nameHint = hint.quote;
+      // A label is a convenience, never provenance: one that is not a phrase of the source is dropped, not an error.
+      const hint = step.nameHint.trim();
+      if (hint && sources.get(resolved.sourceId)!.includes(hint)) nameHint = hint;
       else warnings.push({ path: `${path}.nameHint`, code: "name_hint_dropped" });
     }
     // A stage that is already a step (or was proposed earlier this turn) is not created twice.
@@ -319,14 +299,14 @@ export function validateInterviewTurn(input: InterviewInput, raw: unknown):
       stepFate.push(existing ? { existing: existing.id } : { new: earlier });
       return;
     }
-    steps.push({ sourceId: step.sourceId, quote: resolved.quote, value: resolved.quote, nameHint });
+    steps.push({ sourceId: resolved.sourceId, quote: resolved.quote, value: resolved.quote, nameHint });
     stepFate.push({ new: steps.length - 1 });
   });
   const takenRequirements = input.requirements.map(item => item.statement);
   const requirements = model.proposedRequirements.flatMap((item, index) => {
     const path = `proposedRequirements.${index}`;
-    const resolved = resolveProposalQuote(path, item.sourceId, item.quote);
-    if ("problem" in resolved) { invalid(`${path}.quote`, resolved.problem); return []; }
+    const resolved = resolveCitation(item);
+    if ("problem" in resolved) { invalid(citationPath(path), resolved.problem); return []; }
     const fresh = /^new_(\d{1,2})$/.exec(item.stepRef);
     const fate = fresh ? stepFate[Number(fresh[1])] : undefined;
     const stepRef = !fresh ? item.stepRef : fate ? ("new" in fate ? `new_${fate.new}` : fate.existing) : null;
@@ -336,7 +316,7 @@ export function validateInterviewTurn(input: InterviewInput, raw: unknown):
       return [];
     }
     takenRequirements.push(resolved.quote);
-    return [{ stepRef, kind: item.kind, critical: item.critical, sourceId: item.sourceId, quote: resolved.quote, value: resolved.quote }];
+    return [{ stepRef, kind: item.kind, critical: item.critical, sourceId: resolved.sourceId, quote: resolved.quote, value: resolved.quote }];
   });
   // An observation is advisory: one that points at no known field is dropped, never fatal.
   const observations = model.observations.filter((observation, index) => {

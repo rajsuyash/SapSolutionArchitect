@@ -34,6 +34,9 @@ const schema = z.object({
   AI_MAX_INPUT_TOKENS: z.coerce.number().int().positive().default(60000),
   CONSULTANT_DAILY_JOB_LIMIT: z.coerce.number().int().min(1).max(100000).default(200),
   AI_MAX_CONCURRENCY: z.coerce.number().int().positive().default(4),
+  // Model-call slots reserved for interview (chat) turns, separate from AI_MAX_CONCURRENCY (To-Be, problem analysis),
+  // so a long batch stage never delays a chat turn.
+  AI_CHAT_CONCURRENCY: z.coerce.number().int().positive().default(2),
   // Time budgets. The defaults are sized for Claude; slower models need more (see README, "AI time budgets").
   AI_STAGE_BUDGET_SECONDS: seconds(300, 60, 1800),
   AI_CALL_TIMEOUT_SECONDS: seconds(120, 30, 1500),

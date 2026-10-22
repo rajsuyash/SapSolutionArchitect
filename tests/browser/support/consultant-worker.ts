@@ -1,6 +1,6 @@
 // Browser-test worker: the real queue, job fencing, validation and persistence, with a scripted
 // model in place of the provider. It proves the application path, not the quality of any AI output.
-import { CONSULTANT_QUEUE } from "../../../src/lib/consultant-jobs";
+import { workConsultantQueues } from "../../../src/lib/consultant-workers";
 import { getRuntime } from "../../../src/lib/runtime";
 import type { createStageRunner } from "../../../src/lib/ai/runStage";
 import type { InterviewInput } from "../../../src/lib/ai/discovery-interview";
@@ -44,9 +44,9 @@ const runStage = (async (stage: string, raw: unknown) => stage === "interview_tu
 const { services, consultantJobs, startQueue } = getRuntime();
 await startQueue();
 await consultantJobs.recover();
-await services.queue.work<{ jobId: string }>(CONSULTANT_QUEUE, { batchSize: 1, localConcurrency: 2, pollingIntervalSeconds: 0.5 },
-  async ([job]) => { if (job && job.data.jobId === job.id) await consultantJobs.execute(job.id, job.signal, runStage); });
+const shutdown = new AbortController();
+await workConsultantQueues(services.queue, consultantJobs, runStage, { chatConcurrency: 2, batchConcurrency: 2, shutdown: shutdown.signal });
 console.info("Consultant test worker ready");
-const stop = async () => { try { await services.close(); } finally { process.exit(0); } };
+const stop = async () => { shutdown.abort(); try { await services.close(); } finally { process.exit(0); } };
 process.once("SIGTERM", () => void stop());
 process.once("SIGINT", () => void stop());

@@ -13,7 +13,8 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { createAuthService } from "../src/lib/auth";
 import { createProjectRepository, withTenantSession } from "../src/lib/tenant";
 import { createDiscoveryWorkspaceRepository } from "../src/lib/discovery-workspace";
-import { CONSULTANT_QUEUE, createConsultantJobs } from "../src/lib/consultant-jobs";
+import { workConsultantQueues } from "../src/lib/consultant-workers";
+import { CONSULTANT_BATCH_QUEUE, CONSULTANT_CHAT_QUEUE, CONSULTANT_QUEUES, LEGACY_CONSULTANT_QUEUE, createConsultantJobs } from "../src/lib/consultant-jobs";
 import type { createStageRunner } from "../src/lib/ai/runStage";
 import type { InterviewInput } from "../src/lib/ai/discovery-interview";
 import type { ToBeInput } from "../src/lib/ai/to-be";
@@ -118,7 +119,7 @@ describe.skipIf(process.env.RUN_DB_TESTS !== "1")("durable consultant conversati
     const owner = await draft(); const key = randomUUID();
     const [a, b] = await Promise.all([enqueue(owner, key), enqueue(owner, key)]);
     expect(a.id).toBe(b.id);
-    expect((await queue.getJobById(CONSULTANT_QUEUE, a.id))?.data).toEqual({ jobId: a.id });
+    expect((await queue.getJobById(CONSULTANT_CHAT_QUEUE, a.id))?.data).toEqual({ jobId: a.id });
     await expect(enqueue(owner)).rejects.toMatchObject({ code: "JOB_ALREADY_RUNNING" });
     await expect(jobs.enqueue(owner.token, owner.project.id, "RENTAL", { kind: "TO_BE", expectedRevision: owner.state.revision }, key))
       .rejects.toMatchObject({ code: "IDEMPOTENCY_CONFLICT" });
@@ -129,8 +130,59 @@ describe.skipIf(process.env.RUN_DB_TESTS !== "1")("durable consultant conversati
     });
     try { await expect(enqueue(other)).rejects.toThrow("Injected queue failure"); } finally { spy.mockRestore(); }
     expect((await pool.query("SELECT id FROM consultant_jobs WHERE project_id=$1", [other.project.id])).rowCount).toBe(0);
-    expect((await pool.query("SELECT id FROM pgboss.job WHERE name=$1 AND data->>'jobId' NOT IN (SELECT id::text FROM consultant_jobs)", [CONSULTANT_QUEUE])).rowCount).toBe(0);
+    expect((await pool.query("SELECT id FROM pgboss.job WHERE name=ANY($1) AND data->>'jobId' NOT IN (SELECT id::text FROM consultant_jobs)", [[...CONSULTANT_QUEUES]])).rowCount).toBe(0);
   });
+
+  /** Fail every job still QUEUED from other tests except `keep`, so a started worker pool only sees this test's jobs. */
+  const parkOthers = (keep: string[]) => pool.query(`UPDATE consultant_jobs SET status='FAILED',finished_at=clock_timestamp()
+    WHERE status='QUEUED' AND NOT (id::text = ANY($1))`, [keep]);
+  const statusOf = async (owner: { token: string; project: { id: string } }) => (await jobs.latest(owner.token, owner.project.id, "RENTAL")).jobs[0]!.status;
+
+  it("sends interview turns to the chat queue and To-Be runs to the batch queue", async () => {
+    const chatOwner = await draft(); const batchOwner = await confirmed();
+    const chat = await enqueue(chatOwner); const batch = await enqueueToBe(batchOwner);
+    expect(await queue.getJobById(CONSULTANT_CHAT_QUEUE, chat.id)).toBeTruthy();
+    expect(await queue.getJobById(CONSULTANT_BATCH_QUEUE, batch.id)).toBeTruthy();
+    expect(await queue.getJobById(CONSULTANT_BATCH_QUEUE, chat.id)).toBeFalsy();
+    expect(await queue.getJobById(CONSULTANT_CHAT_QUEUE, batch.id)).toBeFalsy();
+  });
+
+  it("completes a chat turn while a To-Be run is still in progress on the same worker", async () => {
+    const batchOwner = await confirmed("2023"); const chatOwner = await draft();
+    const batch = await enqueueToBe(batchOwner); const chat = await enqueue(chatOwner);
+    await parkOthers([batch.id, chat.id]);
+    let release!: () => void; const held = new Promise<void>(resolve => { release = resolve; });
+    let begun!: () => void; const toBeStarted = new Promise<void>(resolve => { begun = resolve; });
+    const batchStage = toBeRunner(undefined, "REF-SYN"), chatStage = runner();
+    const stage = (async (name: "interview_turn" | "to_be", raw: unknown) => {
+      if (name !== "to_be") return chatStage(name, raw);
+      begun(); await held; return batchStage(name, raw);
+    }) as unknown as ReturnType<typeof createStageRunner>;
+    const shutdown = new AbortController();
+    const workers = await workConsultantQueues(queue, jobs, stage, { chatConcurrency: 1, batchConcurrency: 1, shutdown: shutdown.signal,
+      catalog: { baseDir: catalogDir }, pollingIntervalSeconds: 0.5 });
+    try {
+      await toBeStarted;
+      await expect.poll(() => statusOf(chatOwner), { timeout: 15000, interval: 200 }).toBe("SUCCEEDED");
+      expect(await statusOf(batchOwner)).toBe("RUNNING"); // the long run is still held while the turn finished
+      release();
+      await expect.poll(() => statusOf(batchOwner), { timeout: 15000, interval: 200 }).toBe("SUCCEEDED");
+    } finally { release(); shutdown.abort(); await workers.stop(); }
+  }, 40000);
+
+  it("still drains a job queued on the pre-split queue, and recovery does not fail it", async () => {
+    const owner = await draft(); const job = await enqueue(owner);
+    await parkOthers([job.id]);
+    await queue.cancel(CONSULTANT_CHAT_QUEUE, job.id);
+    await queue.send(LEGACY_CONSULTANT_QUEUE, { jobId: job.id }, { id: job.id, retryLimit: 0, expireInSeconds: 420 });
+    await jobs.recover();
+    expect(await statusOf(owner)).toBe("QUEUED");
+    const shutdown = new AbortController();
+    const workers = await workConsultantQueues(queue, jobs, runner(), { chatConcurrency: 1, batchConcurrency: 1, shutdown: shutdown.signal,
+      pollingIntervalSeconds: 0.5 });
+    try { await expect.poll(() => statusOf(owner), { timeout: 15000, interval: 200 }).toBe("SUCCEEDED"); }
+    finally { shutdown.abort(); await workers.stop(); }
+  }, 30000);
 
   it("persists exactly one turn and never sends actor or organization identity to the model", async () => {
     const owner = await draft(); const job = await enqueue(owner); const seen = vi.fn();
@@ -241,7 +293,7 @@ describe.skipIf(process.env.RUN_DB_TESTS !== "1")("durable consultant conversati
     const read = async (service: typeof jobs) => {
       const owner = await draft(); const job = await service.enqueue(owner.token, owner.project.id, "RENTAL",
         { kind: "INTERVIEW", expectedRevision: owner.state.revision, messageId: owner.messageId }, randomUUID());
-      const expire = Number((await pool.query("SELECT expire_seconds FROM pgboss.job WHERE name=$1 AND id=$2", [CONSULTANT_QUEUE, job.id])).rows[0].expire_seconds);
+      const expire = Number((await pool.query("SELECT expire_seconds FROM pgboss.job WHERE name=$1 AND id=$2", [CONSULTANT_CHAT_QUEUE, job.id])).rows[0].expire_seconds);
       let left = 0;
       await service.execute(job.id, new AbortController().signal, runner(async () => {
         left = Number((await pool.query("SELECT extract(epoch FROM deadline_at-clock_timestamp()) AS s FROM consultant_jobs WHERE id=$1", [job.id])).rows[0].s);
@@ -285,7 +337,7 @@ describe.skipIf(process.env.RUN_DB_TESTS !== "1")("durable consultant conversati
     expect(refused).toMatchObject({ code: "RATE_LIMITED", status: 429 });
     expect(refused.retryAfter).toBeGreaterThan(0);
     expect((await pool.query("SELECT count(*)::int AS n FROM consultant_jobs WHERE org_id=$1", [owner.user.orgId])).rows[0].n).toBe(2);
-    expect((await pool.query("SELECT count(*)::int AS n FROM pgboss.job WHERE name=$1 AND data->>'jobId' NOT IN (SELECT id::text FROM consultant_jobs)", [CONSULTANT_QUEUE])).rows[0].n).toBe(0);
+    expect((await pool.query("SELECT count(*)::int AS n FROM pgboss.job WHERE name=ANY($1) AND data->>'jobId' NOT IN (SELECT id::text FROM consultant_jobs)", [[...CONSULTANT_QUEUES]])).rows[0].n).toBe(0);
     await pool.query("UPDATE consultant_jobs SET created_at=clock_timestamp()-interval '25 hours' WHERE org_id=$1", [owner.user.orgId]);
     await expect(submit(4)).resolves.toMatchObject({ status: "QUEUED" });
   });

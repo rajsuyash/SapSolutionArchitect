@@ -3,7 +3,7 @@ import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
 import { AuthError, type AuthService } from "./auth";
 import { withTenantSession } from "./tenant";
-import { containsSensitiveText, validateInterviewTurn } from "./ai/discovery-interview";
+import { containsSensitiveText, revalidateStoredTurn } from "./ai/discovery-interview";
 import { applyWorkspaceCommand, backfillCatalog, buildInterviewInput, compileDiscovery, createWorkspace,
   getWorkspaceReadiness, recordInterviewTurn, WorkspaceCommandSchema, WorkspaceStateSchema,
   type WorkspaceState } from "./discovery-workspace-model";
@@ -126,7 +126,7 @@ export async function persistWorkspaceTurn(client: PoolClient, args: WorkspaceTu
   if (!current) throw absent();
   const state = readState(current);
   if (state.revision !== args.expectedRevision) throw conflict();
-  if (!validateInterviewTurn(buildInterviewInput(state, args.currentMessageId), args.turn).success) {
+  if (!revalidateStoredTurn(buildInterviewInput(state, args.currentMessageId), args.turn).success) {
     throw new AuthError("INVALID_INTERVIEW_TURN", 400, "The interview response could not be validated");
   }
   const next = recordInterviewTurn(state, args.turn, args.currentMessageId, metadata(args.requestedBy));

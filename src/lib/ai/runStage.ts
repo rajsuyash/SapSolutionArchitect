@@ -7,6 +7,7 @@ import { ProblemAnalysisInputSchema, ProblemAnalysisSchema, redactInput, schemaI
 import { createProviderClient, logProviderFailure, logStageTimeout, type Provider } from "./provider";
 import { DetailedDesignSchema } from "./design-quality";
 import { loadToBeReferences, parseToBeInput, validateToBeOutput, type ToBeOutput } from "./to-be";
+import { interviewModelView } from "./interview-sentences";
 import { InterviewTurnRawSchema, InterviewTurnToolSchema, parseInterviewInput, validateInterviewTurn, type InterviewInput, type InterviewTurn } from "./discovery-interview";
 
 type Stage = (typeof STAGE_NAMES)[number];
@@ -28,7 +29,7 @@ export class AIStageError extends Error {
     super(code); this.name = "AIStageError";
   }
 }
-type Config = Pick<Environment, "NODE_ENV" | "AI_PROVIDER" | "ANTHROPIC_API_KEY" | "DEEPINFRA_API_KEY" | "AI_MODEL" | "AI_MODEL_DESIGN" | "AI_MAX_INPUT_TOKENS" | "AI_MAX_CONCURRENCY" | "AI_FAULT_INJECTION"
+type Config = Pick<Environment, "NODE_ENV" | "AI_PROVIDER" | "ANTHROPIC_API_KEY" | "DEEPINFRA_API_KEY" | "AI_MODEL" | "AI_MODEL_DESIGN" | "AI_MAX_INPUT_TOKENS" | "AI_MAX_CONCURRENCY" | "AI_CHAT_CONCURRENCY" | "AI_FAULT_INJECTION"
   | "AI_NO_THINKING_STAGES" | "AI_STAGE_BUDGET_SECONDS" | "AI_CALL_TIMEOUT_SECONDS" | "AI_DESIGN_CALL_TIMEOUT_SECONDS">;
 const SDK_TIMEOUT_MARGIN_MS = 5000;
 /** An interview turn carries up to 42 quoted proposals; 8000 truncated some turns into an empty tool payload. */
@@ -59,12 +60,39 @@ function pause(ms: number, signal: AbortSignal): Promise<void> {
   });
 }
 
+/** A counting semaphore: `acquire` resolves when a slot is free (or rejects with the signal's reason), `release` frees one. */
+function createLane(max: number) {
+  let active = 0;
+  const waiters: Array<{ ready: () => void; abort: () => void; signal: AbortSignal }> = [];
+  return {
+    release() {
+      const next = waiters.shift();
+      if (next) { next.signal.removeEventListener("abort", next.abort); next.ready(); }
+      else active--;
+    },
+    async acquire(signal: AbortSignal) {
+      signal.throwIfAborted();
+      if (active < max) { active++; return; }
+      await new Promise<void>((resolve, reject) => {
+        const waiter = { ready: resolve, signal, abort: () => {
+          const index = waiters.indexOf(waiter);
+          if (index >= 0) waiters.splice(index, 1);
+          reject(signal.reason);
+        } };
+        waiters.push(waiter); signal.addEventListener("abort", waiter.abort, { once: true });
+        if (signal.aborted) waiter.abort();
+      });
+    },
+  };
+}
+
 /** Instantiate once per worker; limits include calls still settling after abort.
  * Internal only: the job loader must authorize the tenant/project before calling.
  * No model text is logged here. Persist only the returned metrics and validated payload.
  */
 export function createStageRunner(config: Config, options: Options = {}) {
   if (!Number.isSafeInteger(config.AI_MAX_CONCURRENCY) || config.AI_MAX_CONCURRENCY < 1 ||
+    !Number.isSafeInteger(config.AI_CHAT_CONCURRENCY) || config.AI_CHAT_CONCURRENCY < 1 ||
     !Number.isSafeInteger(config.AI_MAX_INPUT_TOKENS) || config.AI_MAX_INPUT_TOKENS < 1) throw new Error("Invalid AI limits");
   const provider: Provider = config.NODE_ENV === "production" && config.AI_PROVIDER === "stub" ? "anthropic" : config.AI_PROVIDER;
   // Slow models (MiMo: ~20-40 tokens/s) need larger values; the operator sets them, never the provider name.
@@ -87,30 +115,14 @@ export function createStageRunner(config: Config, options: Options = {}) {
   const sdkTimeout = Math.max(callTimeout, designCallTimeout) + SDK_TIMEOUT_MARGIN_MS;
   const client = provider === "stub" ? undefined : createProviderClient(provider, apiKey!, sdkTimeout, options.fetch);
   const noThinking = new Set<Stage>(provider === "deepinfra" ? config.AI_NO_THINKING_STAGES ?? [] : []);
-  let active = 0;
-  const waiters: Array<{ ready: () => void; abort: () => void; signal: AbortSignal }> = [];
-  const release = () => {
-    const next = waiters.shift();
-    if (next) { next.signal.removeEventListener("abort", next.abort); next.ready(); }
-    else active--;
-  };
-  async function acquire(signal: AbortSignal) {
-    signal.throwIfAborted();
-    if (active < config.AI_MAX_CONCURRENCY) { active++; return; }
-    await new Promise<void>((resolve, reject) => {
-      const waiter = { ready: resolve, signal, abort: () => {
-        const index = waiters.indexOf(waiter);
-        if (index >= 0) waiters.splice(index, 1);
-        reject(signal.reason);
-      } };
-      waiters.push(waiter); signal.addEventListener("abort", waiter.abort, { once: true });
-      if (signal.aborted) waiter.abort();
-    });
-  }
+  // Two independent lanes of model-call slots: chat turns (interview_turn) and batch stages (to_be, problem_analysis).
+  // A long batch stage can hold every batch slot and a chat turn still runs.
+  const chatLane = createLane(config.AI_CHAT_CONCURRENCY), batchLane = createLane(config.AI_MAX_CONCURRENCY);
 
   return async function runStage<S extends Stage>(stage: S, rawInput: unknown, externalSignal?: AbortSignal): Promise<{ payload: Payloads[S]; metrics: StageMetrics }> {
     const started = Date.now();
     const isDesign = DESIGN_STAGES.has(stage);
+    const lane = stage === "interview_turn" ? chatLane : batchLane;
     const model = isDesign ? config.AI_MODEL_DESIGN ?? config.AI_MODEL : config.AI_MODEL;
     const metrics: StageMetrics = { stage, provider, model, inputTokens: 0, outputTokens: 0,
       latencyMs: 0, attempts: 0, validationErrors: [], attemptIssues: [], stopReasons: [], thinkingDisabled: noThinking.has(stage) };
@@ -179,7 +191,7 @@ export function createStageRunner(config: Config, options: Options = {}) {
         analysisInput = redactInput(parsed.data);
         if (!analysisInput) { metrics.validationErrors = [{ path: "input", code: "sensitive_identifier" }]; throw fail("AI_INPUT_INVALID"); }
       }
-      await acquire(signal); acquired = true;
+      await lane.acquire(signal); acquired = true;
       let inputTruncated = false;
       const count = async (source: string) => {
         if (!client) return Buffer.byteLength(source, "utf8"); // Conservative byte cap in offline tests; not reported as measured tokens.
@@ -208,12 +220,15 @@ export function createStageRunner(config: Config, options: Options = {}) {
       const jsonSchema = z.toJSONSchema(designInput ? DetailedDesignSchema : interviewInput ? InterviewTurnToolSchema : ProblemAnalysisSchema);
       const tool = designInput ? "submit_to_be" : interviewInput ? "submit_interview_turn" : "submit_analysis";
       const tools: Anthropic.Tool[] = [{ name: tool, input_schema: { ...jsonSchema, type: "object" } }];
-      const toolChoice = { type: "auto" as const, disable_parallel_tool_use: true };
+      // Claude Sonnet 5.5 rejects a forced tool choice (HTTP 400), so Anthropic keeps "auto". DeepInfra's MiMo answers in
+      // prose under "auto" (0/4 tool calls measured 2026-10-22) and calls the tool every time when it is forced.
+      const toolChoice: Anthropic.ToolChoice = provider === "deepinfra"
+        ? { type: "tool", name: tool, disable_parallel_tool_use: true } : { type: "auto", disable_parallel_tool_use: true };
       let errors: ValidationIssue[] = [];
       for (let repair = 0; repair < 2; repair++) {
         // One replacement pass prevents client text containing template markers from being interpreted.
         const user = designInput ? JSON.stringify({ input: designInput, approvedDecisions: [], references: designReferences, validationErrors: errors })
-          : interviewInput ? JSON.stringify({ input: interviewInput, validationErrors: errors })
+          : interviewInput ? JSON.stringify({ input: interviewModelView(interviewInput), validationErrors: errors })
           : template.replace(/\{\{(input|validationErrors)\}\}/g, (_, key: string) =>
             key === "input" ? JSON.stringify({ ...analysisInput, inputTruncated }) : JSON.stringify(errors));
         const messages: Anthropic.MessageParam[] = [{ role: "user", content: user }];
@@ -293,8 +308,8 @@ export function createStageRunner(config: Config, options: Options = {}) {
       clearTimeout(timer); metrics.latencyMs = Date.now() - started;
       if (acquired) {
         // An uncooperative transport must not free capacity while it still runs.
-        if (pending.size) void Promise.allSettled([...pending]).then(release);
-        else release();
+        if (pending.size) void Promise.allSettled([...pending]).then(lane.release);
+        else lane.release();
       }
     }
   };

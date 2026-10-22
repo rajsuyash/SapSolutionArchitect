@@ -2,7 +2,7 @@ import { z } from "zod";
 import { validateDiscovery, type DiscoveryInput } from "./discovery";
 import { REASK_AFTER_USER_TURNS, REASK_SUFFIX, STEP_GAP_PREFIX, STEP_KEYS as stepKeys, STEP_QUESTIONS as stepQuestions,
   WORKSPACE_FIELDS } from "./workspace-fields";
-import { parseInterviewInput, validateInterviewTurn, type InterviewInput, type InterviewTurn } from "./ai/discovery-interview";
+import { parseInterviewInput, revalidateStoredTurn, type InterviewInput, type InterviewTurn } from "./ai/discovery-interview";
 
 // Re-exported for server callers; the client imports ./workspace-fields directly.
 export { WORKSPACE_FIELDS };
@@ -367,7 +367,7 @@ export function recordInterviewTurn(rawState: WorkspaceState, rawTurn: unknown, 
   checkMeta(meta);
   const state = structuredClone(checked(rawState));
   const input = buildInterviewInput(state, currentMessageId);
-  const validated = validateInterviewTurn(input, rawTurn);
+  const validated = revalidateStoredTurn(input, rawTurn);
   if (!validated.success) fail("INVALID_INTERVIEW_TURN");
   const turn: InterviewTurn = validated.data;
   if (state.messages.some(m => m.id === meta.id)) fail("DUPLICATE_WORKSPACE_ID");

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { validateInterviewTurn } from "../src/lib/ai/discovery-interview";
+import { indexSentences } from "../src/lib/ai/interview-sentences";
 import { WORKSPACE_FIELDS } from "../src/lib/workspace-fields";
 import { backfillCatalog, buildInterviewInput, compileDiscovery, createWorkspace, getWorkspaceReadiness,
   applyWorkspaceCommand, recordInterviewTurn, WorkspaceStateSchema, type WorkspaceMeta, type WorkspaceState } from "../src/lib/discovery-workspace-model";
@@ -186,16 +187,16 @@ describe("discovery workspace model", () => {
       decision: "ACCEPT" }, meta())).toThrow("STALE_PROPOSAL");
   });
 
-  it("loads persisted proposals that carry a value, and stores the server-set value for a model turn without one", () => {
+  it("loads persisted proposals that carry a value, and stores the server-set value for a validated turn without one", () => {
     let state = start();
     const messageMeta = meta();
     state = applyWorkspaceCommand(state, { type: "SEND_MESSAGE",
       text: "The clerk records physical returns in a spreadsheet." }, messageMeta);
     const quote = "The clerk records physical returns in a spreadsheet.";
-    // Model output after the contract change: no value, scalars, and a sloppy quote.
+    // A validated turn (exact quote) without value or scalars.
     state = recordInterviewTurn(state, { reply: "Thank you for that context.", questions: ask(), observations: [],
       proposedUpdates: [{ fieldId: "current_systems", operation: "PROPOSE_SET", previousValue: null,
-        sourceId: messageMeta.id, quote: quote.toLowerCase() }] }, messageMeta.id, meta());
+        sourceId: messageMeta.id, quote }] }, messageMeta.id, meta());
     expect(state.proposals[0]).toMatchObject({ quote, value: quote, status: "PENDING" });
     // State written before the change has exactly this shape (value === quote) and must still load and round-trip.
     const reloaded = WorkspaceStateSchema.parse(JSON.parse(JSON.stringify(state)));
@@ -325,9 +326,28 @@ describe("discovery workspace model", () => {
     const input = buildInterviewInput(state, next.id);
     expect(input.steps).toMatchObject([{ id: draft.id, status: "CURRENT", summary: stepQuote }]);
     expect(input.requirements).toMatchObject([{ stepId: draft.id, kind: "PAIN_POINT" }]);
-    expect(validateInterviewTurn(input, { questions: ask("g_operating_scale"), proposedUpdates: [], proposedSteps: [{ sourceId: m.id, quote: stepQuote }], observations: [] }))
+    const index = indexSentences(input);
+    const stepSentence = [...index.sentences].find(([, found]) => found.sourceId === m.id && text.slice(found.start, found.end) === stepQuote)![0];
+    expect(validateInterviewTurn(input, { questions: ask("g_operating_scale"), proposedUpdates: [], proposedSteps: [{ sentenceIds: [stepSentence] }], observations: [] }))
       .toMatchObject({ success: true, data: { proposedSteps: [] }, warnings: expect.arrayContaining([expect.objectContaining({ code: "step_dropped", detail: "duplicate_step" })]) });
     expect(compileDiscovery).toBeTypeOf("function");
+  });
+
+  it("turns sentence ids the model cited into proposals whose stored quote is an exact substring of the message", () => {
+    let state = start();
+    const m = meta();
+    const text = "We use Tally for finance. A clerk checks credit by phone.\nOrders go out late on Fridays.";
+    state = applyWorkspaceCommand(state, { type: "SEND_MESSAGE", text }, m);
+    const input = buildInterviewInput(state, m.id);
+    // The currentMessage sentences are S1..S3 in order.
+    const modelTurn = { questions: ask("g_process_owner"), observations: [],
+      proposedUpdates: [{ fieldId: "current_systems", operation: "PROPOSE_SET", previousValue: null, sentenceIds: ["S1"] },
+        { fieldId: "current_rules", operation: "PROPOSE_SET", previousValue: null, sentenceIds: ["S2", "S3"] }] };
+    const validated = validateInterviewTurn(input, modelTurn);
+    expect(validated.success).toBe(true);
+    state = recordInterviewTurn(state, (validated as { data: unknown }).data, m.id, meta());
+    expect(state.proposals.map(p => p.quote)).toEqual(["We use Tally for finance.", "A clerk checks credit by phone.\nOrders go out late on Fridays."]);
+    expect(state.proposals.every(p => p.value === p.quote && text.includes(p.quote!) && p.sourceId === m.id)).toBe(true);
   });
 
   it("merges a proposed step that repeats an existing one and points its requirement at the existing step", () => {
