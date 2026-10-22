@@ -93,7 +93,8 @@ describe.skipIf(process.env.RUN_DB_TESTS !== "1")("migration upgrade path 0004 -
     for (const t of ["discovery_versions", "discovery_workspace_revisions", "consultant_jobs"]) {
       const r = await db.query<{ rls: boolean; forced: boolean }>(
         "SELECT relrowsecurity AS rls, relforcerowsecurity AS forced FROM pg_class WHERE relname=$1 AND relnamespace='public'::regnamespace", [t]);
-      expect(r.rows).toEqual([{ rls: true, forced: true }]);
+      // 0010: RLS stays on for the tenant role; FORCE is off so a non-superuser owner is trusted.
+      expect(r.rows).toEqual([{ rls: true, forced: false }]);
     }
     expect(await exists("SELECT 1 FROM pg_constraint WHERE conname='discovery_snapshot_workspace_identity' AND contype='u'")).toBe(1);
     expect(await exists(`SELECT 1 FROM pg_constraint WHERE conrelid='discovery_workspace_revisions'::regclass

@@ -10,7 +10,7 @@ const FUNCTIONS = ["platform_admin_orgs()", "platform_admin_users()",
   "platform_admin_update_org(uuid,boolean,timestamptz,boolean,integer,boolean,boolean)"];
 
 // The whole database is migrated and queried by a NON-superuser, NOBYPASSRLS owner role, like Cloud SQL.
-// A superuser would bypass RLS and make every assertion below pass vacuously.
+// A superuser would bypass RLS and make the tenant-restriction assertions below pass vacuously.
 describe.skipIf(process.env.RUN_DB_TESTS !== "1")("platform admin SQL under a non-bypass owner", () => {
   const suffix = randomUUID().replaceAll("-", "").slice(0, 12);
   const database = `sap_padmin_${suffix}`, owner = `sap_owner_${suffix}`, stranger = `sap_stranger_${suffix}`;
@@ -53,7 +53,7 @@ describe.skipIf(process.env.RUN_DB_TESTS !== "1")("platform admin SQL under a no
     await admin.query(`CREATE DATABASE ${database} OWNER ${owner}`); created = true;
     await promisify(execFile)(process.execPath, ["--import", "tsx", "scripts/seed.ts", "--migrate-only"],
       { env: { ...process.env, NODE_ENV: "test", DATABASE_URL: ownerUrl.href }, timeout: 30000 });
-    // Fixtures are written by the superuser: the owner role itself cannot insert across tenants (that is the point).
+    // Fixtures are written by the superuser for simplicity (the owner could insert them too since 0010).
     const q = (sql: string, params: unknown[] = []) => superPool.query(sql, params);
     await q("INSERT INTO organizations(id,name) VALUES($1,'Org A'),($2,'Org B')", [orgA, orgB]);
     for (const [id, org, email, hash] of [[userA, orgA, "a@test.local", "x"], [userB, orgB, "b@test.local", null], [userB2, orgB, "b2@test.local", "x"]]) {
@@ -77,13 +77,15 @@ describe.skipIf(process.env.RUN_DB_TESTS !== "1")("platform admin SQL under a no
     } finally { await admin.end(); }
   }, 15000);
 
-  it("is really a non-superuser owner that cannot read tenant tables directly", async () => {
+  it("is really a non-superuser owner whose trusted connection still reads tenant tables (RLS enabled, not forced)", async () => {
     const role = (await ownerPool.query("SELECT current_user AS u, rolsuper, rolbypassrls FROM pg_roles WHERE rolname=current_user")).rows[0];
     expect(role).toEqual({ u: owner, rolsuper: false, rolbypassrls: false });
-    // Negative control: without the admin functions, FORCE RLS leaves the owner blind. This is what the policies exist for.
-    for (const table of ["organizations", "users", "projects", "jobs"]) {
-      expect((await ownerPool.query(`SELECT count(*)::int AS n FROM ${table}`)).rows[0].n, table).toBe(0);
+    // Migration 0010: the owner bypasses RLS as table owner; the tenant role is what stays restricted (asserted below).
+    const expected = { organizations: 2, users: 3, projects: 2, jobs: 1 };
+    for (const [table, n] of Object.entries(expected)) {
+      expect((await ownerPool.query(`SELECT count(*)::int AS n FROM ${table}`)).rows[0].n, table).toBe(n);
     }
+    expect((await ownerPool.query("SELECT bool_and(NOT relforcerowsecurity) AND bool_and(relrowsecurity) AS ok FROM pg_class WHERE relname IN ('organizations','users','projects','jobs')")).rows[0].ok).toBe(true);
   });
 
   it("returns cross-tenant rows and aggregates through the functions, then switches the gate off", async () => {
@@ -98,7 +100,7 @@ describe.skipIf(process.env.RUN_DB_TESTS !== "1")("platform admin SQL under a no
         { email: "b2@test.local", org_name: "Org B", has_password: true, has_google: true },
         { email: "b@test.local", org_name: "Org B", has_password: false, has_google: true }]);
       expect((await client.query("SELECT current_setting('app.platform_admin', true) AS gate")).rows[0].gate).toBe("");
-      expect((await client.query("SELECT count(*)::int AS n FROM users")).rows[0].n).toBe(0);
+      expect((await client.query("SELECT count(*)::int AS n FROM users")).rows[0].n).toBe(3); // owner is trusted (0010); the gate is not what grants this
     });
   });
 
