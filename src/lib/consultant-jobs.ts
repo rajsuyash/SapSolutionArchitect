@@ -4,6 +4,7 @@ import type { PgBoss } from "pg-boss";
 import { z } from "zod";
 import { AuthError, transaction, type AuthService } from "./auth";
 import { withTenantSession } from "./tenant";
+import { assertOrgCanRunAi } from "./org-limits";
 import { validateDiscovery } from "./discovery";
 import { loadWorkspaceForWorker, persistWorkspaceTurn } from "./discovery-workspace";
 import { buildInterviewInput } from "./discovery-workspace-model";
@@ -86,9 +87,10 @@ export function createConsultantJobs(pool: Pool, auth: AuthService, queue: PgBos
         const pending = (await client.query(`SELECT id FROM consultant_jobs WHERE org_id=$1 AND project_id=$2
           AND variant_code=$3 AND status IN ('QUEUED','RUNNING')`, [user.orgId, projectId, variantCode])).rows[0];
         if (pending) throw new AuthError("JOB_ALREADY_RUNNING", 409, "The consultant is already responding. Please wait for that response.");
+        await assertOrgCanRunAi(client, user.orgId);
         await startQueue();
         const id = randomUUID();
-        const job = (await client.query<StoredJob>(`INSERT INTO consultant_jobs
+        const job =(await client.query<StoredJob>(`INSERT INTO consultant_jobs
           (id,org_id,project_id,variant_code,kind,input_revision,message_id,snapshot_id,requested_by,request_key,request_hash)
           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`,
         [id, user.orgId, projectId, variantCode, input.kind, input.expectedRevision,

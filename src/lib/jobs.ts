@@ -4,6 +4,7 @@ import type { PgBoss } from "pg-boss";
 import { z } from "zod";
 import { AuthError, transaction, type AuthService, type SessionUser } from "./auth";
 import { withTenantSession } from "./tenant";
+import { assertOrgCanRunAi } from "./org-limits";
 import { validateProblemAnalysis, type ProblemAnalysis } from "./ai/problem-analysis";
 import type { createStageRunner } from "./ai/runStage";
 
@@ -46,6 +47,7 @@ export function createJobService(pool: Pool, auth: AuthService, queue: PgBoss, s
     const existing = (await client.query<{ id: string }>(
       "SELECT id FROM jobs WHERE org_id=$1 AND project_id=$2 AND status IN ('QUEUED','RUNNING')", [user.orgId, projectId])).rows[0];
     if (existing) throw Object.assign(new AuthError("JOB_ALREADY_RUNNING", 409, "An analysis is already queued or running"), { jobId: existing.id });
+    await assertOrgCanRunAi(client, user.orgId);
     const id = randomUUID();
     await client.query(`INSERT INTO jobs(id,org_id,project_id,kind,requested_by,request_id,retry_of)
       VALUES($1,$2,$3,'PROBLEM_ANALYSIS',$4,$5,$6)`, [id, user.orgId, projectId, user.id, requestId, retryOf ?? null]);

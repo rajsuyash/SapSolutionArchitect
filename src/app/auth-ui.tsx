@@ -93,6 +93,8 @@ export function AuthForm({ mode, destination = "/projects", google = false, goog
     {google && <WorkspaceLink className="primary-button google-button" href="/api/auth/google/start" data-action="google">Continue with Google</WorkspaceLink>}
     <p className="signup-link">{signup ? <Link href="/login">Back to sign in</Link>
       : <>New here? <Link href="/signup">Create account</Link></>}</p>
+    <p className="panel-description" style={{ margin: "12px 0 0", fontSize: 12 }}>
+      <WorkspaceLink href="/privacy">Privacy</WorkspaceLink> · <WorkspaceLink href="/terms">Terms</WorkspaceLink></p>
   </form>;
 }
 
