@@ -5,6 +5,7 @@ import { parseEnvironment } from "../src/lib/env";
 import { createStageRunner } from "../src/lib/ai/runStage";
 import { InterviewTurnSchema, parseInterviewInput, validateInterviewTurn,
   type InterviewInput, type InterviewTurn } from "../src/lib/ai/discovery-interview";
+import { asStream } from "./support/sse";
 
 const fixture = (): InterviewInput => ({
   schemaVersion: 1, contextRevision: 3, variantName: "Equipment hire",
@@ -137,7 +138,7 @@ function harness(reply: (attempt: number) => Response = () => response(), count:
       counted.push(body);
       return new Response(JSON.stringify({ input_tokens: count(counted.length) }), { headers: { "content-type": "application/json" } });
     }
-    sent.push(body); return reply(sent.length);
+    sent.push(body); return asStream(reply(sent.length));
   });
   const runner = createStageRunner(settings(), { fetch });
   return { sent, counted, fetch, run: (input: unknown) => runner("interview_turn", input) };

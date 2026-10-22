@@ -4,7 +4,7 @@ import { z } from "zod";
 import { parseEnvironment, type Environment } from "../env";
 import { ProblemAnalysisInputSchema, ProblemAnalysisSchema, redactInput, schemaIssues, validateProblemAnalysis,
   type ProblemAnalysis, type ValidationIssue } from "./problem-analysis";
-import { createProviderClient, logProviderFailure, type Provider } from "./provider";
+import { createProviderClient, logProviderFailure, logStageTimeout, type Provider } from "./provider";
 import { DetailedDesignSchema } from "./design-quality";
 import { loadToBeReferences, parseToBeInput, validateToBeOutput, type ToBeOutput } from "./to-be";
 import { InterviewTurnSchema, parseInterviewInput, validateInterviewTurn, type InterviewInput, type InterviewTurn } from "./discovery-interview";
@@ -21,6 +21,7 @@ export class AIStageError extends Error {
 }
 type Config = Pick<Environment, "NODE_ENV" | "AI_PROVIDER" | "ANTHROPIC_API_KEY" | "DEEPINFRA_API_KEY" | "AI_MODEL" | "AI_MAX_INPUT_TOKENS" | "AI_MAX_CONCURRENCY" | "AI_FAULT_INJECTION"
   | "AI_STAGE_BUDGET_SECONDS" | "AI_CALL_TIMEOUT_SECONDS" | "AI_DESIGN_CALL_TIMEOUT_SECONDS">;
+const SDK_TIMEOUT_MARGIN_MS = 5000;
 type Options = { fetch?: typeof fetch; sapCatalogDir?: string };
 
 function pause(ms: number, signal: AbortSignal): Promise<void> {
@@ -53,7 +54,11 @@ export function createStageRunner(config: Config, options: Options = {}) {
   // The request sends only model, max_tokens, system, messages, tools and tool_choice: no Claude-specific
   // thinking, effort, beta or cache_control settings, so any Messages-compatible provider accepts it.
   // DeepInfra may return `thinking` blocks first; only tool_use blocks are read, all others are ignored.
-  const client = provider === "stub" ? undefined : createProviderClient(provider, apiKey!, callTimeout, options.fetch);
+  // Calls are streamed: headers arrive immediately, so Node's 300 s fetch headersTimeout (undici default)
+  // cannot cut a long generation. The SDK timeout then only covers the wait for headers; our own
+  // AbortSignal in call() bounds the whole stream. Keep the SDK value above both per-call limits.
+  const sdkTimeout = Math.max(callTimeout, designCallTimeout) + SDK_TIMEOUT_MARGIN_MS;
+  const client = provider === "stub" ? undefined : createProviderClient(provider, apiKey!, sdkTimeout, options.fetch);
   let active = 0;
   const waiters: Array<{ ready: () => void; abort: () => void; signal: AbortSignal }> = [];
   const release = () => {
@@ -204,11 +209,12 @@ export function createStageRunner(config: Config, options: Options = {}) {
         } else {
           const message = await transport((signal) => {
             metrics.attempts++;
-            return client!.messages.create({ model: config.AI_MODEL, max_tokens: designInput ? 24000 : interviewInput ? 8000 : 12000, system,
+            // Streaming keeps the connection alive during long generations; finalMessage() assembles the same Message.
+            return client!.messages.stream({ model: config.AI_MODEL, max_tokens: designInput ? 24000 : interviewInput ? 8000 : 12000, system,
               messages, tools,
               // Sonnet 5.5 rejects forced tool selection. The prompt requests the
               // tool; validation still requires exactly one complete tool payload.
-              tool_choice: toolChoice }, { signal, timeout: designInput ? designCallTimeout : callTimeout });
+              tool_choice: toolChoice }, { signal, timeout: designInput ? designCallTimeout : callTimeout }).finalMessage();
           }, designInput ? designCallTimeout : callTimeout);
           const usage = z.object({ input_tokens: z.number().int().nonnegative(), output_tokens: z.number().int().nonnegative(),
             cache_creation_input_tokens: z.number().int().nonnegative().nullish(), cache_read_input_tokens: z.number().int().nonnegative().nullish(),
@@ -241,7 +247,10 @@ export function createStageRunner(config: Config, options: Options = {}) {
       }
       throw fail("AI_INVALID_OUTPUT");
     } catch (error) {
-      if (deadline.signal.aborted) throw fail("AI_TIMEOUT");
+      if (deadline.signal.aborted) {
+        logStageTimeout(provider, config.AI_MODEL, stage, Date.now() - started, metrics.attempts);
+        throw fail("AI_TIMEOUT");
+      }
       if (externalSignal?.aborted) throw fail("AI_CANCELLED");
       if (error instanceof AIStageError) throw error;
       throw fail("AI_PROVIDER_ERROR");

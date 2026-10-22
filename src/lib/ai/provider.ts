@@ -35,3 +35,8 @@ export function classifyProviderError(error: unknown): { status?: number; errorT
 export function logProviderFailure(provider: Provider, model: string, stage: string, error: unknown) {
   console.error(JSON.stringify({ event: "ai_provider_error", provider, model, stage, ...classifyProviderError(error) }));
 }
+
+/** One structured line when the runner's whole-stage budget expires. Carries no prompt, user data or key. */
+export function logStageTimeout(provider: Provider, model: string, stage: string, elapsedMs: number, attempts: number) {
+  console.error(JSON.stringify({ event: "ai_stage_timeout", provider, model, stage, elapsedMs, attempts }));
+}

@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { parseEnvironment } from "../src/lib/env";
 import { createStageRunner } from "../src/lib/ai/runStage";
 import { classifyProviderError } from "../src/lib/ai/provider";
+import { asStream, messageEvents, sseResponse } from "./support/sse";
 
 const local = parseEnv(readFileSync(new URL("../.env.example", import.meta.url), "utf8"));
 const env = (overrides: Record<string, string> = {}) => ({ ...local, NODE_ENV: "test", ...overrides });
@@ -29,13 +30,13 @@ function harness(generate: (attempt: number) => Response = () => reply([thinking
     urls.push(String(url)); headers.push(new Headers(init?.headers));
     if (String(url).includes("count_tokens")) return new Response(JSON.stringify({ input_tokens: 10 }), json);
     bodies.push(JSON.parse(String(init?.body)));
-    return generate(bodies.length);
+    return asStream(generate(bodies.length));
   });
   return { fetch, urls, headers, bodies };
 }
 const deepinfra = () => parseEnvironment(env({ AI_PROVIDER: "deepinfra", DEEPINFRA_API_KEY: "di-test-key", AI_MODEL: "XiaomiMiMo/MiMo-V2.6-Pro" }));
 const anthropic = () => parseEnvironment(env({ AI_PROVIDER: "anthropic", ANTHROPIC_API_KEY: "an-test-key" }));
-const ALLOWED_KEYS = ["max_tokens", "messages", "model", "system", "tool_choice", "tools"];
+const ALLOWED_KEYS = ["max_tokens", "messages", "model", "stream", "system", "tool_choice", "tools"];
 afterEach(() => vi.restoreAllMocks());
 
 describe("provider request shape", () => {
@@ -48,6 +49,7 @@ describe("provider request shape", () => {
     expect(h.headers[0]!.has("anthropic-beta")).toBe(false);
     expect(Object.keys(h.bodies[0]!).sort()).toEqual(ALLOWED_KEYS);
     expect(h.bodies[0]!.model).toBe("XiaomiMiMo/MiMo-V2.6-Pro");
+    expect(h.bodies[0]!.stream).toBe(true);
   });
   it("keeps the Anthropic path on api.anthropic.com with the same portable parameters", async () => {
     const h = harness();
@@ -75,7 +77,7 @@ describe("reasoning-model latency", () => {
     try {
       const fetch = vi.fn<typeof globalThis.fetch>(async (url) => String(url).includes("count_tokens")
         ? new Response(JSON.stringify({ input_tokens: 10 }), json)
-        : new Promise<Response>((resolve) => setTimeout(() => resolve(reply([thinking, tool()])), 150000)));
+        : new Promise<Response>((resolve) => setTimeout(() => resolve(asStream(reply([thinking, tool()]))), 150000)));
       const slow = parseEnvironment(env({ AI_PROVIDER: "deepinfra", DEEPINFRA_API_KEY: "di-test-key", AI_MODEL: "XiaomiMiMo/MiMo-V2.6-Pro",
         AI_STAGE_BUDGET_SECONDS: "1200", AI_CALL_TIMEOUT_SECONDS: "300", AI_DESIGN_CALL_TIMEOUT_SECONDS: "1000" }));
       const pending = createStageRunner(slow, { fetch })("problem_analysis", input);
@@ -150,5 +152,65 @@ describe("environment", () => {
       AUTH_SECRET: "x".repeat(40), EMAIL_PROVIDER: "disabled" };
     expect(parseEnvironment(env({ ...prod, AI_PROVIDER: "deepinfra", DEEPINFRA_API_KEY: "k" })).AI_PROVIDER).toBe("deepinfra");
     expect(() => parseEnvironment(env({ ...prod, AI_PROVIDER: "stub" }))).toThrow("ANTHROPIC_API_KEY");
+  });
+});
+
+/** Headers arrive at once, then the body stalls until the caller's signal aborts it (as a real fetch body would). */
+const stalledStream = (init?: RequestInit) => new Response(new ReadableStream({ start(controller) {
+  controller.enqueue(new TextEncoder().encode(messageEvents({ content: [] }).split("\n\n")[0] + "\n\n"));
+  init?.signal?.addEventListener("abort", () => controller.error(new DOMException("aborted", "AbortError")), { once: true });
+} }), { headers: { "content-type": "text/event-stream" } });
+const stalling = (overrides: Record<string, string>) => {
+  let signal: AbortSignal | null | undefined;
+  const fetch = vi.fn<typeof globalThis.fetch>(async (url, init) => {
+    if (String(url).includes("count_tokens")) return new Response(JSON.stringify({ input_tokens: 10 }), json);
+    signal = init?.signal; return stalledStream(init);
+  });
+  const config = parseEnvironment(env({ AI_PROVIDER: "deepinfra", DEEPINFRA_API_KEY: "di-test-key", AI_MODEL: "XiaomiMiMo/MiMo-V2.6-Pro", ...overrides }));
+  return { fetch, config, signal: () => signal };
+};
+
+describe("streaming failures", () => {
+  it("classifies a provider error event that arrives mid-stream", async () => {
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    const h = harness();
+    const fetch = vi.fn<typeof globalThis.fetch>(async (url) => String(url).includes("count_tokens")
+      ? new Response(JSON.stringify({ input_tokens: 10 }), json)
+      : sseResponse(messageEvents({ content: [thinking] }, { type: "overloaded_error", message: "private provider detail" })));
+    await expect(createStageRunner(deepinfra(), { fetch })("problem_analysis", input))
+      .rejects.toMatchObject({ code: "AI_PROVIDER_ERROR", metrics: { attempts: 1 } });
+    expect(h.fetch).not.toHaveBeenCalled();
+    expect(log).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(String(log.mock.calls[0]![0]))).toMatchObject({ event: "ai_provider_error", provider: "deepinfra", category: "overloaded" });
+    expect(String(log.mock.calls[0]![0])).not.toContain("private");
+  });
+  it("maps a stream aborted by the per-call signal to AI_TIMEOUT", async () => {
+    vi.useFakeTimers();
+    try {
+      const s = stalling({ AI_CALL_TIMEOUT_SECONDS: "30", AI_DESIGN_CALL_TIMEOUT_SECONDS: "30", AI_STAGE_BUDGET_SECONDS: "600" });
+      const pending = createStageRunner(s.config, { fetch: s.fetch })("problem_analysis", input).catch((error: unknown) => error);
+      await vi.waitFor(() => expect(s.signal()).toBeDefined());
+      await vi.advanceTimersByTimeAsync(29000);
+      expect(s.signal()!.aborted).toBe(false);
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(await pending).toMatchObject({ code: "AI_TIMEOUT", metrics: { attempts: 1 } });
+      expect(s.signal()!.aborted).toBe(true);
+    } finally { vi.useRealTimers(); }
+  });
+  it("logs one content-free ai_stage_timeout line when the whole-stage budget expires", async () => {
+    vi.useFakeTimers();
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const s = stalling({ AI_STAGE_BUDGET_SECONDS: "60", AI_CALL_TIMEOUT_SECONDS: "60", AI_DESIGN_CALL_TIMEOUT_SECONDS: "60" });
+      const pending = createStageRunner(s.config, { fetch: s.fetch })("problem_analysis", input).catch((error: unknown) => error);
+      await vi.waitFor(() => expect(s.signal()).toBeDefined());
+      await vi.advanceTimersByTimeAsync(61000);
+      expect(await pending).toMatchObject({ code: "AI_TIMEOUT" });
+      const stage = log.mock.calls.map((call) => String(call[0])).filter((line) => line.includes("ai_stage_timeout"));
+      expect(stage).toHaveLength(1);
+      expect(JSON.parse(stage[0]!)).toEqual({ event: "ai_stage_timeout", provider: "deepinfra", model: "XiaomiMiMo/MiMo-V2.6-Pro",
+        stage: "problem_analysis", elapsedMs: 60000, attempts: 1 });
+      expect(stage[0]).not.toMatch(/re-key|Synthetic|di-test-key/);
+    } finally { vi.useRealTimers(); }
   });
 });

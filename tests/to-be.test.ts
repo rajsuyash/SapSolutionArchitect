@@ -14,6 +14,7 @@ import { parseEnvironment } from "../src/lib/env";
 import { createStageRunner } from "../src/lib/ai/runStage";
 import { createToBeGenerator, parseToBeInput, toBeContext, validateToBeOutput, type ToBeInput } from "../src/lib/ai/to-be";
 import { rentalContext, rentalDraft } from "../fixtures/ai/to-be/rental-benchmark";
+import { asStream } from "./support/sse";
 
 const local = parseEnv(readFileSync(new URL("../.env.example", import.meta.url), "utf8"));
 function fixture(): ToBeInput {
@@ -57,7 +58,7 @@ function harness(reply: (attempt: number) => Response | Promise<Response> = () =
       counted.push(body);
       return new Response(JSON.stringify({ input_tokens: count(counted.length) }), { headers: { "content-type": "application/json" } });
     }
-    sent.push(body); return reply(sent.length);
+    sent.push(body); return asStream(reply(sent.length));
   });
   const runner = createStageRunner(settings(), { fetch, sapCatalogDir });
   return { sent, counted, fetch, generate: (input: unknown, signal?: AbortSignal) => runner("to_be", input, signal) };

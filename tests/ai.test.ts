@@ -5,6 +5,7 @@ import { parseEnvironment } from "../src/lib/env";
 import { parseEnv } from "node:util";
 import { createStageRunner } from "../src/lib/ai/runStage";
 import { ProblemAnalysisSchema, validateProblemAnalysis } from "../src/lib/ai/problem-analysis";
+import { asStream } from "./support/sse";
 
 const local = parseEnv(readFileSync(new URL("../.env.example", import.meta.url), "utf8"));
 const config = (overrides: Record<string, string> = {}) => parseEnvironment({ ...local, NODE_ENV: "test", ...overrides });
@@ -80,7 +81,7 @@ function providerHarness(generate: (body: Body, init: RequestInit, attempt: numb
       return new Response(JSON.stringify({ input_tokens: Array.from(body.messages[0]!.content).length }), { headers: { "content-type": "application/json" } });
     }
     bodies.push(body);
-    return generate(body, init!, bodies.length);
+    return asStream(generate(body, init!, bodies.length));
   });
   const settings = (overrides: Record<string, string> = {}) => config({ AI_PROVIDER: "anthropic", ANTHROPIC_API_KEY: "synthetic-test-key", ...overrides });
   return { fetch, bodies, counted, settings };
