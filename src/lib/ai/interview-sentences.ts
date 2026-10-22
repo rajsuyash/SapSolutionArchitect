@@ -82,16 +82,22 @@ export function interviewModelView<T extends Sources>(input: T): T {
     evidence: input.evidence.map(source => ({ ...source, text: tagged(source.id) })) };
 }
 
-export type Citation = { sourceId: string; quote: string } |
-  { problem: "unknown_sentence_id" | "sentence_ids_cross_source" | "sentence_ids_not_contiguous" };
+/** A cited span longer than this many sentences is not evidence for one fact; the proposal is dropped, not the turn. */
+export const MAX_EVIDENCE_SPAN = 6;
+export type Citation = { sourceId: string; quote: string; warning?: "evidence_cross_source_trimmed" } |
+  { problem: "unknown_sentence_id" | "evidence_span_too_long" };
 
-/** Resolve cited IDs (any order) to the source and the exact slice from the first sentence's start to the last one's end. */
+/** Resolve cited IDs to the source and the exact slice from the earliest cited sentence's start to the latest one's end.
+ * Repeated IDs are collapsed; IDs from other sources than the first cited one are ignored (warning); gaps between the
+ * cited sentences are covered by the slice. An unknown ID is a hard problem (hallucination). */
 export function resolveSentenceIds(index: SentenceIndex, sources: ReadonlyMap<string, string>, ids: readonly string[]): Citation {
-  const found = ids.map(id => index.sentences.get(id));
+  const found = [...new Set(ids)].map(id => index.sentences.get(id));
   if (!found.length || found.some(item => !item)) return { problem: "unknown_sentence_id" };
-  const cited = (found as IndexedSentence[]).slice().sort((a, b) => a.ordinal - b.ordinal);
+  const all = found as IndexedSentence[];
+  const sourceId = all[0]!.sourceId;
+  const cited = all.filter(item => item.sourceId === sourceId).sort((a, b) => a.ordinal - b.ordinal);
   const first = cited[0]!, last = cited.at(-1)!;
-  if (cited.some(item => item.sourceId !== first.sourceId)) return { problem: "sentence_ids_cross_source" };
-  if (cited.some((item, position) => item.ordinal !== first.ordinal + position)) return { problem: "sentence_ids_not_contiguous" };
-  return { sourceId: first.sourceId, quote: sources.get(first.sourceId)!.slice(first.start, last.end) };
+  if (last.ordinal - first.ordinal + 1 > MAX_EVIDENCE_SPAN) return { problem: "evidence_span_too_long" };
+  const quote = sources.get(sourceId)!.slice(first.start, last.end);
+  return cited.length < all.length ? { sourceId, quote, warning: "evidence_cross_source_trimmed" } : { sourceId, quote };
 }

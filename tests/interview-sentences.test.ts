@@ -128,14 +128,34 @@ describe("sentence-ID citations", () => {
     expect(run(turn([update(["T4.S2"])]))).toMatchObject({ success: false, errors: [{ code: "unknown_sentence_id" }] });
   });
 
-  it("rejects ids from different sources", () => {
-    expect(run(turn([update(["S2", "S3"])]))).toEqual({ success: false, errors: [{ path: "proposedUpdates.0.sentenceIds", code: "sentence_ids_cross_source" }] });
+  it("trims ids from other sources to the first cited id's source, with a warning", () => {
+    const result = run(turn([update(["S2", "S3"])]));
+    expect(result).toMatchObject({ success: true, warnings: [{ path: "proposedUpdates.0", code: "evidence_cross_source_trimmed" }] });
+    expect(data(result).proposedUpdates[0]).toMatchObject({ sourceId: "MSG-3", quote: second });
+    expect(data(run(turn([update(["S3", "S2"])]))).proposedUpdates[0]!.sourceId).not.toBe("MSG-3");
   });
 
-  it("rejects non-contiguous and repeated ids", () => {
+  it("resolves non-contiguous ids within one source to the exact span from the first start to the last end", () => {
     const input = fixture(); input.currentMessage.text = "One. Two. Three.";
-    expect(run(turn([update(["S1", "S3"])]), input)).toEqual({ success: false, errors: [{ path: "proposedUpdates.0.sentenceIds", code: "sentence_ids_not_contiguous" }] });
-    expect(run(turn([update(["S1", "S1"])]), input)).toMatchObject({ success: false, errors: [{ code: "sentence_ids_not_contiguous" }] });
+    const result = run(turn([update(["S1", "S3"])]), input);
+    expect(result).toMatchObject({ success: true, warnings: [] });
+    expect(data(result).proposedUpdates[0]).toMatchObject({ quote: "One. Two. Three.", value: "One. Two. Three." });
+  });
+
+  it("de-duplicates repeated ids silently", () => {
+    const input = fixture(); input.currentMessage.text = "One. Two. Three.";
+    const result = run(turn([update(["S1", "S1"])]), input);
+    expect(result).toMatchObject({ success: true, warnings: [] });
+    expect(data(result).proposedUpdates[0]!.quote).toBe("One.");
+  });
+
+  it("drops a proposal whose span covers more than 6 sentences, without failing the turn", () => {
+    const input = fixture(); input.currentMessage.text = "A1. B2. C3. D4. E5. F6. G7. H8.";
+    const six = run(turn([update(["S1", "S6"])]), input);
+    expect(data(six).proposedUpdates).toHaveLength(1);
+    const seven = run(turn([update(["S1", "S7"])]), input);
+    expect(seven).toMatchObject({ success: true, warnings: [{ path: "proposedUpdates.0", code: "evidence_span_too_long" }] });
+    expect(data(seven).proposedUpdates).toEqual([]);
   });
 
   it("requires one to three ids and refuses the old quote shape from the model", () => {
@@ -155,6 +175,16 @@ describe("sentence-ID citations", () => {
     expect(data(result).proposedRequirements[0]).toMatchObject({ stepRef: "new_0", sourceId: "MSG-3", quote: second, value: second });
     expect(run(turn([], { proposedRequirements: [{ stepRef: "new_0", kind: "PAIN_POINT", critical: true, sentenceIds: ["S99"] }] })))
       .toMatchObject({ success: false, errors: [{ path: "proposedRequirements.0.sentenceIds", code: "unknown_sentence_id" }] });
+  });
+
+  it("drops a requirement that attaches to no step, with a warning, instead of failing the turn", () => {
+    const result = run(turn([], { proposedRequirements: [
+      { stepRef: "st_missing", kind: "PAIN_POINT", critical: true, sentenceIds: ["S2"] },
+      { stepRef: "new_5", kind: "PAIN_POINT", critical: true, sentenceIds: ["S1"] }] }));
+    expect(result).toMatchObject({ success: true, warnings: [
+      { path: "proposedRequirements.0", code: "requirement_dropped", detail: "unknown_step_ref" },
+      { path: "proposedRequirements.1", code: "requirement_dropped", detail: "unknown_step_ref" }] });
+    expect(data(result).proposedRequirements).toEqual([]);
   });
 
   it("shows the model sentenceIds and no quote, sourceId or value in the tool schema", () => {

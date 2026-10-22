@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { indexSentences, resolveSentenceIds } from "./interview-sentences";
+import { indexSentences, resolveSentenceIds, type Citation } from "./interview-sentences";
 
 const identifier = z.string().regex(/^[A-Za-z0-9_-]{1,64}$/);
 const content = (limit: number) => z.string().min(1).max(limit)
@@ -241,12 +241,24 @@ function validate(input: InterviewInput, raw: unknown, mode: "model" | "stored")
   const sources = new Map([...input.evidence, input.currentMessage].map(item => [item.id, item.text]));
   const index = indexSentences(input);
   /** The source and exact passage a proposal cites, or why there is none. */
-  const resolveCitation = (cited: Cited): { sourceId: string; quote: string } | { problem: string } => {
+  const resolveCitation = (cited: Cited): Citation | { problem: string } => {
     const found = cited.sentenceIds ? resolveSentenceIds(index, sources, cited.sentenceIds)
       : sources.get(cited.sourceId ?? "")?.includes(cited.quote ?? "") ? { sourceId: cited.sourceId!, quote: cited.quote! } : { problem: "quote_not_in_source" };
     return "quote" in found && found.quote.length > 8000 ? { problem: "quote_too_long" } : found;
   };
   const citationPath = (path: string) => `${path}.${mode === "model" ? "sentenceIds" : "quote"}`;
+  /** The resolved citation of a proposal, or null when the proposal cannot be kept: a span too long to be one fact is
+   * dropped with a warning, anything else (unknown ID, quote not in source) fails the turn so the model repairs it. */
+  const cite = (path: string, cited: Cited) => {
+    const resolved = resolveCitation(cited);
+    if ("problem" in resolved) {
+      if (resolved.problem === "evidence_span_too_long") warnings.push({ path, code: resolved.problem });
+      else invalid(citationPath(path), resolved.problem);
+      return null;
+    }
+    if ("warning" in resolved && resolved.warning) warnings.push({ path, code: resolved.warning });
+    return resolved;
+  };
   const updated = new Set<string>();
   const updates = model.proposedUpdates.flatMap((update, index) => {
     const path = `proposedUpdates.${index}`;
@@ -260,9 +272,8 @@ function validate(input: InterviewInput, raw: unknown, mode: "model" | "stored")
     if (update.operation === "PROPOSE_SET"
       ? field.status !== "EMPTY" || field.value !== null || update.previousValue !== null
       : field.status !== "KNOWN" || field.value === null || update.previousValue !== field.value) return drop("invalid_previous_value");
-    const resolved = resolveCitation(update);
-    // Provenance is never relaxed: a citation that does not resolve fails the turn so the model must repair it.
-    if ("problem" in resolved) { invalid(citationPath(path), resolved.problem); return []; }
+    const resolved = cite(path, update);
+    if (!resolved) return [];
     updated.add(update.fieldId);
     return [{ fieldId: update.fieldId, operation: update.operation, previousValue: update.previousValue,
       sourceId: resolved.sourceId, quote: resolved.quote, value: resolved.quote }];
@@ -281,8 +292,8 @@ function validate(input: InterviewInput, raw: unknown, mode: "model" | "stored")
   const steps: { sourceId: string; quote: string; value: string; nameHint: string | null }[] = [];
   model.proposedSteps.forEach((step, index) => {
     const path = `proposedSteps.${index}`;
-    const resolved = resolveCitation(step);
-    if ("problem" in resolved) { invalid(citationPath(path), resolved.problem); stepFate.push(null); return; }
+    const resolved = cite(path, step);
+    if (!resolved) { stepFate.push(null); return; }
     let nameHint: string | null = null;
     if (step.nameHint) {
       // A label is a convenience, never provenance: one that is not a phrase of the source is dropped, not an error.
@@ -305,12 +316,17 @@ function validate(input: InterviewInput, raw: unknown, mode: "model" | "stored")
   const takenRequirements = input.requirements.map(item => item.statement);
   const requirements = model.proposedRequirements.flatMap((item, index) => {
     const path = `proposedRequirements.${index}`;
-    const resolved = resolveCitation(item);
-    if ("problem" in resolved) { invalid(citationPath(path), resolved.problem); return []; }
+    const resolved = cite(path, item);
+    if (!resolved) return [];
     const fresh = /^new_(\d{1,2})$/.exec(item.stepRef);
     const fate = fresh ? stepFate[Number(fresh[1])] : undefined;
     const stepRef = !fresh ? item.stepRef : fate ? ("new" in fate ? `new_${fate.new}` : fate.existing) : null;
-    if (!stepRef || (!fresh && !knownSteps.has(stepRef))) { invalid(`${path}.stepRef`, "unknown_step_ref"); return []; }
+    if (!stepRef || (!fresh && !knownSteps.has(stepRef))) {
+      // A model's requirement that attaches to no step is dropped; a stored turn was validated once, so it stays fatal.
+      if (mode === "model") warnings.push({ path, code: "requirement_dropped", detail: "unknown_step_ref" });
+      else invalid(`${path}.stepRef`, "unknown_step_ref");
+      return [];
+    }
     if (takenRequirements.some(taken => similar(resolved.quote, taken))) {
       warnings.push({ path, code: "requirement_dropped", detail: "duplicate_requirement" });
       return [];
