@@ -1,3 +1,4 @@
+import { askFirstGap } from "./support/context-fields";
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
@@ -48,7 +49,7 @@ describe.skipIf(process.env.RUN_DB_TESTS !== "1")("app services on a NOSUPERUSER
 
   const interviewRunner = (async (_stage: string, raw: unknown) => {
     const input = raw as InterviewInput;
-    return { payload: { schemaVersion: 1, contextRevision: input.contextRevision, reply: "Thank you for that context.", questions: [], proposedUpdates: [], observations: [] },
+    return { payload: { schemaVersion: 1, contextRevision: input.contextRevision, reply: "Thank you for that context.", questions: askFirstGap(input), proposedUpdates: [], observations: [] },
       metrics: { stage: "interview_turn", provider: "anthropic", model: "synthetic-test-double", inputTokens: 1, outputTokens: 1,
         latencyMs: 1, attempts: 1, validationErrors: [] } };
   }) as ReturnType<typeof createStageRunner>;

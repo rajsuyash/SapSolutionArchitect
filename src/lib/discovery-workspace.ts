@@ -4,7 +4,7 @@ import { z } from "zod";
 import { AuthError, type AuthService } from "./auth";
 import { withTenantSession } from "./tenant";
 import { containsSensitiveText, validateInterviewTurn } from "./ai/discovery-interview";
-import { applyWorkspaceCommand, buildInterviewInput, compileDiscovery, createWorkspace,
+import { applyWorkspaceCommand, backfillCatalog, buildInterviewInput, compileDiscovery, createWorkspace,
   getWorkspaceReadiness, recordInterviewTurn, WorkspaceCommandSchema, WorkspaceStateSchema,
   type WorkspaceState } from "./discovery-workspace-model";
 
@@ -38,7 +38,7 @@ function validRevision(value: number) {
 function readState(row: Row): WorkspaceState {
   const parsed = WorkspaceStateSchema.safeParse(row.state);
   if (!parsed.success || parsed.data.revision !== row.revision) throw new Error("Invalid persisted discovery workspace");
-  return parsed.data;
+  return backfillCatalog(parsed.data);
 }
 async function lock(client: PoolClient, orgId: string, projectId: string, variantCode: string) {
   await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))",

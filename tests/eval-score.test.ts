@@ -115,6 +115,45 @@ describe("scoreRun", () => {
     expect(result.pass).toBe(false);
   });
 
+  it("flags the same topic asked again in a later turn at Jaccard 0.6, but not within one turn or for different topics", () => {
+    const t = goodTranscript();
+    t.turns[0]!.questions = [{ gapKey: "g_a", fieldId: "a", question: "Which approvals are needed for customer discounts above 10 percent?" }];
+    t.turns[1]!.questions = [{ gapKey: "g_b", fieldId: "b", question: "What approvals are needed for customer discounts over 10 percent?" }];
+    t.turns[2]!.questions = [{ gapKey: "g_c", fieldId: "c", question: "How are inter-plant transfers billed at month end?" }];
+    const result = score(t);
+    expect(result.semanticDuplicateCount).toBe(1);
+    expect(result.nearDuplicateCount).toBe(0); // 0.75: below the 0.8 near-duplicate bar, above the 0.6 semantic one
+    expect(result.semanticDuplicates[0]).toMatchObject({ a: { turn: 1 }, b: { turn: 2 } });
+    expect(check(t, "semanticDuplicates").pass).toBe(false);
+    // The same wording twice in one turn is the near-duplicate check's business, not a cross-turn repeat.
+    const same = goodTranscript();
+    same.turns[0]!.questions = [t.turns[0]!.questions[0]!, { ...t.turns[1]!.questions[0]!, gapKey: "g_d" }];
+    expect(score(same).semanticDuplicateCount).toBe(0);
+    expect(check(goodTranscript(), "semanticDuplicates").pass).toBe(true);
+  });
+
+  it("does not call questions duplicates just because a walkthrough template is shared by the whole run", () => {
+    const t = goodTranscript();
+    const steps = ["Raise customer quote", "Receive customer purchase order", "Enter sales order", "Check warehouse stock", "Request production run",
+      "Prepare dispatch documents", "Post customer invoice", "Match incoming payment"];
+    t.turns = steps.map((name, i) => turn(i + 1, [`gstep_${i}`], { questions: [{ gapKey: `gstep_${i}`, fieldId: "f",
+      question: `Walk me through what happens at ${name}: who does it, in which system, and what goes wrong?` }] }));
+    t.readiness.atTurn = 8;
+    expect(score(t).semanticDuplicateCount).toBe(0);
+    // A real repeat of one of them is still caught.
+    t.turns.push(turn(9, ["gstep_x"], { questions: [{ gapKey: "gstep_x", fieldId: "f",
+      question: "Walk me through what happens at Raise customer quote: who does it, in which system, and what goes wrong?" }] }));
+    expect(score(t).semanticDuplicateCount).toBe(1);
+  });
+
+  it("reports the steps and requirements the interviewer created", () => {
+    const t = goodTranscript();
+    t.structure = { steps: 11, requirements: 16 };
+    expect(score(t).interviewerCreated).toEqual({ steps: 11, requirements: 16 });
+    expect(summarize(score(t))).toContain("created by the interviewer: 11 steps, 16 requirements");
+    expect(score(goodTranscript()).interviewerCreated).toBeNull();
+  });
+
   it("detects a gapKey asked twice, across turns or within one turn", () => {
     const t = goodTranscript();
     t.turns[1]!.questions[0]!.gapKey = "g_process_owner";

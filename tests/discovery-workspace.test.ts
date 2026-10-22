@@ -1,3 +1,4 @@
+import { CONTEXT_FIELD_IDS } from "./support/context-fields";
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
@@ -107,7 +108,8 @@ describe.skipIf(process.env.RUN_DB_TESTS !== "1")("durable discovery workspace",
     const messageId = message.state.messages[0]!.id;
     const args = { orgId: owner.user.orgId, projectId: project.id, variantCode: "HIRE",
       requestedBy: owner.user.id, expectedRevision: 2, currentMessageId: messageId, requestKey: randomUUID() };
-    const turn = { schemaVersion: 1, contextRevision: 2, reply: "Thank you for that context.", questions: [],
+    const turn = { schemaVersion: 1, contextRevision: 2, reply: "Thank you for that context.",
+      questions: [{ gapKey: "g_process_owner", question: "Who owns this process day to day?", whyItMatters: "They confirm the rules." }],
       proposedUpdates: [{ fieldId: "current_systems", operation: "PROPOSE_SET", previousValue: null,
         value: "in a spreadsheet", sourceId: messageId, quote: "in a spreadsheet" }], observations: [] };
     const saved = await transaction(pool, client => persistWorkspaceTurn(client, { ...args, turn }));
@@ -118,6 +120,33 @@ describe.skipIf(process.env.RUN_DB_TESTS !== "1")("durable discovery workspace",
     const loaded = await transaction(pool, client => loadWorkspaceForWorker(client, args));
     expect(loaded.state.revision).toBe(3);
     expect(loaded.canConfirm).toBe(true);
+  });
+
+  it("loads a workspace saved before the company-context fields existed and backfills them EMPTY", async () => {
+    const { owner, project } = await fixture();
+    const created = await workspaces.create(owner.token, project.id, "OLD", { variantName: "Old" }, randomUUID());
+    const original = ["business_problem", "process_owner", "scope_boundary", "current_trigger", "current_systems", "current_rules",
+      "current_exceptions", "current_financial", "desired_outcome", "desired_controls"];
+    // Rewrite the stored JSON the way an older build saved it. Revisions are immutable, so this test-only edit lifts the guard trigger.
+    const client = await pool.connect();
+    let done;
+    try {
+      await client.query("BEGIN");
+      await client.query("ALTER TABLE discovery_workspace_revisions DISABLE TRIGGER USER");
+      done = await client.query(`UPDATE discovery_workspace_revisions SET state=jsonb_set(state,'{facts}',
+        (SELECT jsonb_agg(f) FROM jsonb_array_elements(state->'facts') f WHERE f->>'id' = ANY($1))) WHERE id=$2`, [original, created.id]);
+      await client.query("ALTER TABLE discovery_workspace_revisions ENABLE TRIGGER USER");
+      await client.query("COMMIT");
+    } catch (error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); }
+    expect(done.rowCount).toBe(1);
+    const loaded = await workspaces.get(owner.token, project.id, "OLD");
+    expect(loaded.state!.facts).toHaveLength(original.length + CONTEXT_FIELD_IDS.length);
+    expect(loaded.state!.facts.find(f => f.id === "operating_scale")).toMatchObject({ status: "EMPTY", value: null });
+    expect(loaded.readiness!.blockers.map(b => b.detail)).toContain("Operating scale and volumes");
+    const next = await workspaces.command(owner.token, project.id, "OLD", loaded.state!.revision, randomUUID(),
+      { type: "SET_FIELD", fieldId: "kpi_targets", status: "KNOWN", value: "OTIF above 90%", rationale: null, owner: null, sourceId: null, quote: null });
+    expect(next.state.facts.find(f => f.id === "kpi_targets")?.status).toBe("KNOWN");
+    expect(next.state.facts).toHaveLength(original.length + CONTEXT_FIELD_IDS.length);
   });
 
   it("atomically confirms a compiled discovery snapshot and pins its exact revision", async () => {
@@ -138,6 +167,7 @@ describe.skipIf(process.env.RUN_DB_TESTS !== "1")("durable discovery workspace",
       ["current_financial", "Billing adjusts the final invoice after return"],
       ["desired_controls", "Require a dated return record for audit"],
     ]) await set(fieldId!, value!);
+    for (const fieldId of CONTEXT_FIELD_IDS) await set(fieldId, `Synthetic answer for ${fieldId}`);
     current = await workspaces.command(owner.token, project.id, "BILLING", current.state.revision, randomUUID(),
       { type: "ADD_STEP", step: { name: "Record return", actor: "Stores clerk", system: "Spreadsheet",
         trigger: "Asset physically returned", description: "Record the return date in the spreadsheet.",

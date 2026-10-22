@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { buildInterviewInput, compileDiscovery, createWorkspace, getWorkspaceReadiness,
+import { validateInterviewTurn } from "../src/lib/ai/discovery-interview";
+import { WORKSPACE_FIELDS } from "../src/lib/workspace-fields";
+import { backfillCatalog, buildInterviewInput, compileDiscovery, createWorkspace, getWorkspaceReadiness,
   applyWorkspaceCommand, recordInterviewTurn, WorkspaceStateSchema, type WorkspaceMeta, type WorkspaceState } from "../src/lib/discovery-workspace-model";
 
 let sequence = 0;
@@ -9,6 +11,8 @@ const start = () => createWorkspace({ variantCode: "RENTAL", variantName: "Equip
   problemStatement: "Returns are recorded late and bills are disputed." }, meta());
 const set = (state: WorkspaceState, fieldId: string, value: string) => applyWorkspaceCommand(state,
   { type: "SET_FIELD", fieldId, status: "KNOWN", value, rationale: null, owner: null, sourceId: null, quote: null }, meta());
+/** A turn must ask while any gap is open: the cheapest valid question. */
+const ask = (gapKey = "g_current_trigger", question = `What starts the process (${gapKey})?`) => [{ gapKey, question, whyItMatters: "It fixes the first handoff." }];
 const step = { name: "Record return", actor: "Stores clerk", system: "Spreadsheet", trigger: "Equipment arrives",
   description: "Stores clerk records the physical return in a spreadsheet.", inputs: ["Return note"],
   outputs: ["Spreadsheet row"], controls: ["Clerk checks asset ID"], exceptions: ["Missing return date"] };
@@ -30,7 +34,8 @@ describe("discovery workspace model", () => {
       text: "The clerk records physical returns in a spreadsheet. We need faster billing corrections." }, messageMeta);
     const context = buildInterviewInput(state, messageMeta.id);
     expect(context.activeGaps.find(g => g.fieldId === "current_systems")?.detail).toContain("current practice");
-    expect(context.activeGaps.find(g => g.fieldId === "desired_outcome")?.detail).toContain("desired future");
+    expect(context.activeGaps.length).toBeLessThanOrEqual(15); // only the head of the list is shown
+    expect(context.fields.find(f => f.id === "desired_outcome")?.label).toContain("DESIRED");
     const quote = "The clerk records physical returns in a spreadsheet.";
     const turn = { schemaVersion: 1, contextRevision: state.revision, reply: "Thank you for that context.",
       questions: [{ gapKey: "g_current_trigger", question: "What starts the current return process?",
@@ -56,7 +61,7 @@ describe("discovery workspace model", () => {
     const messageMeta = meta();
     state = applyWorkspaceCommand(state, { type: "SEND_MESSAGE", text: "Billing says the return was yesterday." }, messageMeta);
     state = recordInterviewTurn(state, { schemaVersion: 1, contextRevision: state.revision,
-      reply: "Let's review what you've shared.", questions: [], proposedUpdates: [], observations: [{
+      reply: "Let's review what you've shared.", questions: ask("g_current_systems"), proposedUpdates: [], observations: [{
         kind: "POSSIBLE_CONFLICT", fieldIds: ["current_trigger"], detail: "The return date may differ from the billing date.",
       }] }, messageMeta.id, meta());
     expect(state.observations[0]?.status).toBe("PENDING");
@@ -91,6 +96,9 @@ describe("discovery workspace model", () => {
     state = set(state, "current_trigger", "Equipment arrives at the depot");
     state = set(state, "desired_outcome", "Correct final invoices within one business day");
     state = set(state, "current_systems", "Return spreadsheet and finance system");
+    for (const def of WORKSPACE_FIELDS) { // the company-context fields are required too
+      if (state.facts.find(f => f.id === def.id)!.status === "EMPTY") state = set(state, def.id, `Answer for ${def.label}`);
+    }
     state = set(state, "current_rules", "Stores clerk checks asset ID");
     state = set(state, "current_exceptions", "Manager investigates missing return date");
     state = set(state, "current_financial", "Finance issues the final invoice");
@@ -123,9 +131,11 @@ describe("discovery workspace model", () => {
     state = applyWorkspaceCommand(state, { type: "SEND_MESSAGE", text: values.join(". ") }, messageMeta);
     const input = buildInterviewInput(state, messageMeta.id);
     expect(input.fields.some(f => f.id === `${draft.id}_description`)).toBe(true);
-    expect(input.activeGaps.find(g => g.fieldId === `${draft.id}_exceptions`)?.detail).toContain("today");
+    // One walkthrough question covers the whole step; single-field gaps wait until it has been asked.
+    expect(input.activeGaps.find(g => g.key === `gstep_${draft.id}`)?.detail).toContain("Walkthrough");
+    expect(input.activeGaps.some(g => g.fieldId === `${draft.id}_exceptions`)).toBe(false);
     const turn = { schemaVersion: 1, contextRevision: state.revision, reply: "Thank you for that context.",
-      questions: [], observations: [], proposedUpdates: draft.fields.map((fact, index) => ({
+      questions: ask(`gstep_${draft.id}`), observations: [], proposedUpdates: draft.fields.map((fact, index) => ({
         fieldId: fact.id, operation: "PROPOSE_SET", previousValue: null, value: values[index],
         sourceId: messageMeta.id, quote: values[index],
       })) };
@@ -143,7 +153,7 @@ describe("discovery workspace model", () => {
     const painInput = buildInterviewInput(state, painMeta.id);
     expect(painInput.activeGaps.some(g => g.fieldId === requirementDraft.statement.id)).toBe(true);
     state = recordInterviewTurn(state, { schemaVersion: 1, contextRevision: state.revision,
-      reply: "Thank you for that context.", questions: [], observations: [], proposedUpdates: [{
+      reply: "Thank you for that context.", questions: ask(), observations: [], proposedUpdates: [{
         fieldId: requirementDraft.statement.id, operation: "PROPOSE_SET", previousValue: null,
         value: "Late return entry delays billing", sourceId: painMeta.id, quote: "Late return entry delays billing",
       }] }, painMeta.id, meta());
@@ -167,7 +177,7 @@ describe("discovery workspace model", () => {
     const messageMeta = meta();
     state = applyWorkspaceCommand(state, { type: "SEND_MESSAGE", text: "Returns arrive at the depot" }, messageMeta);
     const proposal = { schemaVersion: 1, contextRevision: state.revision, reply: "Thank you for that context.",
-      questions: [], observations: [], proposedUpdates: [{ fieldId: "current_trigger", operation: "PROPOSE_SET",
+      questions: ask("g_current_systems"), observations: [], proposedUpdates: [{ fieldId: "current_trigger", operation: "PROPOSE_SET",
         previousValue: null, value: "Returns arrive at the depot", sourceId: messageMeta.id,
         quote: "Returns arrive at the depot" }] };
     state = recordInterviewTurn(state, proposal, messageMeta.id, meta());
@@ -183,7 +193,7 @@ describe("discovery workspace model", () => {
       text: "The clerk records physical returns in a spreadsheet." }, messageMeta);
     const quote = "The clerk records physical returns in a spreadsheet.";
     // Model output after the contract change: no value, scalars, and a sloppy quote.
-    state = recordInterviewTurn(state, { reply: "Thank you for that context.", questions: [], observations: [],
+    state = recordInterviewTurn(state, { reply: "Thank you for that context.", questions: ask(), observations: [],
       proposedUpdates: [{ fieldId: "current_systems", operation: "PROPOSE_SET", previousValue: null,
         sourceId: messageMeta.id, quote: quote.toLowerCase() }] }, messageMeta.id, meta());
     expect(state.proposals[0]).toMatchObject({ quote, value: quote, status: "PENDING" });
@@ -191,5 +201,204 @@ describe("discovery workspace model", () => {
     const reloaded = WorkspaceStateSchema.parse(JSON.parse(JSON.stringify(state)));
     expect(getWorkspaceReadiness(reloaded).blockers.map(b => b.code)).toContain("PROPOSALS_PENDING");
     expect(() => getWorkspaceReadiness({ ...reloaded, proposals: [{ ...reloaded.proposals[0]!, value: "changed" }] })).toThrow("INVALID_WORKSPACE_EVIDENCE");
+  });
+
+  it("backfills catalog facts added after a workspace was saved, as EMPTY, without changing what was answered", () => {
+    let state = set(start(), "process_owner", "Rental operations manager");
+    const oldIds = ["business_problem", "process_owner", "scope_boundary", "current_trigger", "current_systems", "current_rules",
+      "current_exceptions", "current_financial", "desired_outcome", "desired_controls"];
+    const saved = JSON.parse(JSON.stringify({ ...state, facts: state.facts.filter(f => oldIds.includes(f.id)) }));
+    const loaded = backfillCatalog(WorkspaceStateSchema.parse(saved));
+    expect(loaded.facts).toHaveLength(WORKSPACE_FIELDS.length);
+    const added = loaded.facts.filter(f => !oldIds.includes(f.id));
+    expect(added.length).toBeGreaterThan(10);
+    expect(added.every(f => f.status === "EMPTY" && f.value === null && f.evidence === null)).toBe(true);
+    expect(loaded.facts.find(f => f.id === "process_owner")?.value).toBe("Rental operations manager");
+    // Every entry point reads through the backfill: readiness lists the new critical fields, commands still apply.
+    expect(getWorkspaceReadiness(WorkspaceStateSchema.parse(saved)).blockers.map(b => b.detail)).toContain("Operating scale and volumes");
+    state = applyWorkspaceCommand(WorkspaceStateSchema.parse(saved), { type: "SET_FIELD", fieldId: "operating_scale", status: "KNOWN",
+      value: "2,800 orders a month", rationale: null, owner: null, sourceId: null, quote: null }, meta());
+    expect(state.facts.find(f => f.id === "operating_scale")?.status).toBe("KNOWN");
+  });
+
+  it("requires the critical company-context fields to be known before readiness", () => {
+    let state = start();
+    for (const def of WORKSPACE_FIELDS) if (def.id !== "operating_scale" && state.facts.find(f => f.id === def.id)!.status === "EMPTY") state = set(state, def.id, `Answer ${def.id}`);
+    state = applyWorkspaceCommand(state, { type: "ADD_STEP", step }, meta());
+    state = applyWorkspaceCommand(state, { type: "ADD_REQUIREMENT", requirement: { asIsStepId: state.steps[0]!.id,
+      kind: "PAIN_POINT", statement: "Late returns cause disputes", critical: true } }, meta());
+    expect(getWorkspaceReadiness(state).blockers).toEqual([{ code: "FIELD_UNANSWERED", fieldId: "operating_scale", detail: "Operating scale and volumes" }]);
+    state = applyWorkspaceCommand(state, { type: "SET_FIELD", fieldId: "operating_scale", status: "UNKNOWN", value: null,
+      rationale: null, owner: null, sourceId: null, quote: null }, meta());
+    expect(getWorkspaceReadiness(state).blockers.map(b => b.code)).toEqual(["CRITICAL_FIELD_UNRESOLVED"]);
+    for (const id of ["operating_scale", "retained_systems", "kpi_baselines", "kpi_targets", "constraints"]) {
+      expect(WORKSPACE_FIELDS.find(f => f.id === id)?.priority, id).toBe("CRITICAL");
+    }
+  });
+
+  it("orders gaps: critical context, landscape, process steps, then KPIs, targets and constraints", () => {
+    let state = applyWorkspaceCommand(start(), { type: "START_STEP_DRAFT" }, meta());
+    const m = meta();
+    state = applyWorkspaceCommand(state, { type: "SEND_MESSAGE", text: "Hello" }, m);
+    const keys = buildInterviewInput(state, m.id).activeGaps.map(g => g.key);
+    const at = (key: string) => keys.indexOf(key);
+    const draftGap = keys.find(k => k.startsWith("gstep_"))!;
+    expect(keys.length).toBe(15);
+    expect(Math.max(at("g_process_owner"), at("g_scope_boundary"), at("g_operating_scale"))).toBeLessThan(at("g_retained_systems"));
+    expect(Math.max(...["g_retained_systems", "g_current_systems", "g_legal_entities", "g_external_parties"].map(at))).toBeLessThan(at(draftGap));
+    expect(at(draftGap)).toBeLessThan(at("g_current_trigger"));
+    // The KPI, target and constraint gaps come last, and show once the earlier tiers are answered.
+    expect(at("g_kpi_baselines")).toBe(-1);
+    for (const def of WORKSPACE_FIELDS) if (def.tier < 3 && def.id !== "business_problem") state = set(state, def.id, `Answer ${def.id}`);
+    const m2 = meta();
+    state = applyWorkspaceCommand(state, { type: "SEND_MESSAGE", text: "More" }, m2);
+    const later = buildInterviewInput(state, m2.id).activeGaps.map(g => g.key);
+    expect(later.slice(-3)).toEqual(expect.arrayContaining(["g_required_outputs"]));
+    expect(later.indexOf("g_kpi_baselines")).toBeGreaterThan(later.indexOf(draftGap));
+    expect(later.indexOf("g_constraints")).toBeGreaterThan(later.indexOf("g_kpi_baselines"));
+  });
+
+  it("asks one walkthrough per step, holds single-field gaps until it was answered, and allows one gap per step per turn", () => {
+    let state = applyWorkspaceCommand(start(), { type: "START_STEP_DRAFT" }, meta());
+    state = applyWorkspaceCommand(state, { type: "START_STEP_DRAFT" }, meta());
+    const [a, b] = state.stepDrafts.map(d => d.id) as [string, string];
+    let m = meta();
+    state = applyWorkspaceCommand(state, { type: "SEND_MESSAGE", text: "First message" }, m);
+    let input = buildInterviewInput(state, m.id);
+    expect(input.activeGaps.filter(g => g.stepId === a).map(g => g.key)).toEqual([`gstep_${a}`]);
+    expect(input.activeGaps.find(g => g.key === `gstep_${a}`)?.detail).toContain("ONE open question");
+    const both = [`gstep_${a}`, `gstep_${b}`].map(gapKey => ({ gapKey, question: `Walk me through ${gapKey}?`, whyItMatters: "It shows the flow." }));
+    expect(validateInterviewTurn(input, { questions: both, proposedUpdates: [], observations: [] }).success).toBe(true);
+    // Two gaps about the same step in one turn are refused.
+    const sameStep = [{ gapKey: `gstep_${a}`, question: "Walk me through the first stage?", whyItMatters: "x" },
+      { gapKey: `g_${a}_actor`, question: "Who does the first stage?", whyItMatters: "x" }];
+    input.closedGapKeys = input.closedGapKeys.filter(k => k !== `g_${a}_actor`);
+    input.activeGaps.push({ key: `g_${a}_actor`, fieldId: `${a}_actor`, detail: "Who?", priority: "CRITICAL", stepId: a });
+    // The second question about the same step is dropped; asked alone it is refused outright.
+    expect(validateInterviewTurn(input, { questions: sameStep, proposedUpdates: [], observations: [] }))
+      .toMatchObject({ success: true, data: { questions: [{ gapKey: `gstep_${a}` }] }, warnings: expect.arrayContaining([expect.objectContaining({ code: "question_dropped", detail: "duplicate_step_gap" })]) });
+    const twice = [{ ...sameStep[0]!, gapKey: `gstep_${b}` }, sameStep[1]!, { ...sameStep[0]! }];
+    expect(validateInterviewTurn(input, { questions: twice, proposedUpdates: [], observations: [] }))
+      .toMatchObject({ success: true, data: { questions: [{ gapKey: `gstep_${b}` }, { gapKey: `g_${a}_actor` }] }, warnings: expect.arrayContaining([expect.objectContaining({ detail: "duplicate_step_gap" })]) });
+    state = recordInterviewTurn(state, { questions: both, proposedUpdates: [], observations: [] }, m.id, meta());
+    // Directly after the walkthrough was asked, its single fields stay closed; one answer later the EMPTY ones open.
+    m = meta();
+    state = applyWorkspaceCommand(state, { type: "SEND_MESSAGE", text: "Here is the walkthrough" }, m);
+    expect(buildInterviewInput(state, m.id).activeGaps.some(g => g.fieldId === `${a}_actor`)).toBe(false);
+    m = meta();
+    state = applyWorkspaceCommand(state, { type: "SEND_MESSAGE", text: "More detail" }, m);
+    input = buildInterviewInput(state, m.id);
+    expect(input.activeGaps.filter(g => g.stepId === a).map(g => g.key)).toContain(`g_${a}_actor`);
+    expect(input.activeGaps.some(g => g.key === `gstep_${a}`)).toBe(false);
+  });
+
+  it("creates a step and a requirement from accepted proposals, with the quote as evidence", () => {
+    let state = start();
+    const m = meta();
+    const text = "Customer orders arrive by email. The clerk re-keys each order into the Access app. 7% of orders have entry errors.";
+    state = applyWorkspaceCommand(state, { type: "SEND_MESSAGE", text }, m);
+    const stepQuote = "The clerk re-keys each order into the Access app.";
+    const turn = { questions: ask("g_process_owner"), proposedUpdates: [],
+      proposedSteps: [{ sourceId: m.id, quote: stepQuote, nameHint: "re-keys each order" }],
+      proposedRequirements: [{ stepRef: "new_0", kind: "PAIN_POINT", critical: true, sourceId: m.id, quote: "7% of orders have entry errors." }],
+      observations: [] };
+    state = recordInterviewTurn(state, turn, m.id, meta());
+    expect(state.stepDrafts).toHaveLength(0); // nothing exists until the user accepts
+    const [stepProposal, requirementProposal] = state.proposals;
+    expect(stepProposal).toMatchObject({ operation: "PROPOSE_STEP", status: "PENDING", value: stepQuote, nameHint: "re-keys each order" });
+    expect(requirementProposal).toMatchObject({ operation: "PROPOSE_REQUIREMENT", stepRef: stepProposal!.id, kind: "PAIN_POINT", critical: true });
+    // The requirement cannot be accepted before its step exists.
+    expect(() => applyWorkspaceCommand(state, { type: "DECIDE_PROPOSAL", proposalId: requirementProposal!.id, decision: "ACCEPT" }, meta()))
+      .toThrow("STALE_PROPOSAL");
+    state = applyWorkspaceCommand(state, { type: "DECIDE_PROPOSALS", ids: state.proposals.map(p => p.id), decision: "ACCEPT" }, meta());
+    expect(state.proposals.every(p => p.status === "ACCEPTED")).toBe(true);
+    const draft = state.stepDrafts[0]!;
+    const field = (key: string) => draft.fields.find(f => f.id === `${draft.id}_${key}`)!;
+    expect(field("description")).toMatchObject({ status: "KNOWN", value: stepQuote, evidence: { sourceId: m.id, quote: stepQuote } });
+    expect(field("name")).toMatchObject({ status: "KNOWN", value: "re-keys each order" });
+    expect(field("actor").status).toBe("EMPTY");
+    expect(state.requirementDrafts[0]).toMatchObject({ asIsStepId: draft.id, kind: "PAIN_POINT", critical: true,
+      statement: { status: "KNOWN", value: "7% of orders have entry errors.", evidence: { sourceId: m.id, quote: "7% of orders have entry errors." } } });
+    // The next turn sees the new step and requirement, so it neither re-proposes them nor loses the reference.
+    const next = meta();
+    state = applyWorkspaceCommand(state, { type: "SEND_MESSAGE", text: "More" }, next);
+    const input = buildInterviewInput(state, next.id);
+    expect(input.steps).toMatchObject([{ id: draft.id, status: "CURRENT", summary: stepQuote }]);
+    expect(input.requirements).toMatchObject([{ stepId: draft.id, kind: "PAIN_POINT" }]);
+    expect(validateInterviewTurn(input, { questions: ask("g_operating_scale"), proposedUpdates: [], proposedSteps: [{ sourceId: m.id, quote: stepQuote }], observations: [] }))
+      .toMatchObject({ success: true, data: { proposedSteps: [] }, warnings: expect.arrayContaining([expect.objectContaining({ code: "step_dropped", detail: "duplicate_step" })]) });
+    expect(compileDiscovery).toBeTypeOf("function");
+  });
+
+  it("merges a proposed step that repeats an existing one and points its requirement at the existing step", () => {
+    let state = start();
+    const first = meta();
+    state = applyWorkspaceCommand(state, { type: "SEND_MESSAGE", text: "Raise customer quote: the sales engineer configures the pump and issues the quote from Salesforce." }, first);
+    state = recordInterviewTurn(state, { questions: ask("g_process_owner"), proposedUpdates: [], observations: [],
+      proposedSteps: [{ sourceId: first.id, quote: "the sales engineer configures the pump and issues the quote from Salesforce.", nameHint: "Raise customer quote" }] }, first.id, meta());
+    state = applyWorkspaceCommand(state, { type: "DECIDE_PROPOSALS", ids: [state.proposals[0]!.id], decision: "ACCEPT" }, meta());
+    const draftId = state.stepDrafts[0]!.id;
+    const second = meta();
+    state = applyWorkspaceCommand(state, { type: "SEND_MESSAGE",
+      text: "For the \"Raise customer quote\" step the sales engineer works in Salesforce. The problem here: quotes carry stale prices." }, second);
+    state = recordInterviewTurn(state, { questions: ask("g_scope_boundary"), proposedUpdates: [], observations: [],
+      proposedSteps: [{ sourceId: second.id, quote: "For the \"Raise customer quote\" step the sales engineer works in Salesforce.", nameHint: "Raise customer quote" }],
+      proposedRequirements: [{ stepRef: "new_0", kind: "PAIN_POINT", critical: false, sourceId: second.id, quote: "quotes carry stale prices." }] }, second.id, meta());
+    expect(state.proposals.filter(p => p.status === "PENDING" && p.operation === "PROPOSE_STEP")).toHaveLength(0);
+    expect(state.proposals.at(-1)).toMatchObject({ operation: "PROPOSE_REQUIREMENT", stepRef: draftId });
+  });
+
+  it("rejects invented quotes and unknown step references in proposed structure", () => {
+    let state = start();
+    const m = meta();
+    state = applyWorkspaceCommand(state, { type: "SEND_MESSAGE", text: "The clerk re-keys each order. Orders are late." }, m);
+    const base = { questions: ask("g_process_owner"), proposedUpdates: [], observations: [] };
+    const run = (turn: object) => () => recordInterviewTurn(state, { ...base, ...turn }, m.id, meta());
+    expect(run({ proposedSteps: [{ sourceId: m.id, quote: "The clerk invented a step." }] })).toThrow("INVALID_INTERVIEW_TURN");
+    expect(run({ proposedSteps: [{ sourceId: "missing", quote: "The clerk re-keys each order." }] })).toThrow("INVALID_INTERVIEW_TURN");
+    const requirement = { kind: "PAIN_POINT", critical: false, sourceId: m.id, quote: "Orders are late." };
+    expect(run({ proposedRequirements: [{ ...requirement, stepRef: "st_missing" }] })).toThrow("INVALID_INTERVIEW_TURN");
+    expect(run({ proposedRequirements: [{ ...requirement, stepRef: "new_0" }] })).toThrow("INVALID_INTERVIEW_TURN"); // no step proposed this turn
+    expect(run({ proposedRequirements: [{ ...requirement, quote: "Orders were never late." , stepRef: "new_0" }],
+      proposedSteps: [{ sourceId: m.id, quote: "The clerk re-keys each order." }] })).toThrow("INVALID_INTERVIEW_TURN");
+    expect(run({ proposedSteps: [{ sourceId: m.id, quote: "The clerk re-keys each order.", nameHint: "not in the message" }] })()).toBeTruthy(); // a bad hint is dropped, not fatal
+  });
+
+  it("decides proposals in a batch, leaving a stale one pending and failing only when nothing applies", () => {
+    let state = start();
+    const m = meta();
+    state = applyWorkspaceCommand(state, { type: "SEND_MESSAGE", text: "We use Tally for finance. A clerk checks credit by phone." }, m);
+    state = recordInterviewTurn(state, { questions: ask("g_process_owner"), observations: [], proposedUpdates: [
+      { fieldId: "current_systems", operation: "PROPOSE_SET", previousValue: null, sourceId: m.id, quote: "We use Tally for finance." },
+      { fieldId: "current_rules", operation: "PROPOSE_SET", previousValue: null, sourceId: m.id, quote: "A clerk checks credit by phone." }] }, m.id, meta());
+    const [systems, rules] = state.proposals;
+    state = set(state, "current_rules", "Credit is checked by the sales head"); // the second proposal is now stale
+    const batch = applyWorkspaceCommand(state, { type: "DECIDE_PROPOSALS", ids: [systems!.id, rules!.id], decision: "ACCEPT" }, meta());
+    expect(batch.facts.find(f => f.id === "current_systems")).toMatchObject({ status: "KNOWN", value: "We use Tally for finance." });
+    expect(batch.facts.find(f => f.id === "current_rules")?.value).toBe("Credit is checked by the sales head");
+    expect(batch.proposals.map(p => p.status)).toEqual(["ACCEPTED", "PENDING"]);
+    expect(() => applyWorkspaceCommand(batch, { type: "DECIDE_PROPOSALS", ids: [rules!.id], decision: "ACCEPT" }, meta())).toThrow("STALE_PROPOSAL");
+    expect(() => applyWorkspaceCommand(batch, { type: "DECIDE_PROPOSALS", ids: [systems!.id], decision: "ACCEPT" }, meta())).toThrow("PROPOSAL_NOT_PENDING");
+    expect(() => applyWorkspaceCommand(batch, { type: "DECIDE_PROPOSALS", ids: ["p_missing"], decision: "ACCEPT" }, meta())).toThrow("PROPOSAL_NOT_PENDING");
+    const rejected = applyWorkspaceCommand(batch, { type: "DECIDE_PROPOSALS", ids: [rules!.id], decision: "REJECT" }, meta());
+    expect(rejected.proposals[1]).toMatchObject({ status: "REJECTED", decidedBy: "consultant" });
+  });
+
+  it("re-asks a gap that stayed unanswered exactly once, after three more user turns", () => {
+    let state = start();
+    let m = meta();
+    state = applyWorkspaceCommand(state, { type: "SEND_MESSAGE", text: "Hello" }, m);
+    state = recordInterviewTurn(state, { questions: ask("g_process_owner"), proposedUpdates: [], observations: [] }, m.id, meta());
+    const keys = (id: string) => buildInterviewInput(state, id).activeGaps.map(g => g.key);
+    const say = (text: string) => { m = meta(); state = applyWorkspaceCommand(state, { type: "SEND_MESSAGE", text }, m); return m.id; };
+    expect(keys(say("two"))).not.toContain("g_process_owner");
+    expect(keys(say("three"))).not.toContain("g_process_owner_r2");
+    expect(keys(say("four"))).toContain("g_process_owner_r2"); // 3 user turns after the first ask
+    expect(keys(m.id)).not.toContain("g_process_owner");
+    state = recordInterviewTurn(state, { questions: ask("g_process_owner_r2", "Who owns the process day to day?"), proposedUpdates: [], observations: [] }, m.id, meta());
+    for (const text of ["five", "six", "seven", "eight"]) {
+      const id = say(text);
+      expect(keys(id).filter(k => k.startsWith("g_process_owner"))).toEqual([]);
+    }
   });
 });

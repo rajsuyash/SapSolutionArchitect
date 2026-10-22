@@ -1,3 +1,4 @@
+import { askFirstGap, CONTEXT_FIELD_IDS } from "./support/context-fields";
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
@@ -42,7 +43,7 @@ describe.skipIf(process.env.RUN_DB_TESTS !== "1")("durable consultant conversati
       const input = raw as InterviewInput;
       await observe?.(input);
       return { payload: { schemaVersion: 1, contextRevision: input.contextRevision,
-        reply: "Thank you for that context.", questions: [], proposedUpdates: [], observations: [] },
+        reply: "Thank you for that context.", questions: askFirstGap(input), proposedUpdates: [], observations: [] },
       metrics: { stage: "interview_turn", provider: "anthropic", model: "synthetic-test-double", inputTokens: 1,
         outputTokens: 1, latencyMs: 1, attempts: 1, validationErrors: [] } };
     }) as ReturnType<typeof createStageRunner>;
@@ -86,6 +87,8 @@ describe.skipIf(process.env.RUN_DB_TESTS !== "1")("durable consultant conversati
       ["current_exceptions", "Missing return date is escalated to the stores lead"],
       ["current_financial", "Billing adjusts the final invoice after return"], ["desired_controls", "Require a dated return record for audit"],
     ] as const) await run({ type: "SET_FIELD", fieldId, status: "KNOWN", value, rationale: null, owner: null, sourceId: null, quote: null });
+    for (const fieldId of CONTEXT_FIELD_IDS) await run({ type: "SET_FIELD", fieldId, status: "KNOWN", value: `Synthetic answer for ${fieldId}`,
+      rationale: null, owner: null, sourceId: null, quote: null });
     await run({ type: "ADD_STEP", step: { name: "Record return", actor: "Stores clerk", system: "Spreadsheet",
       trigger: "Asset physically returned", description: "Record the return date in the spreadsheet.",
       inputs: ["Return note"], outputs: ["Return record"], controls: [], exceptions: [] } });

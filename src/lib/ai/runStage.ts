@@ -31,13 +31,24 @@ export class AIStageError extends Error {
 type Config = Pick<Environment, "NODE_ENV" | "AI_PROVIDER" | "ANTHROPIC_API_KEY" | "DEEPINFRA_API_KEY" | "AI_MODEL" | "AI_MODEL_DESIGN" | "AI_MAX_INPUT_TOKENS" | "AI_MAX_CONCURRENCY" | "AI_FAULT_INJECTION"
   | "AI_NO_THINKING_STAGES" | "AI_STAGE_BUDGET_SECONDS" | "AI_CALL_TIMEOUT_SECONDS" | "AI_DESIGN_CALL_TIMEOUT_SECONDS">;
 const SDK_TIMEOUT_MARGIN_MS = 5000;
-/** An interview turn carries up to 12 quoted proposals; 8000 truncated some turns into an empty tool payload. */
+/** An interview turn carries up to 42 quoted proposals; 8000 truncated some turns into an empty tool payload. */
 const INTERVIEW_MAX_TOKENS = 16000;
 /** The long design stages: the only place that decides which stages use the design timeout and AI_MODEL_DESIGN. */
 const DESIGN_STAGES: ReadonlySet<Stage> = new Set<Stage>(["to_be"]);
 /** issueDetail: eval harness only. Adds the schema's own message (never the received value) to interview_turn issues
  * recorded in metrics; the issues sent back to the model and the production default are unchanged. */
 type Options = { fetch?: typeof fetch; sapCatalogDir?: string; issueDetail?: boolean };
+
+/** Some models answer a chat turn with the tool payload as a JSON text block and stop with end_turn instead of calling
+ * the tool. When there is no tool call at all, accept exactly that: one text block holding one JSON object. The payload
+ * then goes through the same full validation as a tool call; anything else stays null (invalid). */
+function jsonFromText(content: Anthropic.Message["content"]): unknown {
+  const blocks = content.filter((block): block is Anthropic.TextBlock => block.type === "text" && !!block.text.trim());
+  if (blocks.length !== 1) return null;
+  const text = blocks[0]!.text.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
+  try { const parsed: unknown = JSON.parse(text); return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : null; }
+  catch { return null; }
+}
 
 function pause(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -243,7 +254,8 @@ export function createStageRunner(config: Config, options: Options = {}) {
           metrics.outputTokens += usage.data.output_tokens;
           metrics.stopReasons!.push(message.stop_reason ?? null);
           const toolCalls = message.content.filter((block) => block.type === "tool_use");
-          output = message.stop_reason === "tool_use" && toolCalls.length === 1 && toolCalls[0]!.name === tool ? toolCalls[0]!.input : null;
+          output = message.stop_reason === "tool_use" && toolCalls.length === 1 && toolCalls[0]!.name === tool ? toolCalls[0]!.input
+            : interviewInput && !toolCalls.length ? jsonFromText(message.content) : null;
         }
         signal.throwIfAborted();
         if (designInput) {

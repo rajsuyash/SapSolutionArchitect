@@ -14,9 +14,9 @@
 // accepts every proposal and answers from the fixture's answerBank. It makes real model calls and costs money:
 // the run aborts once cumulative output tokens exceed OUTPUT_TOKEN_CAP. Transcripts land in the gitignored test-results/eval/.
 //
-// KNOWN LIMITATION BEING MEASURED: the current interviewer cannot create steps or requirements, so the driver adds all
-// steps and requirements through the workspace commands (START_STEP_DRAFT / START_REQUIREMENT_DRAFT) right after turn 1,
-// as a user clicking "add step" would. The interviewer then has to fill them in through questions.
+// The driver creates no steps or requirements: the interviewer proposes them from the conversation and the simulated user
+// accepts every proposal in one DECIDE_PROPOSALS call. A step walkthrough question is answered with one natural paragraph
+// built from that fixture step (what happens, who, system, controls, exceptions, pain points and wants).
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -30,8 +30,8 @@ import { createAuthService, transaction } from "../src/lib/auth";
 import { createProjectRepository } from "../src/lib/tenant";
 import { createDiscoveryWorkspaceRepository, persistWorkspaceTurn } from "../src/lib/discovery-workspace";
 import { buildInterviewInput, type WorkspaceState } from "../src/lib/discovery-workspace-model";
-import { STEP_KEYS } from "../src/lib/workspace-fields";
-import { ScoringCaseSchema, scoreRun, summarize, TranscriptSchema, type ScoringCase, type Transcript } from "../src/lib/eval-score";
+import { REASK_SUFFIX, STEP_GAP_PREFIX, STEP_KEYS } from "../src/lib/workspace-fields";
+import { jaccard, ScoringCaseSchema, scoreRun, summarize, TranscriptSchema, type ScoringCase, type Transcript } from "../src/lib/eval-score";
 
 const OUTPUT_TOKEN_CAP = 400_000;
 const DEFAULT_MAX_TURNS = 25;
@@ -57,40 +57,53 @@ const message = (error: unknown) => error instanceof Error ? error.message : Str
 
 // --- simulated user ---------------------------------------------------------------------------------------------
 
+type FixtureStep = Fixture["steps"][number];
+const MATCH_THRESHOLD = 0.12;
+const stepDraftOf = (state: WorkspaceState, fieldId: string) => state.stepDrafts.find(d => fieldId.startsWith(`${d.id}_`));
+const factValue = (state: WorkspaceState, fieldId: string) => state.stepDrafts.flatMap(d => d.fields).find(f => f.id === fieldId)?.value ?? "";
+const firstSentence = (text: string) => text.trim().split(/(?<=[.!?])\s/)[0]!;
+
+/** The fixture step a draft the interviewer created stands for: the best word overlap between the draft's own name and
+ * description (plus any extra hint such as the question asked) and each fixture step. Null when nothing resembles it. */
+function fixtureStepFor(fixture: Fixture, state: WorkspaceState, draftId: string, hint = "", avoid = new Set<number>()): FixtureStep | null {
+  const own = `${factValue(state, `${draftId}_name`)} ${factValue(state, `${draftId}_description`)}`;
+  const ranked = fixture.steps.map(step => ({ step, score: jaccard(`${own} ${hint}`, `${step.name} ${step.description}`) +
+    (own.toLowerCase().includes(step.name.toLowerCase()) ? 1 : 0) - (avoid.has(step.n) ? 0.5 : 0) })).sort((a, b) => b.score - a.score);
+  return ranked[0] && ranked[0].score >= MATCH_THRESHOLD ? ranked[0].step : null;
+}
 /** What the simulated user would say for a field the interviewer asked about, or null when the bank has no answer. */
 function answerFor(fixture: Fixture, state: WorkspaceState, fieldId: string): string | null {
   const catalog = fixture.answerBank.catalog[fieldId];
   if (catalog) return catalog;
-  const stepIndex = state.stepDrafts.findIndex(d => fieldId.startsWith(`${d.id}_`));
-  if (stepIndex >= 0) {
-    const key = fieldId.slice(state.stepDrafts[stepIndex]!.id.length + 1) as (typeof STEP_KEYS)[number];
-    return fixture.steps[stepIndex]?.[key] ?? null;
-  }
-  const requirementIndex = state.requirementDrafts.findIndex(d => `${d.id}_statement` === fieldId);
-  return requirementIndex >= 0 ? fixture.requirements[requirementIndex]?.statement ?? null : null;
+  const draft = stepDraftOf(state, fieldId);
+  if (!draft) return null;
+  return fixtureStepFor(fixture, state, draft.id)?.[fieldId.slice(draft.id.length + 1) as (typeof STEP_KEYS)[number]] ?? null;
 }
 const sentence = (text: string) => /[.!?]$/.test(text.trim()) ? text.trim() : `${text.trim()}.`;
-/** One step in the client's voice: asked about any field of a step, a real client describes the whole step. Deterministic. */
-function stepParagraph(step: Fixture["steps"][number]): string {
+/** One step in the client's voice, as a real client would walk through it: the work, then the problems and wishes tied to it. */
+function stepParagraph(fixture: Fixture, step: FixtureStep): string {
+  const lead = { PAIN_POINT: "The problem here:", TO_BE_REQUIREMENT: "What we need:", CONTROL: "A control we need:" } as const;
   return [`For the "${step.name}" step, ${step.actor} does the work in ${step.system}.`, sentence(step.trigger), sentence(step.description),
     `The inputs are ${sentence(step.inputs)}`, `The outputs are ${sentence(step.outputs)}`,
-    `The controls are ${sentence(step.controls)}`, sentence(step.exceptions)].join(" ");
+    `The controls are ${sentence(step.controls)}`, sentence(step.exceptions),
+    ...fixture.requirements.filter(r => r.stepN === step.n).map(r => `${lead[r.kind]} ${sentence(r.statement)}`)].join(" ");
 }
-/** The reply to an interviewer turn that asked about `asked`: one paragraph per asked step (all its fields), then the
- * catalog/requirement answers for the asked keys, as one message. `answered` are the asked fields the user spoke to. */
-function composeReply(fixture: Fixture, state: WorkspaceState, asked: string[]) {
+type Asked = { gapKey: string; fieldId: string; question: string };
+/** The reply to an interviewer turn: a walkthrough question gets one paragraph about that step, any other asked field its
+ * bank answer, anything the user cannot answer "I don't know". `answered` are fields the user spoke to directly, so a
+ * missed capture can be seen (and counted as a direct edit); `told` remembers which fixture steps were already described. */
+function composeReply(fixture: Fixture, state: WorkspaceState, asked: Asked[], told: Set<number>) {
   const paragraphs: string[] = [], singles: string[] = [], answered: string[] = [], unknown: string[] = [];
-  const stepsDone = new Set<number>();
-  for (const fieldId of asked) {
-    const stepIndex = state.stepDrafts.findIndex(d => fieldId.startsWith(`${d.id}_`));
-    const step = stepIndex >= 0 ? fixture.steps[stepIndex] : undefined;
-    if (step) {
-      if (!stepsDone.has(stepIndex)) { stepsDone.add(stepIndex); paragraphs.push(stepParagraph(step)); }
-      answered.push(fieldId);
+  for (const q of asked) {
+    if (q.gapKey.startsWith(STEP_GAP_PREFIX)) {
+      const draftId = q.gapKey.slice(STEP_GAP_PREFIX.length).replace(new RegExp(`${REASK_SUFFIX}$`), "");
+      const step = fixtureStepFor(fixture, state, draftId, q.question, told);
+      if (step) { told.add(step.n); paragraphs.push(stepParagraph(fixture, step)); }
+      else singles.push("I am not sure how to describe that part of the process.");
       continue;
     }
-    const answer = stepIndex >= 0 ? null : answerFor(fixture, state, fieldId);
-    if (answer) { singles.push(answer); answered.push(fieldId); } else unknown.push(fieldId);
+    const answer = answerFor(fixture, state, q.fieldId);
+    if (answer) { singles.push(answer); answered.push(q.fieldId); } else unknown.push(q.fieldId);
   }
   const text = [...paragraphs, [...singles, ...(unknown.length ? ["I don't know the rest of that."] : [])].join(" ")]
     .filter(Boolean).join("\n\n");
@@ -111,7 +124,8 @@ function factStatus(state: WorkspaceState, fieldId: string) {
 // --- scripted model (driver self-test, --fake-model) -------------------------------------------------------------
 
 /** Offline stand-in for runStage so the driver loop can be exercised end to end without a provider or any cost.
- * It asks the first three open gaps and extracts a field only when the user's message contains the bank answer verbatim.
+ * It asks the first three open gaps (one per step) and extracts a field, step or requirement only when the user's message
+ * contains the bank text verbatim.
  * Its To-Be is the repository's one-step rental benchmark remapped onto the workspace ids: a plumbing check, never a quality score. */
 function scriptedStage(fixture: Fixture, getState: () => WorkspaceState): typeof runStage {
   const metrics = (stage: "interview_turn" | "to_be") => ({ stage, provider: "stub" as const, model: "scripted", inputTokens: 1,
@@ -129,14 +143,28 @@ function scriptedStage(fixture: Fixture, getState: () => WorkspaceState): typeof
     }
     const input = raw as ReturnType<typeof buildInterviewInput>;
     const state = getState();
+    const message = input.currentMessage.text;
+    const taken = new Set<string>();
+    const questions = input.activeGaps.filter(g => !g.stepId || !taken.has(g.stepId) && !!taken.add(g.stepId)).slice(0, 3);
+    // A stage of the process is proposed from the first sentence of a fixture step quoted in the user's message.
+    const known = (text: string) => input.steps.some(x => x.summary === text);
+    const proposedSteps = fixture.steps.filter(x => message.includes(firstSentence(x.description)) && !known(firstSentence(x.description)))
+      .map(x => ({ sourceId: input.currentMessage.id, quote: firstSentence(x.description), nameHint: message.includes(x.name) ? x.name : null }));
+    const draftFor = (n: number) => input.steps.find(x => x.status === "CURRENT" && x.summary?.startsWith(firstSentence(fixture.steps[n - 1]!.description)));
+    const proposedRequirements = fixture.requirements.flatMap(r => {
+      const target = draftFor(r.stepN), fresh = proposedSteps.findIndex(x => x.quote === firstSentence(fixture.steps[r.stepN - 1]!.description));
+      const stepRef = target?.id ?? (fresh >= 0 ? `new_${fresh}` : null);
+      return stepRef && message.includes(r.statement) && !input.requirements.some(x => x.statement === r.statement)
+        ? [{ stepRef, kind: r.kind, critical: r.critical, sourceId: input.currentMessage.id, quote: r.statement }] : [];
+    });
     return { payload: { schemaVersion: 1, contextRevision: input.contextRevision, reply: "Thank you for that context.",
-      questions: input.activeGaps.slice(0, 3).map(g => ({ gapKey: g.key, question: `Scripted question about ${g.fieldId}`,
+      questions: questions.map(g => ({ gapKey: g.key, question: `Scripted question about ${g.fieldId}`,
         whyItMatters: "It decides how this step is designed." })),
       proposedUpdates: input.fields.flatMap(f => {
         const answer = f.status === "EMPTY" ? answerFor(fixture, state, f.id) : null;
-        return answer && input.currentMessage.text.includes(answer) ? [{ fieldId: f.id, operation: "PROPOSE_SET" as const,
+        return answer && message.includes(answer) ? [{ fieldId: f.id, operation: "PROPOSE_SET" as const,
           previousValue: null, value: answer, sourceId: input.currentMessage.id, quote: answer }] : [];
-      }), observations: [] }, metrics: metrics("interview_turn") };
+      }), proposedSteps, proposedRequirements, observations: [] }, metrics: metrics("interview_turn") };
   }) as unknown as typeof runStage;
 }
 
@@ -172,11 +200,17 @@ async function runOnce(fixture: Fixture, deps: { pool: Pool; provider: string; m
     startedAt: new Date().toISOString(), turns: [],
     readiness: { reached: false, atTurn: null, forcedCompletion: false, directEdits: 0, blockers: [] }, toBe: null, aborted: null };
   let outputTokens = 0, failures = 0, directEdits = 0;
-  let structureAdded = false;
+  const told = new Set<number>(); // fixture steps already described to the interviewer
   const capExceeded = () => outputTokens > OUTPUT_TOKEN_CAP;
+  /** The simulated user accepts every proposal at once. One that no longer fits the answers is rejected, as a person would. */
   const resolvePending = async () => {
-    for (const proposal of state.proposals.filter(p => p.status === "PENDING")) {
-      await run({ type: "DECIDE_PROPOSAL", proposalId: proposal.id, decision: "ACCEPT" });
+    const pending = state.proposals.filter(p => p.status === "PENDING");
+    if (pending.length) {
+      try { await run({ type: "DECIDE_PROPOSALS", ids: pending.map(p => p.id), decision: "ACCEPT" }); }
+      catch (error) { if ((error as { code?: string }).code !== "STALE_PROPOSAL") throw error; }
+      for (const proposal of state.proposals.filter(p => p.status === "PENDING")) {
+        await run({ type: "DECIDE_PROPOSAL", proposalId: proposal.id, decision: "REJECT" });
+      }
     }
     for (const observation of state.observations.filter(o => o.status === "PENDING")) {
       await run({ type: "REVIEW_OBSERVATION", observationId: observation.id, decision: "RESOLVE", rationale: "Simulated user reviewed it." });
@@ -209,7 +243,8 @@ async function runOnce(fixture: Fixture, deps: { pool: Pool; provider: string; m
         state = (await workspaces.get(owner.token, project.id, variant)).state!;
         record.questions = generated.payload.questions.map(q => ({ gapKey: q.gapKey,
           fieldId: input.activeGaps.find(g => g.key === q.gapKey)!.fieldId, question: q.question }));
-        record.proposals = generated.payload.proposedUpdates.length;
+        record.proposals = generated.payload.proposedUpdates.length + generated.payload.proposedSteps.length +
+          generated.payload.proposedRequirements.length;
         retryMessageId = null; failures = 0;
       } catch (error) {
         const stageError = error instanceof AIStageError ? error : null;
@@ -220,35 +255,30 @@ async function runOnce(fixture: Fixture, deps: { pool: Pool; provider: string; m
         retryMessageId = messageId; // the user's message stands; the interviewer failed to answer it
         if (++failures >= MAX_CONSECUTIVE_FAILURES) { transcript.aborted = `${failures} consecutive failed turns (${record.error})`; break; }
         if (capExceeded()) { transcript.aborted = `output token cap ${OUTPUT_TOKEN_CAP} exceeded`; break; }
+        console.log(`turn ${index}: FAILED ${record.error} (attempts ${record.attempts})`);
         continue;
       }
 
+      console.log(`turn ${index}: ${record.questions.length} questions, ${record.proposals} proposals, attempts ${record.attempts}, ${Math.round(record.latencyMs / 1000)}s, steps ${state.stepDrafts.length}, requirements ${state.requirementDrafts.length}`);
       await resolvePending();
       // The user fills a template field directly when the interviewer asked about it but did not capture the answer.
       for (const fieldId of answeredFields) {
         const value = answerFor(fixture, state, fieldId);
         if (value && factStatus(state, fieldId) === "EMPTY") { await run(fieldCommand(state, fieldId, value)); directEdits++; }
       }
-      if (!structureAdded) { // first SUCCESSFUL turn, not turn 1: a failed turn 1 is retried as a later index
-        structureAdded = true;
-        // Known limitation: the interviewer cannot create steps/requirements, so the user adds them now.
-        for (let n = 0; n < fixture.steps.length; n++) await run({ type: "START_STEP_DRAFT" });
-        for (const r of fixture.requirements) await run({ type: "START_REQUIREMENT_DRAFT",
-          asIsStepId: state.stepDrafts[r.stepN - 1]!.id, kind: r.kind, critical: r.critical });
-      }
       if (current.readiness?.ready) { transcript.readiness = { ...transcript.readiness, reached: true, atTurn: index }; break; }
       if (capExceeded()) { transcript.aborted = `output token cap ${OUTPUT_TOKEN_CAP} exceeded`; break; }
 
       // Answer everything the interviewer asked in one message; fields without a bank answer get "I don't know".
-      let asked = record.questions.map(q => q.fieldId);
+      let asked: Asked[] = record.questions;
       if (!asked.length) {
         // No question asked: volunteer the next few open details so the conversation keeps moving.
-        asked = input.activeGaps.map(g => g.fieldId).filter(id => factStatus(state, id) === "EMPTY" && answerFor(fixture, state, id)).slice(0, 3);
+        asked = state.facts.filter(f => f.status === "EMPTY" && answerFor(fixture, state, f.id)).slice(0, 3)
+          .map(f => ({ gapKey: `g_${f.id}`, fieldId: f.id, question: "" }));
       }
-      const reply = composeReply(fixture, state, asked);
+      const reply = composeReply(fixture, state, asked, told);
       answeredFields = reply.answered; outgoing = reply.text;
-      const unknown = reply.unknown;
-      for (const fieldId of unknown) await run(fieldCommand(state, fieldId, null));
+      for (const fieldId of reply.unknown) await run(fieldCommand(state, fieldId, null));
     }
 
     const lastUser = state.messages.findLast(m => m.role === "user");
@@ -265,6 +295,8 @@ async function runOnce(fixture: Fixture, deps: { pool: Pool; provider: string; m
       }
     }
     transcript.readiness.directEdits = directEdits;
+    transcript.structure = { steps: state.steps.length + state.stepDrafts.length,
+      requirements: state.requirements.length + state.requirementDrafts.length };
     transcript.readiness.blockers = (current.readiness?.blockers ?? []).map(b => b.code);
 
     const canGenerate = deps.toBe && !!current.readiness?.ready && (transcript.readiness.reached || transcript.readiness.forcedCompletion);

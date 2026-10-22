@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { validateDiscovery, type DiscoveryInput } from "./discovery";
-import { STEP_KEYS as stepKeys, STEP_QUESTIONS as stepQuestions, WORKSPACE_FIELDS } from "./workspace-fields";
+import { REASK_AFTER_USER_TURNS, REASK_SUFFIX, STEP_GAP_PREFIX, STEP_KEYS as stepKeys, STEP_QUESTIONS as stepQuestions,
+  WORKSPACE_FIELDS } from "./workspace-fields";
 import { parseInterviewInput, validateInterviewTurn, type InterviewInput, type InterviewTurn } from "./ai/discovery-interview";
 
 // Re-exported for server callers; the client imports ./workspace-fields directly.
@@ -33,15 +34,20 @@ const RequirementSchema = z.strictObject({
   id, asIsStepId: id, kind: z.enum(["PAIN_POINT", "TO_BE_REQUIREMENT", "CONTROL"]),
   statement: text(), critical: z.boolean(), evidence,
 });
+const requirementKind = z.enum(["PAIN_POINT", "TO_BE_REQUIREMENT", "CONTROL"]);
+/** PROPOSE_STEP / PROPOSE_REQUIREMENT create a draft when accepted; their `fieldId` is only a placeholder. The optional
+ * keys are absent from proposals written before interviewer-created structure existed. */
 const ProposalSchema = z.strictObject({
-  id, fieldId: id, operation: z.enum(["PROPOSE_SET", "PROPOSE_REPLACE"]),
+  id, fieldId: id, operation: z.enum(["PROPOSE_SET", "PROPOSE_REPLACE", "PROPOSE_STEP", "PROPOSE_REQUIREMENT"]),
   previousValue: text().nullable(), value: text(), sourceId: id, quote: text(),
+  nameHint: text(200).nullable().optional(), stepRef: id.optional(), kind: requirementKind.optional(), critical: z.boolean().optional(),
   status: z.enum(["PENDING", "ACCEPTED", "REJECTED"]), createdAt: z.iso.datetime(), decidedBy: id.nullable(),
 });
 const MessageSchema = z.strictObject({ id, role: z.enum(["user", "assistant"]), text: text(20000),
   createdBy: id.nullable(), createdAt: z.iso.datetime() });
+/** `askedAtUserTurn` (user messages so far) drives the single re-ask; questions stored before it existed count as turn 0. */
 const QuestionSchema = z.strictObject({ gapKey: id, fieldId: id, question: text(500), whyItMatters: text(500),
-  askedAtRevision: z.number().int().positive() });
+  askedAtRevision: z.number().int().positive(), askedAtUserTurn: z.number().int().nonnegative().optional() });
 const ObservationSchema = z.strictObject({ id, kind: z.enum(["POSSIBLE_CONFLICT", "FOLLOW_UP_SUGGESTION"]),
   fieldIds: z.array(id).min(1).max(10), detail: text(1000), status: z.enum(["PENDING", "DISMISSED", "RESOLVED"]),
   rationale: text(1000).nullable(), reviewedBy: id.nullable() });
@@ -90,6 +96,7 @@ export const WorkspaceCommandSchema = z.discriminatedUnion("type", [
     rationale: text(1000).nullable(), owner: label.nullable(), sourceId: id.nullable(), quote: text().nullable() }),
   z.strictObject({ type: z.literal("UPDATE_REQUIREMENT"), requirementId: id, requirement: RequirementValuesSchema }),
   z.strictObject({ type: z.literal("DECIDE_PROPOSAL"), proposalId: id, decision: z.enum(["ACCEPT", "REJECT"]) }),
+  z.strictObject({ type: z.literal("DECIDE_PROPOSALS"), ids: z.array(id).min(1).max(100), decision: z.enum(["ACCEPT", "REJECT"]) }),
   z.strictObject({ type: z.literal("REVIEW_OBSERVATION"), observationId: id,
     decision: z.enum(["DISMISS", "RESOLVE"]), rationale: text(1000) }),
   z.strictObject({ type: z.literal("CONFIRM") }),
@@ -100,6 +107,13 @@ function fail(code: string): never { throw new Error(code); }
 function unique(values: string[]) { return new Set(values).size === values.length; }
 function checkMeta(meta: WorkspaceMeta) {
   if (!id.safeParse(meta.actorId).success || !id.safeParse(meta.id).success || !z.iso.datetime().safeParse(meta.at).success) fail("INVALID_WORKSPACE_META");
+}
+const emptyFact = (factId: string): WorkspaceState["facts"][number] => ({ id: factId, status: "EMPTY", value: null,
+  rationale: null, owner: null, evidence: null, acceptedBy: null, acceptedAt: null });
+/** Workspaces persisted before a catalog field existed lack its fact: add it EMPTY (never invented) on every read. */
+export function backfillCatalog(state: WorkspaceState): WorkspaceState {
+  const missing = WORKSPACE_FIELDS.filter(field => !state.facts.some(f => f.id === field.id));
+  return missing.length ? { ...state, facts: [...state.facts, ...missing.map(field => emptyFact(field.id))] } : state;
 }
 function checked(state: WorkspaceState): WorkspaceState {
   const parsed = WorkspaceStateSchema.safeParse(state);
@@ -114,6 +128,7 @@ function checked(state: WorkspaceState): WorkspaceState {
       stepKeys.some(key => !d.fields.some(f => f.id === `${d.id}_${key}`))) ||
     state.facts.some(f => !fieldIds.has(f.id) || (f.status === "KNOWN") !== (f.value !== null) ||
       (f.status === "NOT_APPLICABLE" && !f.rationale) || (f.status === "OWNER_PENDING" && !f.owner)) ||
+    state.proposals.some(p => p.operation === "PROPOSE_REQUIREMENT" && (!p.stepRef || !p.kind || p.critical === undefined)) ||
     state.sources.some(s => Buffer.byteLength(s.text, "utf8") > 40000)) fail("INVALID_WORKSPACE_STATE");
   const sources = new Map(state.sources.map(source => [source.id, source.text]));
   const validEvidence = (ref: { sourceId: string; quote: string } | null) => !ref || !!sources.get(ref.sourceId)?.includes(ref.quote);
@@ -121,8 +136,9 @@ function checked(state: WorkspaceState): WorkspaceState {
     (f.status === "KNOWN" && !f.evidence) || (f.status === "KNOWN") !== (f.value !== null) ||
     (f.status === "NOT_APPLICABLE" && !f.rationale) || (f.status === "OWNER_PENDING" && !f.owner)) ||
     state.steps.some(s => !validEvidence(s.evidence)) || state.requirements.some(r => !validEvidence(r.evidence)) ||
-    state.proposals.some(p => !sources.get(p.sourceId)?.includes(p.quote) || p.value !== p.quote)) fail("INVALID_WORKSPACE_EVIDENCE");
-  return state;
+    state.proposals.some(p => !sources.get(p.sourceId)?.includes(p.quote) || p.value !== p.quote ||
+      (!!p.nameHint && !sources.get(p.sourceId)?.includes(p.nameHint)))) fail("INVALID_WORKSPACE_EVIDENCE");
+  return backfillCatalog(state);
 }
 
 export function createWorkspace(rawInput: z.infer<typeof WorkspaceCreateSchema>, meta: WorkspaceMeta): WorkspaceState {
@@ -136,8 +152,7 @@ export function createWorkspace(rawInput: z.infer<typeof WorkspaceCreateSchema>,
   const facts = WORKSPACE_FIELDS.map(field => field.id === "business_problem"
     ? { id: field.id, status: "KNOWN" as const, value: input.problemStatement, rationale: null, owner: null,
       evidence: { sourceId, quote: input.problemStatement }, acceptedBy: meta.actorId, acceptedAt: meta.at }
-    : { id: field.id, status: "EMPTY" as const, value: null, rationale: null, owner: null,
-      evidence: null, acceptedBy: null, acceptedAt: null });
+    : emptyFact(field.id));
   return checked({ schemaVersion: 1, revision: 1, ...input, sources: [source], messages: [], facts,
     steps: [], stepDrafts: [], requirements: [], requirementDrafts: [], proposals: [], questions: [],
     observations: [], confirmation: null });
@@ -182,6 +197,50 @@ function draftComplete(draft: WorkspaceState["stepDrafts"][number]) {
   const fields = new Map(draft.fields.map(f => [f.id.slice(draft.id.length + 1), f]));
   return ["name", "actor", "system", "trigger", "description"].every(key => fields.get(key)?.status === "KNOWN") &&
     ["inputs", "outputs", "controls", "exceptions"].every(key => ["KNOWN", "NOT_APPLICABLE"].includes(fields.get(key)?.status ?? "EMPTY"));
+}
+
+/** Draft ids are derived from the accepted proposal, so one command may accept many and a replay cannot create twins. */
+const stepDraftId = (proposalId: string) => `st_${proposalId.slice(2)}`;
+const requirementDraftId = (proposalId: string) => `rq_${proposalId.slice(2)}`;
+const knownFact = (factId: string, value: string, evidence: { sourceId: string; quote: string }, meta: WorkspaceMeta):
+  WorkspaceState["facts"][number] => ({ id: factId, status: "KNOWN", value, rationale: null, owner: null, evidence,
+  acceptedBy: meta.actorId, acceptedAt: meta.at });
+/** An existing step or draft id, or the draft an accepted PROPOSE_STEP created; null while that step is not real. */
+function resolveStepRef(state: WorkspaceState, ref: string): string | null {
+  if ([...state.steps, ...state.stepDrafts].some(step => step.id === ref)) return ref;
+  const proposal = state.proposals.find(item => item.id === ref && item.operation === "PROPOSE_STEP" && item.status === "ACCEPTED");
+  const draft = proposal && stepDraftId(proposal.id);
+  return draft && state.stepDrafts.some(item => item.id === draft) ? draft : null;
+}
+
+/** Accept one proposal. Returns false, leaving everything untouched, when the world moved on since it was made. */
+function acceptProposal(state: WorkspaceState, proposal: WorkspaceState["proposals"][number], meta: WorkspaceMeta): boolean {
+  const evidence = { sourceId: proposal.sourceId, quote: proposal.quote };
+  if (proposal.operation === "PROPOSE_STEP") {
+    const draftId = stepDraftId(proposal.id);
+    if (state.stepDrafts.some(d => d.id === draftId) || state.stepDrafts.length + state.steps.length >= 200) return false;
+    state.stepDrafts.push({ id: draftId, fields: stepKeys.map(key => {
+      const factId = `${draftId}_${key}`;
+      if (key === "description") return knownFact(factId, proposal.value, evidence, meta);
+      return key === "name" && proposal.nameHint ? knownFact(factId, proposal.nameHint, { sourceId: proposal.sourceId, quote: proposal.nameHint }, meta)
+        : emptyFact(factId);
+    }) });
+  } else if (proposal.operation === "PROPOSE_REQUIREMENT") {
+    const draftId = requirementDraftId(proposal.id);
+    const stepId = resolveStepRef(state, proposal.stepRef ?? "");
+    if (!stepId || state.requirementDrafts.some(d => d.id === draftId) || state.requirementDrafts.length + state.requirements.length >= 200) return false;
+    state.requirementDrafts.push({ id: draftId, asIsStepId: stepId, kind: proposal.kind!, critical: proposal.critical!,
+      statement: knownFact(`${draftId}_statement`, proposal.value, evidence, meta) });
+  } else {
+    const fact = findFact(state, proposal.fieldId);
+    if (!fact || fact.value !== proposal.previousValue ||
+      (proposal.operation === "PROPOSE_SET" ? fact.status !== "EMPTY" : fact.status !== "KNOWN")) return false;
+    Object.assign(fact, { status: "KNOWN", value: proposal.value, evidence, rationale: null, owner: null,
+      acceptedBy: meta.actorId, acceptedAt: meta.at });
+  }
+  proposal.status = "ACCEPTED";
+  proposal.decidedBy = meta.actorId;
+  return true;
 }
 
 export function getWorkspaceReadiness(raw: WorkspaceState) {
@@ -275,15 +334,20 @@ export function applyWorkspaceCommand(rawState: WorkspaceState, rawCommand: unkn
   } else if (command.type === "DECIDE_PROPOSAL") {
     const proposal = state.proposals.find(p => p.id === command.proposalId);
     if (!proposal || proposal.status !== "PENDING") fail("PROPOSAL_NOT_PENDING");
-    proposal.status = command.decision === "ACCEPT" ? "ACCEPTED" : "REJECTED";
-    proposal.decidedBy = meta.actorId;
-    if (command.decision === "ACCEPT") {
-      const fact = findFact(state, proposal.fieldId);
-      if (!fact || fact.value !== proposal.previousValue ||
-        (proposal.operation === "PROPOSE_SET" ? fact.status !== "EMPTY" : fact.status !== "KNOWN")) fail("STALE_PROPOSAL");
-      fact.status = "KNOWN"; fact.value = proposal.value; fact.evidence = { sourceId: proposal.sourceId, quote: proposal.quote };
-      fact.rationale = null; fact.owner = null; fact.acceptedBy = meta.actorId; fact.acceptedAt = meta.at;
+    if (command.decision === "ACCEPT") { if (!acceptProposal(state, proposal, meta)) fail("STALE_PROPOSAL"); }
+    else { proposal.status = "REJECTED"; proposal.decidedBy = meta.actorId; }
+  } else if (command.type === "DECIDE_PROPOSALS") {
+    if (!unique(command.ids)) fail("INVALID_WORKSPACE_COMMAND");
+    const chosen = state.proposals.filter(p => command.ids.includes(p.id));
+    if (chosen.length !== command.ids.length || chosen.some(p => p.status !== "PENDING")) fail("PROPOSAL_NOT_PENDING");
+    // Stored order: a requirement proposed against a new step comes after that step. A proposal that went stale stays
+    // PENDING and visible for the person to reject or redo; the batch only fails when nothing at all could be applied.
+    let decided = 0;
+    for (const proposal of chosen) {
+      if (command.decision === "REJECT") { proposal.status = "REJECTED"; proposal.decidedBy = meta.actorId; decided++; }
+      else if (acceptProposal(state, proposal, meta)) decided++;
     }
+    if (!decided) fail("STALE_PROPOSAL");
   } else if (command.type === "REVIEW_OBSERVATION") {
     const observation = state.observations.find(o => o.id === command.observationId);
     if (!observation || observation.status !== "PENDING") fail("OBSERVATION_NOT_PENDING");
@@ -293,7 +357,8 @@ export function applyWorkspaceCommand(rawState: WorkspaceState, rawCommand: unkn
   }
   state.revision++;
   // New user content may contradict a confirmed interpretation; require a new review.
-  if (command.type !== "DECIDE_PROPOSAL" || command.decision === "ACCEPT") state.confirmation = null;
+  const onlyRejects = (command.type === "DECIDE_PROPOSAL" || command.type === "DECIDE_PROPOSALS") && command.decision === "REJECT";
+  if (!onlyRejects) state.confirmation = null;
   return checked(state);
 }
 
@@ -308,11 +373,23 @@ export function recordInterviewTurn(rawState: WorkspaceState, rawTurn: unknown, 
   if (state.messages.some(m => m.id === meta.id)) fail("DUPLICATE_WORKSPACE_ID");
   const reply = [turn.reply, ...turn.questions.map(q => `${q.question} ${q.whyItMatters}`)].join("\n\n");
   state.messages.push({ id: meta.id, role: "assistant", text: reply, createdBy: null, createdAt: meta.at });
+  const userTurn = state.messages.filter(m => m.role === "user").length;
   for (const question of turn.questions) state.questions.push({ ...question,
-    fieldId: input.activeGaps.find(g => g.key === question.gapKey)!.fieldId, askedAtRevision: state.revision });
-  turn.proposedUpdates.forEach((proposal, index) => state.proposals.push({
-    id: `p_${meta.id}_${index}`, ...proposal, status: "PENDING", createdAt: meta.at, decidedBy: null,
-  }));
+    fieldId: input.activeGaps.find(g => g.key === question.gapKey)!.fieldId, askedAtRevision: state.revision, askedAtUserTurn: userTurn });
+  const proposalId = (index: number) => `p_${meta.id}_${index}`;
+  const base = { status: "PENDING" as const, createdAt: meta.at, decidedBy: null };
+  const fieldCount = turn.proposedUpdates.length;
+  turn.proposedUpdates.forEach((proposal, index) => state.proposals.push({ id: proposalId(index), ...proposal, ...base }));
+  turn.proposedSteps.forEach((step, index) => state.proposals.push({ id: proposalId(fieldCount + index), fieldId: "step",
+    operation: "PROPOSE_STEP", previousValue: null, value: step.value, sourceId: step.sourceId, quote: step.quote,
+    nameHint: step.nameHint, ...base }));
+  turn.proposedRequirements.forEach((item, index) => {
+    // new_<n> names the n-th step proposed in this same turn: store the id that proposal received.
+    const fresh = /^new_(\d+)$/.exec(item.stepRef);
+    state.proposals.push({ id: proposalId(fieldCount + turn.proposedSteps.length + index), fieldId: "requirement",
+      operation: "PROPOSE_REQUIREMENT", previousValue: null, value: item.value, sourceId: item.sourceId, quote: item.quote,
+      stepRef: fresh ? proposalId(fieldCount + Number(fresh[1])) : item.stepRef, kind: item.kind, critical: item.critical, ...base });
+  });
   turn.observations.forEach((observation, index) => state.observations.push({
     id: `o_${meta.id}_${index}`, ...observation, status: "PENDING", rationale: null, reviewedBy: null,
   }));
@@ -320,52 +397,97 @@ export function recordInterviewTurn(rawState: WorkspaceState, rawTurn: unknown, 
   return checked(state);
 }
 
+const MAX_VISIBLE_DRAFTS = 12;
+const MAX_SHOWN_GAPS = 15;
+const RECENT_EVIDENCE_MESSAGES = 3;
+const CORE_STEP_KEYS = ["name", "actor", "system", "trigger", "description"] as const;
+const trimmed = (value: string, max: number) => value.length > max ? `${value.slice(0, max - 1)}…` : value;
+
 export function buildInterviewInput(rawState: WorkspaceState, currentMessageId: string): InterviewInput {
   const state = checked(rawState);
   const message = state.messages.find(m => m.id === currentMessageId && m.role === "user");
   if (!message) fail("UNKNOWN_CURRENT_MESSAGE");
-  const asked = new Set(state.questions.map(q => q.gapKey));
-  // The interview contract caps fields at 100; present a moving window of
-  // incomplete step drafts while retaining all drafts in durable state.
+  const askedAt = new Map(state.questions.map(q => [q.gapKey, q.askedAtUserTurn ?? 0]));
+  const userTurns = state.messages.filter(m => m.role === "user").length;
+  const pending = state.proposals.filter(p => p.status === "PENDING");
+  const covered = new Set(pending.map(p => p.fieldId));
+  // The key to offer for a gap: its own key until asked, then the single `_r2` re-ask once enough user turns passed.
+  const offer = (base: string): string | null => {
+    const first = askedAt.get(base);
+    if (first === undefined) return base;
+    const again = `${base}${REASK_SUFFIX}`;
+    return !askedAt.has(again) && userTurns - first >= REASK_AFTER_USER_TURNS ? again : null;
+  };
+  const wire = (status: string) => (status === "OWNER_PENDING" ? "UNKNOWN" : status) as "EMPTY" | "KNOWN" | "UNKNOWN" | "NOT_APPLICABLE";
   const incompleteDrafts = state.stepDrafts.filter(d => !draftComplete(d));
-  const remainingDraftSlots = Math.max(0, 10 - incompleteDrafts.length);
-  const visibleDrafts = [...incompleteDrafts.slice(0, 9),
-    ...(remainingDraftSlots > 1 ? state.stepDrafts.filter(d => draftComplete(d)).slice(-(remainingDraftSlots - 1)) : [])];
   const visibleRequirements = state.requirementDrafts.filter(d => d.statement.status !== "KNOWN").slice(0, 8);
+  const draftFact = (draft: (typeof state.stepDrafts)[number], key: (typeof stepKeys)[number]) => draft.fields.find(f => f.id === `${draft.id}_${key}`)!;
+  const stepRef = (draft: (typeof state.stepDrafts)[number]) => {
+    const name = draftFact(draft, "name").value, description = draftFact(draft, "description").value;
+    return name ? `"${trimmed(name, 80)}"` : description ? `that begins: "${trimmed(description, 120)}"` : "that has no description yet";
+  };
+  const catalogGaps = (tier: number): InterviewInput["activeGaps"] => WORKSPACE_FIELDS.filter(def => def.tier === tier).flatMap(def => {
+    const key = state.facts.find(f => f.id === def.id)!.status === "EMPTY" && !covered.has(def.id) ? offer(`g_${def.id}`) : null;
+    return key ? [{ key, fieldId: def.id, priority: def.priority as "CRITICAL" | "IMPORTANT",
+      detail: `${def.question} This is about ${def.domain === "AS_IS" ? "current practice" : def.domain === "DESIRED" ? "the desired future" : "business context"}.` }] : [];
+  });
+  const walkthroughGaps: InterviewInput["activeGaps"] = [];
+  const stepFieldGaps: InterviewInput["activeGaps"] = [];
+  for (const draft of incompleteDrafts) {
+    const walkthroughKey = `${STEP_GAP_PREFIX}${draft.id}`;
+    const walkedAt = askedAt.get(walkthroughKey);
+    const untouched = CORE_STEP_KEYS.filter(key => key !== "description").every(key => draftFact(draft, key).status === "EMPTY");
+    const key = walkedAt === undefined ? walkthroughKey : untouched ? offer(walkthroughKey) : null;
+    if (key && !draft.fields.some(f => covered.has(f.id))) walkthroughGaps.push({ key, fieldId: `${draft.id}_name`, priority: "CRITICAL", stepId: draft.id,
+      detail: `Walkthrough of the current step ${stepRef(draft)}. Ask ONE open question that has the participant walk you through this step: who does it, in which system, what triggers it, what goes in and out, which checks apply and what can go wrong. Then propose updates for every field of this step that the answer supports.` });
+    // Single fields are asked only after the walkthrough was asked and at least one answer has come in since.
+    if (walkedAt === undefined || userTurns < walkedAt + 2) continue;
+    for (const fact of draft.fields) {
+      const fieldKey = fact.status === "EMPTY" && !covered.has(fact.id) ? offer(`g_${fact.id}`) : null;
+      const part = fact.id.slice(draft.id.length + 1) as (typeof stepKeys)[number];
+      if (fieldKey) stepFieldGaps.push({ key: fieldKey, fieldId: fact.id, stepId: draft.id,
+        detail: `${stepQuestions[part]} This is current practice for the step ${stepRef(draft)}.`,
+        priority: (CORE_STEP_KEYS as readonly string[]).includes(part) ? "CRITICAL" : "IMPORTANT" });
+    }
+  }
+  const requirementGaps = visibleRequirements.flatMap(d => {
+    const key = d.statement.status === "EMPTY" && !covered.has(d.statement.id) ? offer(`g_${d.statement.id}`) : null;
+    return key ? [{ key, fieldId: d.statement.id, stepId: d.asIsStepId, priority: d.critical ? "CRITICAL" as const : "IMPORTANT" as const,
+      detail: d.kind === "PAIN_POINT" ? "What fails or causes delay in this current step, and what is the business impact?" :
+        "What should change in this future process, and what outcome would show it works?" }] : [];
+  });
+  // Critical business context first, then landscape, then the process itself, then KPIs, targets and constraints.
+  // Only the head of the list is shown: the model asks from the top, and a long list only dilutes its attention.
+  const activeGaps = [...catalogGaps(0), ...catalogGaps(1), ...walkthroughGaps, ...stepFieldGaps, ...requirementGaps,
+    ...catalogGaps(2), ...catalogGaps(3)].slice(0, MAX_SHOWN_GAPS);
+  // Drafts the model can act on: those named by a shown gap, plus those whose walkthrough was already asked (any later
+  // message may fill their blanks). Their EMPTY fields (and name and description for context) are listed.
+  const recentlyAsked = new Set(incompleteDrafts.filter(d => askedAt.has(`${STEP_GAP_PREFIX}${d.id}`)).map(d => d.id));
+  const shown = new Set(activeGaps.flatMap(g => g.stepId ? [g.stepId] : []));
+  const visibleDrafts = incompleteDrafts.filter(d => shown.has(d.id) || recentlyAsked.has(d.id)).slice(0, MAX_VISIBLE_DRAFTS);
   const fields = [...WORKSPACE_FIELDS.map(def => {
     const fact = state.facts.find(f => f.id === def.id)!;
-    return { id: def.id, label: `${def.domain}: ${def.label}`, value: fact.value,
-      status: fact.status === "OWNER_PENDING" ? "UNKNOWN" as const : fact.status };
-  }), ...visibleDrafts.flatMap(draft => draft.fields.map(fact => ({ id: fact.id,
-    label: `AS_IS step ${draft.id}: ${fact.id.slice(draft.id.length + 1)}`, value: fact.value,
-    status: fact.status === "OWNER_PENDING" ? "UNKNOWN" as const : fact.status }))),
+    return { id: def.id, label: `${def.domain}: ${def.label}`, value: fact.value, status: wire(fact.status) };
+  }), ...visibleDrafts.flatMap(draft => draft.fields.filter(fact => fact.status === "EMPTY" || /_(name|description)$/.test(fact.id)).map(fact => ({ id: fact.id,
+    label: `AS_IS step ${draft.id}${draftFact(draft, "name").value ? ` (${trimmed(draftFact(draft, "name").value!, 60)})` : ""}: ${fact.id.slice(draft.id.length + 1)}`,
+    value: fact.value, status: wire(fact.status) }))),
   ...visibleRequirements.map(draft => ({ id: draft.statement.id, label: `${draft.kind}: desired requirement or pain point for step ${draft.asIsStepId}`,
-    value: draft.statement.value, status: draft.statement.status === "OWNER_PENDING" ? "UNKNOWN" as const : draft.statement.status }))];
-  const catalogGaps = WORKSPACE_FIELDS.filter(def => {
-    const fact = state.facts.find(f => f.id === def.id)!;
-    return fact.status === "EMPTY" && !asked.has(`g_${def.id}`);
-  }).map(def => ({ key: `g_${def.id}`, fieldId: def.id,
-    detail: `${def.question} This is about ${def.domain === "AS_IS" ? "current practice" : def.domain === "DESIRED" ? "the desired future" : "business context"}.`,
-    priority: def.priority }));
-  const draftGaps = visibleDrafts.flatMap(draft => draft.fields.filter(fact =>
-    fact.status === "EMPTY" && !asked.has(`g_${fact.id}`)).map(fact => {
-    const key = fact.id.slice(draft.id.length + 1) as (typeof stepKeys)[number];
-    return { key: `g_${fact.id}`, fieldId: fact.id, detail: `${stepQuestions[key]} This is current practice for step ${draft.id}.`,
-      priority: (["name", "actor", "system", "trigger", "description"] as string[]).includes(key) ? "CRITICAL" as const : "IMPORTANT" as const };
-  }));
-  const requirementGaps = visibleRequirements.filter(d => d.statement.status === "EMPTY" &&
-    !asked.has(`g_${d.statement.id}`)).map(d => ({ key: `g_${d.statement.id}`, fieldId: d.statement.id,
-    detail: d.kind === "PAIN_POINT" ? "What fails or causes delay in this current step, and what is the business impact?" :
-      "What should change in this future process, and what outcome would show it works?",
-    priority: d.critical ? "CRITICAL" as const : "IMPORTANT" as const }));
-  const activeGaps = [...catalogGaps, ...draftGaps, ...requirementGaps].slice(0, 100);
-  const allGapKeys = [...WORKSPACE_FIELDS.map(def => `g_${def.id}`),
-    ...visibleDrafts.flatMap(draft => draft.fields.map(fact => `g_${fact.id}`)),
-    ...visibleRequirements.map(d => `g_${d.statement.id}`)];
-  const closedGapKeys = allGapKeys.filter(key => !activeGaps.some(g => g.key === key)).slice(0, 200);
+    value: draft.statement.value, status: wire(draft.statement.status) }))];
+  const closedGapKeys = WORKSPACE_FIELDS.map(def => `g_${def.id}`).filter(key => !activeGaps.some(g => g.key === key));
+  const currentSteps = [...state.steps.map(step => ({ id: step.id, name: step.name, summary: trimmed(step.description, 160), status: "CURRENT" as const })),
+    ...state.stepDrafts.map(draft => ({ id: draft.id, name: draftFact(draft, "name").value && trimmed(draftFact(draft, "name").value!, 200),
+      summary: draftFact(draft, "description").value && trimmed(draftFact(draft, "description").value!, 160), status: "CURRENT" as const })),
+    ...pending.filter(p => p.operation === "PROPOSE_STEP").map(p => ({ id: p.id, name: p.nameHint ? trimmed(p.nameHint, 200) : null,
+      summary: trimmed(p.value, 160), status: "PROPOSED" as const }))].slice(0, 60);
+  const knownRequirements = [...state.requirements.map(r => ({ stepId: r.asIsStepId, kind: r.kind, statement: trimmed(r.statement, 200), status: "CURRENT" as const })),
+    ...state.requirementDrafts.filter(d => d.statement.value).map(d => ({ stepId: d.asIsStepId, kind: d.kind, statement: trimmed(d.statement.value!, 200), status: "CURRENT" as const })),
+    ...pending.filter(p => p.operation === "PROPOSE_REQUIREMENT").map(p => ({ stepId: p.stepRef!, kind: p.kind!, statement: trimmed(p.value, 200), status: "PROPOSED" as const }))].slice(-80);
   const evidenceSources: typeof state.sources = [];
   let evidenceBytes = 0;
-  for (const source of state.sources.filter(s => s.id !== currentMessageId).slice().reverse()) {
+  // Documents and entries stay quotable; of the conversation only the last few user messages do. Older answers live in the
+  // field values, and re-sending every message made the input grow past what the model could use.
+  const recentMessageIds = new Set(state.messages.filter(m => m.role === "user" && m.id !== currentMessageId).slice(-RECENT_EVIDENCE_MESSAGES).map(m => m.id));
+  for (const source of state.sources.filter(s => s.id !== currentMessageId && (s.kind !== "MESSAGE" || recentMessageIds.has(s.id))).slice().reverse()) {
     const bytes = Buffer.byteLength(source.text, "utf8");
     if (evidenceSources.length < 50 && evidenceBytes + bytes <= 120_000) {
       evidenceSources.unshift(source); evidenceBytes += bytes;
@@ -374,7 +496,8 @@ export function buildInterviewInput(rawState: WorkspaceState, currentMessageId: 
   const history: { role: "user" | "assistant"; text: string }[] = [];
   let historyBytes = 0;
   for (const message of state.messages.filter(m => m.id !== currentMessageId).slice().reverse()) {
-    const content = message.text.slice(0, 8000);
+    // A user message is already in evidence when recent; elsewhere only its opening gives the conversation its thread.
+    const content = message.text.slice(0, message.role === "user" ? 300 : 8000);
     const bytes = Buffer.byteLength(content, "utf8");
     if (history.length < 24 && historyBytes + bytes <= 40_000) {
       history.unshift({ role: message.role, text: content }); historyBytes += bytes;
@@ -382,7 +505,8 @@ export function buildInterviewInput(rawState: WorkspaceState, currentMessageId: 
   }
   return parseInterviewInput({ schemaVersion: 1, contextRevision: state.revision, variantName: state.variantName,
     problemStatement: state.problemStatement, currentMessage: { id: message.id, text: message.text },
-    evidence: evidenceSources.map(s => ({ id: s.id, text: s.text })), fields, activeGaps, closedGapKeys, history });
+    evidence: evidenceSources.map(s => ({ id: s.id, text: s.text })), fields, activeGaps, closedGapKeys, steps: currentSteps,
+    requirements: knownRequirements, history });
 }
 
 /** Compile reviewed user facts only. This artifact remains USER_PROVIDED/DRAFT

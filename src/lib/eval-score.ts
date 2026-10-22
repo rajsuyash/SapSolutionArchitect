@@ -49,6 +49,9 @@ export const TranscriptSchema = z.object({
   }).nullable(),
   /** Active interviewer gaps left when the run ended (absent in older transcripts). */
   gapsRemaining: count.optional(),
+  /** Steps and requirements that exist at the end of the run. The driver creates none itself, so all came from accepted
+   * interviewer proposals (absent in older transcripts, which pre-created them). */
+  structure: z.object({ steps: count, requirements: count }).optional(),
   aborted: z.string().nullable(),
 });
 export type Transcript = z.infer<typeof TranscriptSchema>;
@@ -65,11 +68,26 @@ export const ScoringCaseSchema = z.object({
     maxTurnsToReadiness: z.number(), maxRepeatedGapKeys: z.number(), maxNearDuplicates: z.number(),
     minFirstAttemptValidRate: z.number(), requireToBeValid: z.boolean(), minCapabilities: z.number(),
     minKpis: z.number(), requireSalesforceIntegration: z.boolean(),
+    /** Cross-turn semantic duplicates tolerated (default 0). */
+    maxSemanticDuplicates: z.number().default(0),
   }),
 });
 export type ScoringCase = z.infer<typeof ScoringCaseSchema>;
 
 export const NEAR_DUPLICATE_JACCARD = 0.8;
+/** Two questions in different turns at or above this normalized-token Jaccard are the same question asked again. */
+export const SEMANTIC_DUPLICATE_JACCARD = 0.6;
+const STOPWORDS = new Set(("a an the of to in on for and or is are was were be been do does did you your we our it its this that these those with at by " +
+  "from as how what which who whom when where why can could would should will not no any about me us there than then so if").split(" "));
+/** Tokens of a question without stopwords and, once the run has enough questions, without the wording nearly every
+ * question shares (a walkthrough template): what is left is the topic. */
+function topicTokens(questions: string[]): Set<string>[] {
+  const sets = questions.map(q => new Set([...tokens(q)].filter(t => !STOPWORDS.has(t))));
+  if (questions.length < 8) return sets;
+  const frequency = new Map<string, number>();
+  for (const set of sets) for (const token of set) frequency.set(token, (frequency.get(token) ?? 0) + 1);
+  return sets.map(set => new Set([...set].filter(t => frequency.get(t)! <= questions.length * 0.4)));
+}
 const rx = (source: string) => new RegExp(source, "i");
 const tokens = (text: string) => new Set(text.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").split(" ").filter(Boolean));
 export function jaccard(a: string, b: string): number {
@@ -103,6 +121,20 @@ export function scoreRun(rawTranscript: unknown, rawCase: unknown) {
   for (let i = 0; i < questions.length; i++) for (let j = i + 1; j < questions.length; j++) {
     const score = jaccard(questions[i]!.question, questions[j]!.question);
     if (score >= NEAR_DUPLICATE_JACCARD) nearDuplicates.push({
+      a: { turn: questions[i]!.turn, question: questions[i]!.question },
+      b: { turn: questions[j]!.turn, question: questions[j]!.question }, jaccard: Number(score.toFixed(3)) });
+  }
+
+  const topics = topicTokens(questions.map(q => q.question));
+  const semanticDuplicates: { a: { turn: number; question: string }; b: { turn: number; question: string }; jaccard: number }[] = [];
+  for (let i = 0; i < questions.length; i++) for (let j = i + 1; j < questions.length; j++) {
+    if (questions[i]!.turn === questions[j]!.turn) continue;
+    const left = topics[i]!, right = topics[j]!;
+    if (!left.size || !right.size) continue;
+    let shared = 0;
+    for (const token of left) if (right.has(token)) shared++;
+    const score = shared / (left.size + right.size - shared);
+    if (score >= SEMANTIC_DUPLICATE_JACCARD) semanticDuplicates.push({
       a: { turn: questions[i]!.turn, question: questions[i]!.question },
       b: { turn: questions[j]!.turn, question: questions[j]!.question }, jaccard: Number(score.toFixed(3)) });
   }
@@ -149,6 +181,8 @@ export function scoreRun(rawTranscript: unknown, rawCase: unknown) {
       `${turnsToReadiness ?? "not reached"} turns (max ${passBar.maxTurnsToReadiness})`),
     check("repeatedGapKeys", repeatedGapKeys.length <= passBar.maxRepeatedGapKeys, `${repeatedGapKeys.length} (max ${passBar.maxRepeatedGapKeys})`),
     check("nearDuplicates", nearDuplicates.length <= passBar.maxNearDuplicates, `${nearDuplicates.length} pairs (max ${passBar.maxNearDuplicates})`),
+    check("semanticDuplicates", semanticDuplicates.length <= passBar.maxSemanticDuplicates,
+      `${semanticDuplicates.length} cross-turn pairs at Jaccard >= ${SEMANTIC_DUPLICATE_JACCARD} (max ${passBar.maxSemanticDuplicates})`),
     check("firstAttemptValid", turns.length > 0 && firstAttemptValidRate >= passBar.minFirstAttemptValidRate,
       `${(firstAttemptValidRate * 100).toFixed(0)}% of ${turns.length} turns (min ${passBar.minFirstAttemptValidRate * 100}%)`),
     check("toBeValid", !passBar.requireToBeValid || toBeValid, toBe ? (toBeValid ? "valid" : `invalid (${toBe.errorCode ?? "no steps"})`) : "To-Be not generated"),
@@ -168,6 +202,8 @@ export function scoreRun(rawTranscript: unknown, rawCase: unknown) {
       failedTurns: turns.filter(t => t.error !== null).map(t => ({ turn: t.index, error: t.error })),
     },
     repeatedGapKeys, nearDuplicateCount: nearDuplicates.length, nearDuplicates: nearDuplicates.slice(0, 20), // sample only
+    semanticDuplicateCount: semanticDuplicates.length, semanticDuplicates: semanticDuplicates.slice(0, 20),
+    interviewerCreated: transcript.structure ?? null,
     validationErrorCodes, validationErrorPaths,
     stopReasons: count_(turns.flatMap(t => t.stopReasons.map(r => r ?? "none"))),
     warningCodes: count_(turns.flatMap(t => t.warnings.map(w => w.code))),
@@ -187,6 +223,7 @@ export function summarize(score: Score): string {
   if (score.turns.zeroQuestionTurnsWithGapsRemaining.length) {
     lines.push(`  turns with 0 questions while gaps remained: ${score.turns.zeroQuestionTurnsWithGapsRemaining.join(", ")}`);
   }
+  if (score.interviewerCreated) lines.push(`  created by the interviewer: ${score.interviewerCreated.steps} steps, ${score.interviewerCreated.requirements} requirements`);
   if (score.turns.forcedCompletion) lines.push(`  note: template completed by direct entry after the turn cap (${score.turns.directEdits} edits)`);
   const top = (h: Record<string, number>) => Object.entries(h).slice(0, 8).map(([k, n]) => `${k} x${n}`).join(", ");
   if (Object.keys(score.validationErrorCodes).length) {

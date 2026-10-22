@@ -10,14 +10,16 @@ type Observation = WorkspaceView["observations"][number];
 /** A model suggestion is never an answer until the person accepts it, edits it or rejects it. */
 export function ProposalCard({ label, proposal, disabled, onAccept, onReject, onEdit }: {
   label: string; proposal: Proposal; disabled: boolean;
-  onAccept: () => Promise<boolean>; onReject: () => Promise<boolean>; onEdit: (value: string) => Promise<boolean>;
+  onAccept: () => Promise<boolean>; onReject: () => Promise<boolean>;
+  /** Absent for a proposal that creates a step or requirement: those are accepted or rejected as quoted. */
+  onEdit?: (value: string) => Promise<boolean>;
 }) {
   const [editing, setEditing] = useState(false);
   const [text, setText] = useState(proposal.value);
   const [busy, setBusy] = useState(false);
   const titleId = useId();
   async function act(work: () => Promise<boolean>) { setBusy(true); const ok = await work(); setBusy(false); if (ok) setEditing(false); }
-  async function save(event: FormEvent) { event.preventDefault(); if (text.trim()) await act(() => onEdit(text.trim())); }
+  async function save(event: FormEvent) { event.preventDefault(); if (text.trim() && onEdit) await act(() => onEdit(text.trim())); }
   const off = disabled || busy;
   return <li className={styles.card} aria-labelledby={titleId} data-testid="proposal">
     <h4 id={titleId} className={styles.fieldLabel}>{label}</h4>
@@ -27,7 +29,7 @@ export function ProposalCard({ label, proposal, disabled, onAccept, onReject, on
       <blockquote className={styles.quote}>{proposal.quote}</blockquote>
       <div className={styles.row}>
         <button type="button" className={styles.primary} disabled={off} onClick={() => void act(onAccept)}>Accept</button>
-        <button type="button" className={styles.small} disabled={off} onClick={() => setEditing(true)}>Edit</button>
+        {onEdit && <button type="button" className={styles.small} disabled={off} onClick={() => setEditing(true)}>Edit</button>}
         <button type="button" className={styles.small} disabled={off} onClick={() => void act(onReject)}>Reject</button>
       </div>
     </>}

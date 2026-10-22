@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, type ReactNode } from "react";
-import { REQUIREMENT_KIND_LABELS, STEP_KEYS, STEP_LABELS, WORKSPACE_FIELDS, describeBlocker, describeField,
+import { REQUIREMENT_KIND_LABELS, STEP_KEYS, STEP_LABELS, WORKSPACE_FIELDS, describeBlocker, describeField, describeProposal,
   requirementLabel, stepLabel } from "../lib/workspace-fields";
 import { isActive, type Command, type Fact, type JobView, type Workspace, type WorkspaceView } from "./consultant-api";
 import { FieldRow, type FactUpdate } from "./consultant-field";
@@ -91,13 +91,20 @@ export function ConsultantSummary({ workspace, jobs, locked, run, onGenerate, re
     </Section>
 
     {pending.length > 0 && <Section id="proposals-heading" title="Proposed answers to review" hint="Nothing becomes part of the record until you accept it.">
+      {editable && pending.length > 1 && <div className={styles.row}>
+        <button type="button" className={styles.primary} data-testid="accept-all"
+          onClick={() => void run({ type: "DECIDE_PROPOSALS", ids: pending.map(proposal => proposal.id), decision: "ACCEPT" })}>
+          Accept all {pending.length}</button>
+        <span className={styles.muted}>Anything that no longer fits your current answers stays here for you to check.</span>
+      </div>}
       <ul className={styles.list}>{pending.map(proposal => {
-        const label = describeField(state, proposal.fieldId).label;
+        const label = describeProposal(state, proposal);
+        const isField = proposal.operation === "PROPOSE_SET" || proposal.operation === "PROPOSE_REPLACE";
         return <ProposalCard key={proposal.id} label={label} proposal={proposal} disabled={!editable}
           onAccept={() => run({ type: "DECIDE_PROPOSAL", proposalId: proposal.id, decision: "ACCEPT" })}
           onReject={() => run({ type: "DECIDE_PROPOSAL", proposalId: proposal.id, decision: "REJECT" })}
-          onEdit={(value) => run([setFact(state, proposal.fieldId, { status: "KNOWN", value, rationale: null, owner: null }),
-            { type: "DECIDE_PROPOSAL", proposalId: proposal.id, decision: "REJECT" }])} />;
+          onEdit={isField ? (value) => run([setFact(state, proposal.fieldId, { status: "KNOWN", value, rationale: null, owner: null }),
+            { type: "DECIDE_PROPOSAL", proposalId: proposal.id, decision: "REJECT" }]) : undefined} />;
       })}</ul>
     </Section>}
 
