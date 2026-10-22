@@ -26,7 +26,7 @@ export function loginDestination(next: unknown, role?: SessionUser["orgRole"]): 
   // Only product paths are accepted. No external URL, query, encoded separator,
   // dot segment or backslash can reach browser navigation from the next parameter.
   if (typeof next !== "string" || next.length > 512) return fallback;
-  if (next === "/review" || (next === "/admin/reference-library" && role !== "GUEST")) return next;
+  if (next === "/review" || ((next === "/admin/reference-library" || next === "/admin") && role !== "GUEST")) return next;
   if (/^\/projects(?:\/[A-Za-z0-9_-]+)*$/.test(next)) return next;
   return fallback;
 }

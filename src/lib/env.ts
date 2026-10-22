@@ -2,6 +2,9 @@ import { z } from "zod";
 
 const required = z.string().trim().min(1);
 const httpUrl = z.url({ protocol: /^https?$/ });
+// A blank variable means "use the default", not zero.
+const price = (fallback: number) => z.preprocess((value) => (typeof value === "string" && !value.trim() ? undefined : value),
+  z.coerce.number().min(0).default(fallback));
 const schema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
   DATABASE_URL: z.url({ protocol: /^postgres(ql)?$/ }),
@@ -27,6 +30,12 @@ const schema = z.object({
   DEMO_ACCESS_PASSWORD: z.string().min(24).optional(),
   GOOGLE_CLIENT_ID: z.string().optional(),
   GOOGLE_CLIENT_SECRET: z.string().optional(),
+  // Comma-separated sign-in emails of SaaS operators; empty or unset means nobody is a platform admin.
+  PLATFORM_ADMIN_EMAILS: z.string().optional().transform((value) =>
+    (value ?? "").split(",").map((email) => email.trim().toLowerCase()).filter(Boolean)),
+  // Claude Sonnet 5.5 list price, USD per million tokens; used only for the admin cost estimate.
+  AI_PRICE_INPUT_USD_PER_MTOK: price(2),
+  AI_PRICE_OUTPUT_USD_PER_MTOK: price(10),
 }).superRefine((config, context) => {
   const invalid = (name: string) => context.addIssue({ code: "custom", path: [name], message: "Invalid configuration" });
   if (config.AI_PROVIDER === "anthropic" && !config.ANTHROPIC_API_KEY?.trim()) invalid("ANTHROPIC_API_KEY");

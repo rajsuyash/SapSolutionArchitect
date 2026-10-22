@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { getPageSession } from "../lib/page-auth";
+import { getRuntime } from "../lib/runtime";
 import { SessionMenu, WorkspaceLink as Link } from "./auth-ui";
 import "./globals.css";
 
@@ -29,6 +30,7 @@ export default async function RootLayout({ children }: Readonly<{ children: Reac
           <nav aria-label="Primary navigation">
             <Link href="/projects">Projects</Link>
             <Link href="/review">Review</Link>
+            {user && getRuntime().platformAdmin.isAdminEmail(user.email) && <Link href="/admin">Admin</Link>}
             {(!user || user.orgRole === "ADMIN") && <Link href="/admin/reference-library">Reference library</Link>}
           </nav>
           <SessionMenu user={user ? { name: user.name } : null} />

@@ -8,6 +8,7 @@ import { createJobService } from "./jobs";
 import { createDiscoveryRepository } from "./discovery";
 import { createDiscoveryWorkspaceRepository } from "./discovery-workspace";
 import { createConsultantJobs } from "./consultant-jobs";
+import { createPlatformAdmin } from "./platform-admin";
 
 export const HEALTH_QUEUE = "health.noop";
 type Status = "ok" | "error";
@@ -46,6 +47,7 @@ function createRuntime() {
   const jobs = createJobService(services.pool, auth, services.queue, startQueue);
   const consultantJobs = createConsultantJobs(services.pool, auth, services.queue, startQueue,
     { dailyJobLimit: config.CONSULTANT_DAILY_JOB_LIMIT });
+  const platformAdmin = createPlatformAdmin(services.pool, auth, config);
   let queueStart: Promise<void> | undefined;
   let pendingHealth: Promise<Health> | undefined;
   let pendingQueueProbe: Promise<void> | undefined;
@@ -106,7 +108,7 @@ function createRuntime() {
     return pendingHealth;
   }
 
-  return { config, services, auth, projects, discovery, workspaces, jobs, consultantJobs, startQueue, health };
+  return { config, services, auth, projects, discovery, workspaces, jobs, consultantJobs, platformAdmin, startQueue, health };
 }
 
 const processState = globalThis as typeof globalThis & { sapPmRuntime?: ReturnType<typeof createRuntime> };

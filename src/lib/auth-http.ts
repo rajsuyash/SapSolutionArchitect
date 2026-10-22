@@ -5,10 +5,11 @@ import type { createProjectRepository } from "./tenant";
 import type { createJobService } from "./jobs";
 import type { createDiscoveryRepository } from "./discovery";
 import { handleConsultant, type ConsultantRuntime } from "./consultant-http";
+import { handlePlatformAdmin, type PlatformAdminRuntime } from "./platform-admin-http";
 
 export type HttpRuntime = { config: { APP_URL: string }; auth: AuthService;
   projects: ReturnType<typeof createProjectRepository>; jobs: ReturnType<typeof createJobService>;
-  discovery?: ReturnType<typeof createDiscoveryRepository> } & Pick<ConsultantRuntime, "workspaces" | "consultantJobs">;
+  discovery?: ReturnType<typeof createDiscoveryRepository> } & Pick<ConsultantRuntime, "workspaces" | "consultantJobs"> & Pick<PlatformAdminRuntime, "platformAdmin">;
 type LoadRuntime = () => HttpRuntime;
 const MAX_BODY_BYTES = 8192;
 const success = (data: unknown, status = 200) => NextResponse.json({ success: true, data }, { status });
@@ -187,6 +188,14 @@ export function handleJobs(request: Request, path: string[] | undefined, load: L
       return success(await jobs.retry(token, path[0]!, requestId), 202);
     }
     return success(await jobs.get(token, path[0]!));
+  });
+}
+
+export function handleAdmin(request: Request, path: string[] | undefined, load: LoadRuntime): Promise<NextResponse> {
+  return boundary(async () => {
+    const runtime = load();
+    return handlePlatformAdmin(request, path ?? [], runtime, { token: requestToken(request, runtime.config.APP_URL), readJson, success,
+      methodNotAllowed: (allow) => new MethodError(allow) });
   });
 }
 

@@ -114,7 +114,7 @@ describe.skipIf(process.env.RUN_DB_TESTS !== "1")("migration upgrade path 0004 -
 });
 
 describe.skipIf(process.env.RUN_DB_TESTS !== "1")("migration 0008 on a database already at 0007", () => {
-  const latest = files.at(-1)!;
+  const atSeven = files.slice(0, files.indexOf("0008_saas_trials_google.sql")); // later migrations still apply on top
   const database = `sap_upgrade8_${randomUUID().replaceAll("-", "")}`;
   const url = new URL(parseEnv(readFileSync(new URL("../.env.example", import.meta.url), "utf8")).DATABASE_URL!);
   const admin = new Client({ connectionString: url.href, connectionTimeoutMillis: 3000 });
@@ -132,7 +132,7 @@ describe.skipIf(process.env.RUN_DB_TESTS !== "1")("migration 0008 on a database 
     await db.query("SELECT pg_advisory_xact_lock(71399201)");
     await db.query(`CREATE TABLE IF NOT EXISTS sap_pm_migrations(
       version text PRIMARY KEY, checksum text NOT NULL, applied_at timestamptz NOT NULL DEFAULT now())`);
-    for (const name of files.slice(0, -1)) await applyMigration(db, name, readFileSync(new URL(name, migrationsDir), "utf8"));
+    for (const name of atSeven) await applyMigration(db, name, readFileSync(new URL(name, migrationsDir), "utf8"));
     await db.query("COMMIT");
     await db.query("INSERT INTO organizations(id,name) VALUES($1,'Pre-0008 Org')", [org]);
     await db.query("INSERT INTO users(id,org_id,email,name,org_role,password_hash) VALUES($1,$2,$3,'Legacy','ADMIN','x')",
@@ -145,14 +145,14 @@ describe.skipIf(process.env.RUN_DB_TESTS !== "1")("migration 0008 on a database 
   }, 15000);
 
   it("adds trial/quota/suspension columns, leaving existing organizations without expiry", async () => {
-    expect(latest).toBe("0008_saas_trials_google.sql"); // precondition: the slice above really stops at 0007
-    expect((await db.query("SELECT version FROM sap_pm_migrations ORDER BY version")).rows.at(-1)!.version).toBe(files.at(-2));
+    expect(atSeven.at(-1)).toBe("0007_consultant_jobs.sql"); // precondition: the database really stops at 0007
+    expect((await db.query("SELECT version FROM sap_pm_migrations ORDER BY version")).rows.at(-1)!.version).toBe(atSeven.at(-1));
     expect((await db.query("SELECT 1 FROM information_schema.columns WHERE table_name='organizations' AND column_name='trial_ends_at'")).rowCount).toBe(0);
 
     await run(process.execPath, ["--import", "tsx", "scripts/seed.ts", "--migrate-only"],
       { env: { ...process.env, NODE_ENV: "test", DATABASE_URL: url.href }, timeout: 30000 });
 
-    expect((await db.query("SELECT version FROM sap_pm_migrations ORDER BY version")).rows.at(-1)!.version).toBe(latest);
+    expect((await db.query("SELECT version FROM sap_pm_migrations ORDER BY version")).rows.at(-1)!.version).toBe(files.at(-1));
     const existing = (await db.query("SELECT trial_ends_at,daily_ai_job_quota,suspended_at FROM organizations WHERE id=$1", [org])).rows[0];
     expect(existing).toEqual({ trial_ends_at: null, daily_ai_job_quota: 10, suspended_at: null });
     const fresh = (await db.query(`INSERT INTO organizations(id,name) VALUES($1,'Fresh') RETURNING
