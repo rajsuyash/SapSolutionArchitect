@@ -16,13 +16,12 @@ The worker must start with its working directory at the repository root so it fi
 
 ## Live demo
 
-- URL: https://web-production-7a4d.up.railway.app
-- Hosting: Railway project `sap-solution-architect-demo` (`ef5224a0-be48-461f-bfaa-dada466937d3`).
-- Services: `web`, `worker`, PostgreSQL, and private S3-compatible storage bucket `sap-demo-files`.
+- URL: https://sap-web-965411321011.europe-west1.run.app
+- Hosting: Google Cloud project `sap-solution-architect-demo` (`europe-west1`): Cloud Run service `sap-web`, Cloud Run worker pool `sap-worker`, Cloud SQL Postgres `sap-pg`, and a Cloud Storage bucket for files. See [Deployment](#deployment).
 - The browser first requests the private demo credentials, then the application account credentials. The presenter credentials are stored locally in the ignored `.env.demo-access` file; never commit or publish this file.
 - Three fictional project scenarios live in `fixtures/e2e/synthetic-projects.json`. The deployed demo uses real Anthropic analysis, not the test stub.
 
-Railway bills resource usage. Budget approximately **US$5–10/month for light demo hosting**, excluding Anthropic usage and tax; this is an estimate, not a spending cap. Its Hobby plan has a $5 monthly minimum credited toward usage. The existing workspace has separate spending controls shared with its other projects. See [Railway pricing](https://railway.com/pricing).
+Budget roughly **US$60/month for demo hosting** (always-on worker about $50, Cloud SQL micro about $10), excluding Anthropic usage and tax; this is an estimate, not a spending cap. A budget alert of ₹6,500 is set on the billing account.
 
 ## Local development
 
@@ -84,7 +83,7 @@ pnpm test:browser:synthetic
 
 The Playwright harness creates and removes an isolated local database, serves the production build over HTTPS, and tests all three fictional journeys with a deterministic worker. It covers progress after reload, retry, persisted scope review, and tenant isolation; it does not evaluate real AI quality. Local evidence is saved under ignored `playwright-report/` and `test-results/`. Live checks and screenshots are under `test-results/live-demo/`.
 
-For an explicitly authorized audit of the live Railway demo:
+For an explicitly authorized audit of the live demo:
 
 ```sh
 node --import tsx scripts/test-live-demo.ts --create-synthetic-data
