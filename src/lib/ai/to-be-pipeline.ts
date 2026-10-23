@@ -274,6 +274,8 @@ export function stepRequest(input: ToBeInput, references: DesignContext["referen
   };
 }
 
+const NO_CATALOG_GROUPS: readonly RegisterGroup[] = ["scope", "governance"];
+
 /** What the late register groups (documents, governance) read of the finished steps: who acts, which documents come out, which rules exist.
  * Taken from the assembled steps so rule ids are the final ones. */
 export const stepDigest = (steps: DetailedDesign["steps"]) => steps.map(step => ({
@@ -294,7 +296,8 @@ export function registerRequest(input: ToBeInput, references: DesignContext["ref
     companyContext: (discovery.companyContext ?? []).map(({ fieldId, label, value }) => ({ fieldId, label, value })),
     outline: { processName: outline.processName, steps: outline.steps, coverage: outline.coverage, openQuestions: outline.openQuestions },
     requirements: discovery.requirements.map(r => ({ id: r.id, asIsStepId: r.asIsStepId, critical: r.critical, kind: r.kind, statement: r.statement })),
-    references: references.map(({ id, fitType, capability, objects }) => ({ id, fitType, capability, objects })),
+    // The catalog is the largest part of a register request. Scope and governance rows carry no SAP basis, so they are not sent it.
+    ...(NO_CATALOG_GROUPS.includes(group) ? {} : { references: references.map(({ id, fitType, capability, objects }) => ({ id, fitType, capability, objects })) }),
     ...(steps && { steps: stepDigest(steps) }),
     inputOpenQuestions: discovery.openQuestions, validationErrors, ...catalogNote(input, references), ...repairNotes(validationErrors),
   };

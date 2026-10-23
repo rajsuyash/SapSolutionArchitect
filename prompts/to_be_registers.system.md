@@ -21,7 +21,8 @@ business rules with id and condition). The request contains:
   rows and the open questions.
 - requirements: every requirement (id, asIsStepId, critical, kind, statement).
 - references: the curated SAP catalog for this product and release (id, fitType,
-  capability, objects). It is the ONLY source of SAP facts.
+  capability, objects). It is the ONLY source of SAP facts. The groups scope and
+  governance carry no SAP basis and are not sent it; they name no SAP object.
 - steps (documents and governance only), inputOpenQuestions and validationErrors.
 
 When validationErrors is nonempty, regenerate the complete group correcting exactly

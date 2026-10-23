@@ -795,4 +795,10 @@ describe("late register groups (documents, governance)", () => {
     expect(h.stepCalls.filter(call => call.id === "TB-3")[1]!.body.messages[0]!.content).toContain("STEP_INTERIM_MISSING");
     expect(result.payload.design.steps[2]).toMatchObject({ phase: "Phase 1", interimProcess: null });
   });
+  it("sends the SAP catalog only to the groups whose rows can cite it", async () => {
+    const h = harness(); await h.run();
+    const withCatalog = (group: RegisterGroup) => "references" in JSON.parse(h.registerCalls.find(call => call.group === group)!.body.messages[0]!.content);
+    expect(Object.fromEntries(REGISTER_GROUP_NAMES.map(group => [group, withCatalog(group)]))).toEqual({
+      decisions: true, fitgap: true, foundation: true, integration: true, scope: false, reporting: true, documents: true, governance: false });
+  });
 });
