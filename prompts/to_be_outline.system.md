@@ -279,3 +279,5 @@ Further mechanical rules (each is also checked, none is optional):
   for a requirement, use IMPLEMENTED or CONDITIONAL.
 - The unknown-SAP-object check reads every text value of the outline (titles,
   purposes, rationales, questions), not only implementation text.
+
+{{WORKED_EXAMPLE}}

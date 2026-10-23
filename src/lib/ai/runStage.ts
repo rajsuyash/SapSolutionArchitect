@@ -9,6 +9,7 @@ import { loadToBeReferences, parseToBeInput, type ToBeOutput } from "./to-be";
 import { REGISTER_GROUP_NAMES, RegisterGroupSchemas } from "./design-registers";
 import { OutlineSchema, StepDetailSchema, TRUNCATED, runDesign, type Substage } from "./to-be-pipeline";
 import { interviewModelView } from "./interview-sentences";
+import { parseWorkedExample, renderWorkedExamples, withWorkedExample } from "./worked-example";
 
 /** The chat call needs no citations: it sees plain messages, and not the facts it cannot ask about. */
 const chatModelView = (input: InterviewInput) => input;
@@ -279,11 +280,17 @@ export function createStageRunner(config: Config, options: Options = {}) {
         // The stage holds ONE AI_MAX_CONCURRENCY permit (acquired above) for the whole design; the outline call and the
         // step fan-out run under it and never acquire again, so AI_MAX_CONCURRENCY=1 cannot deadlock. Fan-out width is
         // AI_DESIGN_PARALLELISM, so provider requests in flight can reach AI_MAX_CONCURRENCY x AI_DESIGN_PARALLELISM.
-        const [outlineSystem, stepSystem, registersSystem] = await call(() => Promise.all([
+        const [outlineTemplate, stepTemplate, registersTemplate, exampleRaw] = await call(() => Promise.all([
           readFile(new URL("../../../prompts/to_be_outline.system.md", import.meta.url), "utf8"),
           readFile(new URL("../../../prompts/to_be_step.system.md", import.meta.url), "utf8"),
           readFile(new URL("../../../prompts/to_be_registers.system.md", import.meta.url), "utf8"),
+          readFile(new URL("../../../fixtures/ai/to-be/worked-example.json", import.meta.url), "utf8"),
         ]));
+        // The worked examples come from the validated fixture, so a prompt can never show something the validators reject.
+        const examples = renderWorkedExamples(parseWorkedExample(JSON.parse(exampleRaw)));
+        const outlineSystem = withWorkedExample(outlineTemplate, examples.outline);
+        const stepSystem = withWorkedExample(stepTemplate, examples.step);
+        const registersSystem = withWorkedExample(registersTemplate, examples.registers);
         // The four register groups share one system prompt (a stable prefix) and differ by tool.
         const kinds = {
           to_be_outline: { system: outlineSystem, schema: OutlineSchema, name: "submit_to_be_outline", maxTokens: config.AI_TO_BE_OUTLINE_MAX_TOKENS },

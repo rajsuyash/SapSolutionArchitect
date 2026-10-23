@@ -60,6 +60,21 @@ function harness(handlers: Handlers = {}) {
 }
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
+describe("worked examples in the system prompts", () => {
+  it("sends the rendered example, with no unreplaced marker, in the outline, step and register calls", async () => {
+    const seen: RequestBody[] = [];
+    const h = harness();
+    const spy = vi.fn<typeof globalThis.fetch>(async (url, init) => { seen.push(JSON.parse(String(init?.body))); return h.fetch(url, init); });
+    await createStageRunner(settings(), { fetch: spy })("to_be", fixture());
+    const systems = new Map(seen.filter(body => body.tools).map(body => [body.tools[0]!.name, String(typeof body.system === "string" ? body.system : JSON.stringify(body.system))]));
+    expect(systems.size).toBe(2 + REGISTER_GROUP_NAMES.length);
+    for (const system of systems.values()) {
+      expect(system).toContain("Illustrative example from an unrelated process");
+      expect(system).not.toContain("{{WORKED_EXAMPLE}}");
+    }
+  });
+});
+
 describe("forced tool choice per provider", () => {
   const choiceOf = (body: RequestBody) => body.tool_choice;
   it("forces the outline, step and every register tool on DeepInfra, in the call and in the token count", async () => {

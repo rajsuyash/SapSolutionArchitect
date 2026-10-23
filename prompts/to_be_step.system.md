@@ -293,3 +293,5 @@ These trace rules are checked mechanically:
   step that lists it.
 - Each step needs a NORMAL test; if it has exceptions it also needs an EXCEPTION
   test, otherwise exceptionsNotApplicableReason must be set (never both).
+
+{{WORKED_EXAMPLE}}

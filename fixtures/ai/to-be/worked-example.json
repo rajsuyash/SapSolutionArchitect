@@ -1,0 +1,583 @@
+{
+  "note": "Fictional keg-loan example (returnable packaging). Rendered into the To-Be prompts and validated by tests/worked-example.test.ts; do not copy from eval fixtures.",
+  "context": {
+    "targetProduct": "S4HANA_ON_PREMISE",
+    "targetRelease": "2023",
+    "asIsSteps": [
+      {
+        "id": "AS-1",
+        "name": "Load kegs on the delivery run"
+      },
+      {
+        "id": "AS-2",
+        "name": "Work out rental fees by hand"
+      },
+      {
+        "id": "AS-3",
+        "name": "Recount the yard every Friday"
+      }
+    ],
+    "sources": [
+      {
+        "id": "SRC-1",
+        "locator": "Fictional ops notes / dispatch",
+        "text": "Every dispatch note lists the kegs loaded. Kegs stay the brewery's property while at a pub and must be traceable to that pub until they are collected. Drivers collect empties on the next delivery run."
+      },
+      {
+        "id": "SRC-2",
+        "locator": "Fictional ops notes / fees",
+        "text": "A pub keeping a keg for more than 60 days is charged a monthly rental fee. Fees are worked out by hand from a spreadsheet at month end."
+      },
+      {
+        "id": "SRC-3",
+        "locator": "Fictional ops notes / yard",
+        "text": "The warehouse lead recounts the yard every Friday and corrects the keg spreadsheet."
+      }
+    ],
+    "requirements": [
+      {
+        "id": "R-1",
+        "asIsStepId": "AS-1",
+        "sourceId": "SRC-1",
+        "critical": true,
+        "statement": "Kegs stay company property and must be traceable to the pub holding them until collected.",
+        "quote": "Kegs stay the brewery's property while at a pub and must be traceable to that pub until they are collected."
+      },
+      {
+        "id": "R-2",
+        "asIsStepId": "AS-2",
+        "sourceId": "SRC-2",
+        "critical": true,
+        "statement": "A rental fee is charged monthly once a pub keeps a keg beyond 60 days.",
+        "quote": "A pub keeping a keg for more than 60 days is charged a monthly rental fee."
+      }
+    ],
+    "conflicts": [],
+    "companyContext": [
+      {
+        "fieldId": "target_org_units",
+        "label": "Target SAP organisational units",
+        "value": "One plant for the brewery"
+      },
+      {
+        "fieldId": "retained_systems",
+        "label": "Systems we keep",
+        "value": "Route-planning app used by drivers"
+      },
+      {
+        "fieldId": "kpi_baselines",
+        "label": "KPI baselines",
+        "value": "Kegs unaccounted for: 42 kegs a month"
+      },
+      {
+        "fieldId": "kpi_targets",
+        "label": "KPI targets",
+        "value": "Kegs unaccounted for: fewer than 10 kegs a month"
+      }
+    ]
+  },
+  "outline": {
+    "schemaVersion": 1,
+    "processName": "Keg loan: dispatch, pick-up and rental settlement",
+    "steps": [
+      {
+        "id": "EX-1",
+        "sequence": 1,
+        "title": "Ship kegs with the order into the pub's returnable stock",
+        "purpose": "Hold every dispatched keg against the pub that has it, still owned by the brewery.",
+        "asIsStepIds": [
+          "AS-1"
+        ],
+        "requirementIds": [
+          "R-1"
+        ],
+        "implementation": {
+          "kind": "STANDARD",
+          "referenceIds": [
+            "S4-2023-INV-CUSTOMER-RETURNABLE-PACKAGING"
+          ]
+        }
+      },
+      {
+        "id": "EX-2",
+        "sequence": 2,
+        "title": "Record the pick-up and settle rental after the free period",
+        "purpose": "Return collected kegs to plant stock and charge monthly rental on kegs kept beyond the free period.",
+        "asIsStepIds": [
+          "AS-1",
+          "AS-2"
+        ],
+        "requirementIds": [
+          "R-1",
+          "R-2"
+        ],
+        "implementation": {
+          "kind": "CONFIGURATION",
+          "referenceIds": [
+            "S4-2023-SD-RP-RENTAL-FEES"
+          ]
+        }
+      }
+    ],
+    "eliminatedAsIsSteps": [
+      {
+        "asIsStepId": "AS-3",
+        "reason": "The pub-level stock balance replaces the Friday recount; only differences to the yard count are investigated."
+      }
+    ],
+    "coverage": [
+      {
+        "requirementId": "R-1",
+        "disposition": "IMPLEMENTED",
+        "stepIds": [
+          "EX-1",
+          "EX-2"
+        ],
+        "decisionId": null,
+        "rationale": "Dispatch posts kegs to the pub's balance and the pick-up posts them back, so a keg is never untraced between the two."
+      },
+      {
+        "requirementId": "R-2",
+        "disposition": "IMPLEMENTED",
+        "stepIds": [
+          "EX-2"
+        ],
+        "decisionId": null,
+        "rationale": "Rental is settled monthly after the free period; the day the 60 days start from is held on EX-OQ-1.",
+        "questionIds": [
+          "EX-OQ-1"
+        ]
+      }
+    ],
+    "conflictDecisions": [],
+    "openQuestions": [
+      {
+        "id": "EX-OQ-1",
+        "question": "Do the 60 days start at goods issue or at delivery to the pub?",
+        "owner": "Sales operations manager",
+        "affectedStepIds": [
+          "EX-2"
+        ]
+      }
+    ]
+  },
+  "details": {
+    "EX-1": {
+      "actor": "Dispatch clerk",
+      "trigger": "A confirmed sales order containing beer and keg lines is released for delivery.",
+      "inputDocuments": [
+        "Sales order with one keg line per keg size",
+        "Pub customer record"
+      ],
+      "outputDocuments": [
+        "Outbound delivery referencing the sales order",
+        "Posted goods issue moving kegs to the pub's returnable stock",
+        "Dispatch note listing the kegs"
+      ],
+      "actions": [
+        {
+          "actor": "Dispatch clerk",
+          "system": "SAP sales",
+          "operation": "Add a keg line per size under the beer line and confirm the ship-to pub.",
+          "fields": [
+            "order item",
+            "keg material",
+            "quantity",
+            "ship-to pub"
+          ]
+        },
+        {
+          "actor": "Dispatch clerk",
+          "system": "SAP delivery",
+          "operation": "Create the outbound delivery, pick the kegs by batch and post goods issue.",
+          "fields": [
+            "delivery number",
+            "batch",
+            "goods issue date"
+          ]
+        },
+        {
+          "actor": "System",
+          "system": "SAP inventory",
+          "operation": "Hold the issued quantity in the pub's returnable stock; the dispatch note prints from the delivery.",
+          "fields": [
+            "special stock partner",
+            "quantity",
+            "plant"
+          ]
+        }
+      ],
+      "businessRules": [
+        {
+          "id": "EX-1-BR-1",
+          "condition": "A keg line is on the delivery",
+          "response": "Post it to the pub's returnable stock; it is not invoiced and ownership does not pass."
+        },
+        {
+          "id": "EX-1-BR-2",
+          "condition": "Ordered kegs exceed unrestricted stock",
+          "response": "Deliver what is available and leave the rest open on the order; never post negative stock."
+        }
+      ],
+      "exceptions": [
+        {
+          "condition": "The driver loads fewer kegs than the delivery lists",
+          "response": "Correct the delivery quantity before goods issue; the shortfall stays open on the order.",
+          "owner": "Dispatch supervisor"
+        },
+        {
+          "condition": "Goods issue was posted to the wrong pub",
+          "response": "Reverse it and repost to the right pub the same day, then tell the driver.",
+          "owner": "Dispatch supervisor"
+        }
+      ],
+      "exceptionsNotApplicableReason": null,
+      "masterData": [
+        {
+          "object": "Keg material",
+          "fields": [
+            "batch management",
+            "inventory management",
+            "returnable packaging type"
+          ],
+          "owner": "Materials master data steward"
+        },
+        {
+          "object": "Pub customer record",
+          "fields": [
+            "ship-to address",
+            "partner for returnable stock"
+          ],
+          "owner": "Sales administration"
+        }
+      ],
+      "effects": {
+        "inventory": "Kegs move from plant stock to the pub's returnable stock, held per pub at plant level.",
+        "financial": "No revenue and no invoice for kegs; they stay in company valuation. Only beer lines are billed.",
+        "ownership": "The brewery keeps ownership; only custody passes to the pub until collection."
+      },
+      "implementation": {
+        "detail": "Ship kegs by ordinary sales order into special stock indicator V (customer returnable packaging stock), as in S4-2023-INV-CUSTOMER-RETURNABLE-PACKAGING; the shipment is not billed. Validation points: serial-level tracking of a single keg is not evidenced, so tracking is by pub, quantity and batch; the stock landing is taken from the special stock definition and must be checked in the fit-to-standard workshop."
+      },
+      "addedValue": "Every keg quantity sits against a named pub from the moment of dispatch, which replaces the Friday recount with a stock balance per pub.",
+      "acceptanceTests": [
+        {
+          "id": "EX-1-T-1",
+          "kind": "NORMAL",
+          "given": "An order for 20 beer kegs to pub P with 20 keg lines, and 25 kegs in unrestricted stock",
+          "when": "The clerk posts goods issue for the delivery",
+          "then": "Pub P's returnable stock shows 20 kegs, unrestricted stock falls to 5, and no invoice line exists for the kegs.",
+          "requirementIds": [
+            "R-1"
+          ]
+        },
+        {
+          "id": "EX-1-T-2",
+          "kind": "EXCEPTION",
+          "given": "The driver loaded 18 of the 20 listed kegs",
+          "when": "The clerk sets the delivery to 18 and posts goods issue",
+          "then": "Pub P holds 18 kegs and the order keeps 2 open for the next run.",
+          "requirementIds": [
+            "R-1"
+          ]
+        }
+      ]
+    },
+    "EX-2": {
+      "actor": "Dispatch clerk",
+      "trigger": "A driver returns from a collection run with empty kegs from one or more pubs.",
+      "inputDocuments": [
+        "Route-planning app pick-up list",
+        "Pub's returnable stock balance"
+      ],
+      "outputDocuments": [
+        "Pick-up posting moving kegs from the pub's stock to plant stock",
+        "Interim or final rental settlement request"
+      ],
+      "actions": [
+        {
+          "actor": "Dispatch clerk",
+          "system": "SAP inventory",
+          "operation": "Post each pub's collected quantity back to plant stock against that pub.",
+          "fields": [
+            "pub",
+            "batch",
+            "quantity",
+            "receipt date"
+          ]
+        },
+        {
+          "actor": "Billing clerk",
+          "system": "SAP billing",
+          "operation": "Run the monthly rental settlement and review the credit and debit memo requests before release.",
+          "fields": [
+            "pub",
+            "keg quantity",
+            "days held",
+            "fee"
+          ]
+        }
+      ],
+      "businessRules": [
+        {
+          "id": "EX-2-BR-1",
+          "condition": "A keg has been with a pub beyond the free period",
+          "response": "Calculate the monthly fee as a percentage of keg value; the start of the period is held on EX-OQ-1."
+        },
+        {
+          "id": "EX-2-BR-2",
+          "condition": "Collected quantity is above the pub's balance",
+          "response": "Post only the balance and raise the difference to the dispatch supervisor."
+        }
+      ],
+      "exceptions": [
+        {
+          "condition": "A fee request was created before a late pick-up was posted",
+          "response": "Delete the calculated fee before cancelling the request, then settle again.",
+          "owner": "Billing clerk"
+        }
+      ],
+      "exceptionsNotApplicableReason": null,
+      "masterData": [
+        {
+          "object": "Keg material",
+          "fields": [
+            "sales value used as the fee base",
+            "batch management"
+          ],
+          "owner": "Materials master data steward"
+        }
+      ],
+      "effects": {
+        "inventory": "Collected kegs move from the pub's stock back to plant stock.",
+        "financial": "Rental fees are billed per pub; kegs stay in company valuation.",
+        "ownership": "No change: the brewery owns the kegs throughout."
+      },
+      "implementation": {
+        "detail": "Use returnable packaging settlement with a rental-free time, as in S4-2023-SD-RP-RENTAL-FEES. Validation points: the fee is a percentage of keg value, not a flat monthly rate; the final settlement can generate a credit memo once 100% of value is paid, which must be switched off; whether the 60 days start at goods issue or delivery is open (EX-OQ-1)."
+      },
+      "addedValue": "Fees come from posted dispatch and pick-up dates instead of a month-end spreadsheet, so a pub is charged only for kegs it still holds.",
+      "acceptanceTests": [
+        {
+          "id": "EX-2-T-1",
+          "kind": "NORMAL",
+          "given": "Pub P holds 20 kegs and returns 12 after the free period",
+          "when": "The clerk posts the pick-up and runs the monthly settlement",
+          "then": "Pub P's balance is 8, plant stock rises by 12, and the fee request covers only the days each keg was held.",
+          "requirementIds": [
+            "R-1",
+            "R-2"
+          ]
+        },
+        {
+          "id": "EX-2-T-2",
+          "kind": "EXCEPTION",
+          "given": "The free-period start date is not yet decided",
+          "when": "The settlement runs",
+          "then": "The fee requests stay under billing block until EX-OQ-1 is answered.",
+          "requirementIds": [
+            "R-2"
+          ]
+        }
+      ]
+    }
+  },
+  "registers": {
+    "decisions": {
+      "keyDesignDecisions": [
+        {
+          "id": "KDD-1",
+          "topic": "Track kegs by quantity per pub or by serial number per keg",
+          "options": [
+            {
+              "name": "Quantity and batch per pub",
+              "pros": "Standard stock; no scanning at dispatch.",
+              "cons": "Cannot say which single keg is missing.",
+              "fitType": "STANDARD"
+            },
+            {
+              "name": "Serial number per keg",
+              "pros": "Gives each keg its own history.",
+              "cons": "Scan on every dispatch and pick-up; serial tracking in returnable stock is not evidenced.",
+              "fitType": "CONFIGURATION"
+            }
+          ],
+          "recommendation": "Quantity and batch per pub",
+          "rationale": "R-1 asks for traceability to a pub, not to a single keg, so the standard option meets it. Revisit if the unaccounted-keg KPI does not fall.",
+          "impactedStepIds": [
+            "EX-1",
+            "EX-2"
+          ],
+          "requirementIds": [
+            "R-1"
+          ],
+          "contextFieldIds": [
+            "kpi_targets"
+          ],
+          "owner": "Head of logistics",
+          "status": "PROPOSED"
+        }
+      ]
+    },
+    "fitgap": {
+      "fitGap": [
+        {
+          "requirementId": "R-1",
+          "classification": "STANDARD",
+          "ricefwType": null,
+          "justification": "Returnable packaging stock holds company-owned kegs per pub, so no custom object is needed.",
+          "stepIds": [
+            "EX-1",
+            "EX-2"
+          ],
+          "referenceIds": [
+            "S4-2023-INV-CUSTOMER-RETURNABLE-PACKAGING"
+          ],
+          "needsValidation": false,
+          "validationReason": null
+        },
+        {
+          "requirementId": "R-2",
+          "classification": "CONFIGURATION",
+          "ricefwType": null,
+          "justification": "Settlement with a rental-free time is customising, not delivered as is; a flat fee per keg would need an extension.",
+          "stepIds": [
+            "EX-2"
+          ],
+          "referenceIds": [
+            "S4-2023-SD-RP-RENTAL-FEES"
+          ],
+          "needsValidation": true,
+          "validationReason": "The fee is a percentage of keg value; confirm that is acceptable to the business."
+        }
+      ]
+    },
+    "foundation": {
+      "orgStructure": [
+        {
+          "id": "ORG-1",
+          "unitType": "Plant",
+          "proposal": "Use the one brewery plant for shipping; returnable stock is held per pub at plant level.",
+          "openPoint": null,
+          "requirementIds": [
+            "R-1"
+          ],
+          "contextFieldIds": [
+            "target_org_units"
+          ],
+          "stepIds": [
+            "EX-1"
+          ]
+        }
+      ],
+      "masterDataPrerequisites": [
+        {
+          "id": "MD-1",
+          "object": "Keg material",
+          "owner": "Materials master data steward",
+          "keyFields": [
+            "batch management",
+            "inventory management",
+            "returnable packaging type",
+            "sales value for fee base"
+          ],
+          "migrationSource": "Keg register spreadsheet",
+          "requirementIds": [
+            "R-1",
+            "R-2"
+          ],
+          "contextFieldIds": [],
+          "stepIds": [
+            "EX-1",
+            "EX-2"
+          ]
+        }
+      ],
+      "dataMigration": [
+        {
+          "id": "MIG-1",
+          "object": "Open keg balance per pub",
+          "source": "Keg register spreadsheet after a Friday recount",
+          "approach": "Cleanse to one row per pub and keg size, load as opening returnable stock, reconcile to the recount.",
+          "sequence": 1,
+          "risk": "Spreadsheet and yard counts disagree; freeze dispatch during the load.",
+          "requirementIds": [
+            "R-1"
+          ],
+          "contextFieldIds": [],
+          "stepIds": [
+            "EX-1"
+          ]
+        }
+      ],
+      "cutover": [
+        {
+          "id": "CUT-1",
+          "activity": "Freeze dispatch, load pub balances, reconcile to the recount, release dispatch.",
+          "sequence": 1,
+          "owner": "Head of logistics",
+          "risk": "Kegs dispatched during the freeze are missed; log them on paper and key them after go-live.",
+          "requirementIds": [
+            "R-1"
+          ],
+          "contextFieldIds": [],
+          "stepIds": [
+            "EX-1"
+          ]
+        }
+      ]
+    },
+    "integration": {
+      "interfaces": [
+        {
+          "id": "IF-1",
+          "counterpartSystem": "Route-planning app",
+          "direction": "INBOUND",
+          "triggerFrequency": "After each collection run, about daily",
+          "payload": "Pubs visited and kegs collected per pub",
+          "errorOwner": "Dispatch supervisor",
+          "outOfScopeReason": null,
+          "referenceIds": [
+            "S4-2023-INT-BTP-SIDE-BY-SIDE"
+          ],
+          "needsValidation": true,
+          "validationReason": "The released customer-return interface carries returns; confirm one exists for pick-ups from returnable stock.",
+          "requirementIds": [
+            "R-1"
+          ],
+          "contextFieldIds": [
+            "retained_systems"
+          ],
+          "stepIds": [
+            "EX-2"
+          ]
+        }
+      ],
+      "kpis": [
+        {
+          "id": "KPI-1",
+          "name": "Kegs unaccounted for at month end (count of kegs, per calendar month)",
+          "baseline": "42 kegs a month",
+          "target": "fewer than 10 kegs a month",
+          "measuredFrom": "Stock overview of returnable stock per pub, compared with the month-end yard count",
+          "referenceIds": [
+            "S4-2023-INV-CUSTOMER-RETURNABLE-PACKAGING"
+          ],
+          "needsValidation": false,
+          "validationReason": null,
+          "requirementIds": [
+            "R-1"
+          ],
+          "contextFieldIds": [
+            "kpi_baselines",
+            "kpi_targets"
+          ],
+          "stepIds": [
+            "EX-1",
+            "EX-2"
+          ]
+        }
+      ]
+    }
+  }
+}

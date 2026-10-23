@@ -131,3 +131,5 @@ not STANDARD. stepIds are the outline steps that implement the requirement.
   report that evidences the KPI, from the catalog (referenceIds), else needsValidation
   true with a reason. stepIds are the steps that produce the data. Make each KPI
   measurable: say what is counted and over what period inside name.
+
+{{WORKED_EXAMPLE}}
