@@ -215,8 +215,10 @@ test("a consultant conversation builds, confirms and generates from reviewed dis
     await db.connect();
     try {
       const jobs = (await db.query(`SELECT kind,status FROM consultant_jobs WHERE project_id=$1 ORDER BY created_at`, [id])).rows;
-      expect(jobs.map(job => job.kind)).toEqual(["INTERVIEW", "INTERVIEW", "TO_BE"]);
-      expect(jobs.map(job => job.status)).toEqual(["SUCCEEDED", "SUCCEEDED", "SUCCEEDED"]);
+      // Each message also leaves one usage row for its background extraction (written when the extraction lands, so the
+      // order against the chat row is not fixed).
+      expect(jobs.map(job => job.kind).sort()).toEqual(["EXTRACTION", "EXTRACTION", "INTERVIEW", "INTERVIEW", "TO_BE"]);
+      expect(jobs.every(job => job.status === "SUCCEEDED")).toBe(true);
       expect((await db.query(`SELECT 1 FROM discovery_versions WHERE project_id=$1`, [id])).rowCount).toBe(1);
     } finally { await db.end(); }
 

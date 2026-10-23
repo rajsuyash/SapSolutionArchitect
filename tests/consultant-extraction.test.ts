@@ -178,6 +178,31 @@ describe.skipIf(process.env.RUN_DB_TESTS !== "1")("background extraction of inte
     expect(buildInterviewInput(await state(ctx), ctx.messageId).unextractedMessageIds).toEqual([first]);
   });
 
+  it("records extraction usage where the daily limit and the admin cost views read it, without becoming a chat job", async () => {
+    const ctx = await start("Dispatch is booked by phone. The clerk keeps a list.");
+    const priced = ((name: "extraction_turn" | "interview_turn", raw: unknown, signal?: AbortSignal) => stage()(name, raw, signal)
+      .then(out => ({ ...out, metrics: { ...out.metrics, inputTokens: 1234, outputTokens: 56 } }))) as unknown as ReturnType<typeof createStageRunner>;
+    const key = randomUUID();
+    expect((await extractMessage(pool, priced, worker(ctx), ctx.messageId, key)).status).toBe("RECORDED");
+    await extractMessage(pool, priced, worker(ctx), ctx.messageId, key); // a replay must not count twice
+    const rows = (await pool.query(`SELECT kind,status,metrics FROM consultant_jobs WHERE project_id=$1`, [ctx.project.id])).rows;
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ kind: "EXTRACTION", status: "SUCCEEDED",
+      metrics: { stage: "extraction_turn", model: "synthetic-test-double", inputTokens: 1234, outputTokens: 56 } });
+    // Platform-admin cost views (job counts, tokens, per-model tokens) read consultant_jobs.metrics.
+    const org = (await pool.query(`SELECT jobs_24h,input_tokens_30d,output_tokens_30d FROM platform_admin_orgs() WHERE id=$1`, [ctx.owner.user.orgId])).rows[0];
+    expect(org).toMatchObject({ jobs_24h: 1, input_tokens_30d: "1234", output_tokens_30d: "56" });
+    const byModel = (await pool.query(`SELECT model,input_tokens_30d FROM platform_admin_usage_by_model() WHERE org_id=$1`, [ctx.owner.user.orgId])).rows;
+    expect(byModel).toEqual([{ model: "synthetic-test-double", input_tokens_30d: "1234" }]);
+    // The chat panel never sees it, and it does not occupy the workspace's one pending-job slot.
+    expect((await jobs.latest(ctx.owner.token, ctx.project.id, "RENTAL")).jobs).toHaveLength(0);
+    // It counts against the organization's daily job limit: with a limit of 1, the extraction plus this chat turn is over it.
+    const limited = createConsultantJobs(pool, auth, queue, async () => {}, { dailyJobLimit: 1 });
+    await expect(limited.enqueue(ctx.owner.token, ctx.project.id, "RENTAL",
+      { kind: "INTERVIEW", expectedRevision: ctx.revision, messageId: ctx.messageId }, randomUUID())).rejects.toMatchObject({ code: "RATE_LIMITED" });
+    expect((await enqueue(ctx)).kind).toBe("INTERVIEW");
+  });
+
   it("ignores malformed queue payloads, and awaitExtraction fails closed on timeout", async () => {
     const ctx = await start("Stores log returns on paper. Some are lost.");
     expect(await executeExtraction(pool, stage(), { id: randomUUID(), data: { nonsense: true } }, new AbortController().signal, 5)).toBeUndefined();

@@ -30,7 +30,7 @@ const request = z.discriminatedUnion("kind", [
   z.strictObject({ kind: z.literal("INTERVIEW"), expectedRevision: z.number().int().positive(), messageId: z.string().regex(/^[A-Za-z0-9_-]{1,64}$/) }),
   z.strictObject({ kind: z.literal("TO_BE"), expectedRevision: z.number().int().positive() }),
 ]);
-const metricsSchema = z.strictObject({ stage: z.enum(["interview_turn", "to_be"]), provider: z.enum(["stub", "anthropic", "deepinfra"]),
+const metricsSchema = z.strictObject({ stage: z.enum(["interview_turn", "extraction_turn", "to_be"]), provider: z.enum(["stub", "anthropic", "deepinfra"]),
   model: z.string().max(160), inputTokens: z.number().int().nonnegative(), outputTokens: z.number().int().nonnegative(),
   latencyMs: z.number().nonnegative(), attempts: z.number().int().nonnegative(),
   validationErrors: z.array(z.strictObject({ path: z.string().max(200), code: z.string().max(80), detail: z.string().max(200).optional() })).max(1000) });
@@ -142,7 +142,7 @@ export function createConsultantJobs(pool: Pool, auth: AuthService, queue: PgBos
           [user.orgId, projectId, user.id]);
         if (!member.rowCount) throw missing();
         const jobs = (await client.query<StoredJob>(`SELECT * FROM consultant_jobs WHERE org_id=$1 AND project_id=$2 AND variant_code=$3
-          ORDER BY created_at DESC,id DESC LIMIT 20`, [user.orgId, projectId, variantCode])).rows;
+          AND kind<>'EXTRACTION' ORDER BY created_at DESC,id DESC LIMIT 20`, [user.orgId, projectId, variantCode])).rows;
         return { jobs: jobs.map(expose) };
       }),
     /** Full validated To-Be result for one finished job. Visible to any project member; tenant isolation,
