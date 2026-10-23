@@ -332,3 +332,60 @@ describe("open decisions and conditional coverage", () => {
     expect(codes(input, draft)).toContain("UNKNOWN_DECISION");
   });
 });
+
+describe("enabling steps (no requirement of their own)", () => {
+  type Step = ReturnType<typeof fixture>["draft"]["steps"][number] & { enablesStepIds?: string[] };
+  /** Project/master-data set-up inserted first; its tests cite nothing because it implements no client requirement. */
+  function withEnabling(mutate: (step: Step) => void = () => undefined) {
+    const { input, draft } = fixture();
+    const step: Step = structuredClone(draft.steps[0]!);
+    step.id = "TB-0"; step.title = "Set up project structure and master data";
+    step.asIsStepIds = []; step.requirementIds = []; step.enablesStepIds = ["TB-1"];
+    step.businessRules = step.businessRules.map(rule => ({ ...rule, id: `TB-0-${rule.id}` }));
+    step.acceptanceTests = step.acceptanceTests.map(test => ({ ...test, id: `TB-0-${test.id}`, requirementIds: [] }));
+    mutate(step);
+    const steps = [step, ...draft.steps].map((item, i) => ({ ...item, sequence: i + 1 }));
+    return { input, draft: { ...draft, steps } };
+  }
+
+  it("accepts a step with no requirementIds when it names the steps it enables", () => {
+    const { input, draft } = withEnabling();
+    expect(evaluateDesign(input, draft).errors).toEqual([]);
+  });
+
+  it("rejects an empty-requirement step that enables nothing (a v1 rule that still holds)", () => {
+    const { input, draft } = withEnabling(step => { step.enablesStepIds = []; });
+    expect(codes(input, draft)).toContain("ENABLING_STEP_UNLINKED");
+    const omitted = withEnabling(step => { delete step.enablesStepIds; });
+    expect(codes(omitted.input, omitted.draft)).toContain("ENABLING_STEP_UNLINKED");
+  });
+
+  it("rejects unknown, self, duplicate and non-requirement-bearing enabled steps", () => {
+    for (const ids of [["TB-FAKE"], ["TB-0"], ["TB-1", "TB-1"]]) {
+      const { input, draft } = withEnabling(step => { step.enablesStepIds = ids; });
+      expect(codes(input, draft)).toEqual(expect.arrayContaining([expect.stringMatching(/^(UNKNOWN_STEP|ENABLING_TARGET_INVALID|DUPLICATE_TRACE)$/)]));
+    }
+  });
+
+  it("does not let an enabling step satisfy requirement coverage or critical testing", () => {
+    const { input, draft } = withEnabling();
+    draft.coverage = draft.coverage.map(item => item.requirementId === "R-1" ? { ...item, stepIds: ["TB-0", "TB-1"] } : item);
+    expect(codes(input, draft)).toContain("COVERAGE_TRACE_MISMATCH");
+    const dropped = withEnabling();
+    dropped.draft.steps = dropped.draft.steps.map(step => step.id === "TB-1" ? { ...step, requirementIds: [], enablesStepIds: [] } : step);
+    expect(codes(dropped.input, dropped.draft)).toEqual(expect.arrayContaining(["ENABLING_STEP_UNLINKED", "COVERAGE_TRACE_MISMATCH"]));
+  });
+
+  it("an enabling step's tests may cite only its own (empty) requirements; a requirement-bearing step still needs cited tests", () => {
+    const cites = withEnabling(step => { step.acceptanceTests[0]!.requirementIds = ["R-1"]; });
+    expect(codes(cites.input, cites.draft)).toContain("TEST_TRACE_MISMATCH");
+    const { input, draft } = fixture();
+    draft.steps[0]!.acceptanceTests[0]!.requirementIds = [];
+    expect(codes(input, draft)).toContain("TEST_TRACE_MISSING");
+  });
+
+  it("still rejects an empty requirementIds step when no step declares what it enables in a version 1 style draft", () => {
+    const { input, draft } = fixture(); draft.steps[0]!.requirementIds = [];
+    expect(codes(input, draft)).toContain("ENABLING_STEP_UNLINKED");
+  });
+});

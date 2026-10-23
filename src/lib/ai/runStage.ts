@@ -76,6 +76,13 @@ function jsonFromText(content: Anthropic.Message["content"]): unknown {
   catch { return null; }
 }
 
+/** What a response block was, without its reasoning: type and size, and the start of any visible text. Eval capture only. */
+const BLOCK_HEAD_CHARS = 400;
+function describeBlock(block: Anthropic.Message["content"][number]) {
+  return block.type === "text" ? { type: block.type, chars: block.text.length, head: block.text.slice(0, BLOCK_HEAD_CHARS) }
+    : { type: block.type, chars: JSON.stringify(block).length };
+}
+
 function pause(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
     const abort = () => { clearTimeout(timer); reject(signal.reason); };
@@ -145,6 +152,11 @@ export function createStageRunner(config: Config, options: Options = {}) {
   // and thinking:{type:"disabled"} as its reasoning controls (mapped to reasoning.effort / reasoning.enabled=false); no `thinking` is sent otherwise.
   const effort = provider === "openrouter" ? config.AI_REASONING_EFFORT ?? "max" : "none";
   const reasoningOff = provider === "openrouter" && effort === "none";
+  // OpenRouter only. DeepSeek documents that a forced tool choice is not supported while thinking is on, and live (2026-10-23, effort max,
+  // forced tool) 7 of 8 step and register calls ended their turn without calling the tool. With AI_REASONING_EFFORT unset, only the
+  // outline thinks; the step and register calls (a fixed outline to fill in) run with thinking disabled and the forced tool. An
+  // explicit AI_REASONING_EFFORT (or AI_NO_THINKING_STAGES) is the operator's choice and applies to every call as before.
+  const expansionThinkingOff = (substage: Substage) => provider === "openrouter" && config.AI_REASONING_EFFORT === undefined && substage !== "to_be_outline";
   // Two independent lanes of model-call slots: chat turns (interview_turn) and batch stages (to_be, problem_analysis).
   // A long batch stage can hold every batch slot and a chat turn still runs.
   const chatLane = createLane(config.AI_CHAT_CONCURRENCY), batchLane = createLane(config.AI_MAX_CONCURRENCY);
@@ -253,7 +265,9 @@ export function createStageRunner(config: Config, options: Options = {}) {
        * assembles the same Message. Only a single complete call of `tool.name` counts as output; anything else is null,
        * except that interview stages (textFallback) also accept one JSON text block when the model made no tool call. */
       const generate = async (a: { system: string; user: string; tool: Anthropic.Tool; maxTokens: number; guard: boolean;
-        thinkingOff: boolean; textFallback?: boolean; substage?: Substage }): Promise<unknown> => {
+        thinkingOff: boolean; textFallback?: boolean; substage?: Substage;
+        /** Eval only: called with a short description of a response that held no usable tool payload. */
+        onNoPayload?: (description: unknown) => void }): Promise<unknown> => {
         const messages: Anthropic.MessageParam[] = [{ role: "user", content: a.user }];
         const tools = [a.tool];
         const toolChoice = toolChoiceFor(a.tool.name);
@@ -290,6 +304,7 @@ export function createStageRunner(config: Config, options: Options = {}) {
         const output = message.stop_reason === "tool_use" && toolCalls.length === 1 && toolCalls[0]!.name === a.tool.name ? toolCalls[0]!.input
           : a.textFallback && !toolCalls.length ? jsonFromText(message.content) : null;
         if (a.textFallback && !toolCalls.length && output !== null) metrics.textFallbacks! += 1;
+        if (output === null) a.onNoPayload?.({ stopReason: message.stop_reason ?? null, blocks: message.content.map(describeBlock) });
         return output;
       };
 
@@ -318,6 +333,12 @@ export function createStageRunner(config: Config, options: Options = {}) {
         const tools = Object.fromEntries(Object.entries(kinds).map(([key, kind]) =>
           [key, { name: kind.name, input_schema: { ...z.toJSONSchema(kind.schema), type: "object" } } satisfies Anthropic.Tool]));
         const design = designInput;
+        const keepRaw = (substage: Substage, key: string, payload: unknown) => {
+          const failures = metrics.rawFailures ??= [];
+          if (failures.length >= RAW_FAILURE_MAX_ENTRIES) return;
+          const json = JSON.stringify(payload) ?? "undefined";
+          failures.push({ substage, key, attempt: failures.filter(item => item.substage === substage && item.key === key).length + 1, json: json.slice(0, RAW_FAILURE_MAX_CHARS), truncated: json.length > RAW_FAILURE_MAX_CHARS });
+        };
         const payload = await runDesign(design, designReferences, {
           parallelism: config.AI_DESIGN_PARALLELISM,
           maxOutlineRepairs: config.AI_TO_BE_OUTLINE_REPAIRS,
@@ -325,17 +346,16 @@ export function createStageRunner(config: Config, options: Options = {}) {
           invalid: () => fail("AI_INVALID_OUTPUT"),
           record: (issues) => { metrics.validationErrors.push(...issues); metrics.attemptIssues!.push(issues); },
           warn: (issues) => { metrics.warnings = [...(metrics.warnings ?? []), ...issues]; },
-          ...(options.captureRaw && { rawFailure: (substage: Substage, key: string, payload: unknown) => {
-            const failures = metrics.rawFailures ??= [];
-            if (failures.length >= RAW_FAILURE_MAX_ENTRIES) return;
-            const json = JSON.stringify(payload) ?? "undefined";
-            failures.push({ substage, key, attempt: failures.filter(item => item.substage === substage && item.key === key).length + 1, json: json.slice(0, RAW_FAILURE_MAX_CHARS), truncated: json.length > RAW_FAILURE_MAX_CHARS });
-          } }),
+          ...(options.captureRaw && { rawFailure: keepRaw }),
           ask: async (substage, request, group) => {
             const key = substage === "to_be_registers" ? `to_be_registers:${group}` : substage;
             const kind = kinds[key as keyof typeof kinds];
+            const rawKeyOf = substage === "to_be_registers" ? String(group) : substage === "to_be_step" ? (request as { step: { id: string } }).step.id : "outline";
             const output = await generate({ system: kind.system, user: JSON.stringify(request), tool: tools[key]!, maxTokens: kind.maxTokens,
-              guard: true, thinkingOff: reasoningOff || noThinking.has(substage) || noThinking.has("to_be"), substage });
+              guard: true, thinkingOff: reasoningOff || noThinking.has(substage) || noThinking.has("to_be") || expansionThinkingOff(substage),
+              // A model that ends its turn with the payload as a JSON text block instead of calling the tool is accepted exactly as in the interview.
+              textFallback: true, substage,
+              ...(options.captureRaw && { onNoPayload: (description: unknown) => keepRaw(substage, rawKeyOf, { noToolPayload: description }) }) });
             signal.throwIfAborted();
             return output;
           },

@@ -39,6 +39,7 @@ export function repairOutlineShape(input: Pick<ToBeInput["discovery"], "requirem
     }
     if (step.sequence !== i + 1) warn("REPAIRED_SEQUENCE", path);
     return { ...step, sequence: i + 1, asIsStepIds: dedupe(step.asIsStepIds, path), requirementIds,
+      ...(step.enablesStepIds !== undefined && { enablesStepIds: dedupe(step.enablesStepIds, path) }),
       ...(implementation && { implementation: { ...implementation, referenceIds } }) };
   });
 
@@ -101,7 +102,8 @@ export function restoreFromPrevious(previous: { value: unknown; issues: readonly
     let out: Obj = step;
     const restore = (field: "requirementIds" | "asIsStepIds") => {
       const path = `outline.steps.${old.i}.${field}`;
-      if (usable(step[field]) || !usable(old.step[field]) || named(path)) return;
+      // An enabling step has no requirements on purpose: nothing to restore.
+      if (usable(step[field]) || !usable(old.step[field]) || named(path) || (field === "requirementIds" && usable(step.enablesStepIds))) return;
       warn(`outline.steps.${i}.${field}`);
       out = { ...out, [field]: old.step[field] };
     };

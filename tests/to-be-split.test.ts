@@ -117,7 +117,7 @@ describe("OpenRouter provider", () => {
     expect(settings({ ...openrouter, AI_REASONING_EFFORT: " " }).AI_REASONING_EFFORT).toBeUndefined();
     expect(settings().AI_MODEL).toBe("claude-sonnet-5-5"); // other providers keep their default
   });
-  it("posts to openrouter.ai/api/v1/messages with a Bearer token, forced tools and the max effort, and never calls count_tokens", async () => {
+  it("posts to openrouter.ai/api/v1/messages with a Bearer token, forced tools, max effort on the outline only by default, and never calls count_tokens", async () => {
     const { requests, result } = await spied();
     expect(requests.length).toBe(1 + STEP_IDS.length + REGISTER_GROUP_NAMES.length); // calls only: no count request
     for (const request of requests) {
@@ -126,8 +126,10 @@ describe("OpenRouter provider", () => {
       expect(request.headers.has("x-api-key")).toBe(false);
       expect(request.body.model).toBe(MODEL);
       expect(request.body.tool_choice).toEqual({ type: "tool", name: request.body.tools[0]!.name, disable_parallel_tool_use: true });
-      expect(request.body.output_config).toEqual({ effort: "max" });
-      expect(request.body.thinking).toBeUndefined();
+      // DeepSeek does not support a forced tool while thinking: with no explicit effort only the outline thinks.
+      const isOutline = request.body.tools[0]!.name === "submit_to_be_outline";
+      expect(request.body.output_config).toEqual(isOutline ? { effort: "max" } : undefined);
+      expect(request.body.thinking).toEqual(isOutline ? undefined : { type: "disabled" });
     }
     expect(result.metrics).toMatchObject({ provider: "openrouter", model: MODEL, thinkingDisabled: false });
   });
@@ -139,6 +141,12 @@ describe("OpenRouter provider", () => {
       tool_choice: { type: "tool", name: "submit_to_be_outline", disable_parallel_tool_use: true }, output_config: { effort: "max" } });
     if (process.env.PRINT_OPENROUTER_BODY) writeFileSync(process.env.PRINT_OPENROUTER_BODY, JSON.stringify({ ...outline, system: `<${String(outline.system).length} chars>`,
       messages: `<${JSON.stringify(outline.messages).length} chars>`, tools: outline.tools.map(tool => ({ name: tool.name, input_schema: "<JSON schema>" })) }, null, 2));
+  });
+  it("an explicit AI_REASONING_EFFORT applies to every call, steps and registers included", async () => {
+    for (const request of (await spied({ AI_REASONING_EFFORT: "max" })).requests) {
+      expect(request.body.output_config).toEqual({ effort: "max" });
+      expect(request.body.thinking).toBeUndefined();
+    }
   });
   it("applies AI_REASONING_EFFORT and AI_NO_THINKING_STAGES per request kind", async () => {
     const medium = (await spied({ AI_REASONING_EFFORT: "medium" })).requests;
@@ -515,13 +523,13 @@ describe("model slips in tool inputs", () => {
     expect(notes(result)).toEqual(expect.arrayContaining([`REPAIRED_STRINGIFIED_JSON@draft.steps.0.actions`, "REPAIRED_STRINGIFIED_JSON@draft.keyDesignDecisions"]));
   });
   it("tells the repair request where each problem is and what kind it is, with no model text", async () => {
-    const h = harness({ outline: n => n === 1 ? { ...split.outline, coverage: "private-model-prose", steps: split.outline.steps.map((step, i) => i === 0 ? { ...step, requirementIds: [] } : step) } : split.outline });
+    const h = harness({ outline: n => n === 1 ? { ...split.outline, coverage: "private-model-prose", steps: split.outline.steps.map((step, i) => i === 0 ? { ...step, implementation: { ...step.implementation, kind: "LICENSE_DEPENDENT" } } : step) } : split.outline });
     await h.run();
     const first = h.outlineCalls[0]!.messages[0]!.content, repair = JSON.parse(h.outlineCalls[1]!.messages[0]!.content) as { repairNote: string; validationErrors: { path: string; detail: string }[] };
     expect(first).not.toContain("repairNote");
     expect(repair.validationErrors).toEqual(expect.arrayContaining([{ code: "INVALID_DRAFT", path: "outline.coverage", detail: "invalid_type: expected array, received string" }]));
     expect(repair.repairNote).toContain("outline.coverage: expected an array, got a string");
-    expect(repair.repairNote).toContain("outline.steps.0.requirementIds: array at least 1");
+    expect(repair.repairNote).toContain("outline.steps.0.implementation.kind: one of 6 allowed values");
     expect(JSON.stringify(repair)).not.toContain("private-model-prose");
   });
   it("keeps raw failed payloads only when the eval asks for them, capped, and never in production metrics", async () => {
@@ -535,5 +543,83 @@ describe("model slips in tool inputs", () => {
     const prod = harness({ outline: () => bad });
     const failedProd = await prod.run().then(() => null, e => e);
     expect(failedProd.metrics.rawFailures).toBeUndefined();
+  });
+});
+
+describe("enabling steps through the pipeline", () => {
+  const outlineWithSetup = () => ({ ...split.outline, steps: [
+    { id: "TB-0", sequence: 1, title: "Set up project and master data", purpose: "Create the project structure the hire items hang on",
+      asIsStepIds: [], requirementIds: [] as string[], enablesStepIds: ["TB-1"], implementation: { kind: "MANUAL" as const, referenceIds: [] as string[] } },
+    ...split.outline.steps.map((step, i) => ({ ...step, sequence: i + 2 }))] });
+  const setupDetail = () => {
+    const base = structuredClone(split.details["TB-1"]!);
+    return { ...base, implementation: { detail: "Manual set-up by the project office." },
+      businessRules: base.businessRules.map(rule => ({ ...rule, id: `TB-0-${rule.id}` })),
+      acceptanceTests: base.acceptanceTests.map(test => ({ ...test, id: `TB-0-${test.id}`, requirementIds: [] as string[] })) };
+  };
+
+  it("accepts an outline step with no requirements that enables a step, expands it with the enabled step's requirements in view, and assembles it", async () => {
+    const h = harness({ outline: () => outlineWithSetup(), step: id => id === "TB-0" ? setupDetail() : split.details[id] });
+    const result = await h.run();
+    const setup = result.payload.design.steps[0]!;
+    expect(setup).toMatchObject({ id: "TB-0", requirementIds: [], enablesStepIds: ["TB-1"] });
+    expect(result.payload.design.steps[1]).not.toHaveProperty("enablesStepIds");
+    const request = JSON.parse(h.stepCalls.find(call => call.id === "TB-0")!.body.messages[0]!.content) as { requirements: unknown[]; enables: { id: string; requirements: { id: string }[] }[] };
+    expect(request.requirements).toEqual([]);
+    expect(request.enables.map(item => item.id)).toEqual(["TB-1"]);
+    expect(request.enables[0]!.requirements.map(item => item.id)).toEqual(["R-1", "R-2"]);
+    expect(JSON.parse(h.stepCalls.find(call => call.id === "TB-1")!.body.messages[0]!.content)).not.toHaveProperty("enables");
+  });
+
+  it("still fails closed when an empty-requirement outline step enables nothing", async () => {
+    const bad = outlineWithSetup(); delete (bad.steps[0] as { enablesStepIds?: string[] }).enablesStepIds;
+    const h = harness({ outline: () => bad, overrides: { AI_TO_BE_OUTLINE_REPAIRS: "0" } });
+    await expect(h.run()).rejects.toMatchObject({ code: "AI_INVALID_OUTPUT" });
+  });
+});
+
+describe("To-Be answers without a tool call", () => {
+  const textMessage = (text: string, stop = "end_turn", extra: unknown[] = []) => new Response(JSON.stringify({ id: "msg_synthetic", type: "message", role: "assistant",
+    model: "synthetic", content: [...extra, { type: "text", text }], stop_reason: stop, usage: { input_tokens: 10, output_tokens: 20 } }), { headers: { "content-type": "application/json" } });
+  const fenced = (value: unknown) => "```json\n" + JSON.stringify(value) + "\n```";
+
+  it("accepts a step and an outline sent as one JSON text block, counts them as textFallbacks, and validates them like a tool call", async () => {
+    const h = harness({ outline: () => textMessage(JSON.stringify(split.outline)), step: id => id === STEP_IDS[0] ? textMessage(fenced(split.details[id])) : split.details[id],
+      registers: group => group === "fitgap" ? textMessage(JSON.stringify(rentalRegisterGroups.fitgap)) : rentalRegisterGroups[group] });
+    const result = await h.run();
+    expect(result.metrics.textFallbacks).toBe(3);
+    expect(h.stepCount[STEP_IDS[0]!]).toBe(1);
+    expect(result.payload.design).toEqual(rentalDraftV2);
+  });
+
+  it("does not trust text that is invalid for the schema: it is repaired once, then fails closed", async () => {
+    const wrong = { ...split.details[STEP_IDS[0]!]!, actions: [] };
+    const h = harness({ step: id => id === STEP_IDS[0] ? textMessage(JSON.stringify(wrong)) : split.details[id] });
+    await expect(h.run()).rejects.toMatchObject({ code: "AI_INVALID_OUTPUT" });
+    expect(h.stepCount[STEP_IDS[0]!]).toBe(2);
+  });
+
+  it("treats prose, two text blocks and a text block next to a tool call as no payload", async () => {
+    const h = harness({ step: (id, n) => id === STEP_IDS[0] && n === 1 ? textMessage("I will now design the step.") : split.details[id] });
+    const result = await h.run();
+    expect(h.stepCount[STEP_IDS[0]!]).toBe(2);
+    expect(result.metrics.textFallbacks).toBe(0);
+    expect(result.metrics.validationErrors).toEqual(expect.arrayContaining([expect.objectContaining({ code: "NO_TOOL_PAYLOAD" })]));
+  });
+
+  it("keeps a description of a no-tool answer (stop reason, block types, start of text) only when the eval asks for raw capture", async () => {
+    const answer = () => textMessage("Here is my plan, not JSON.", "end_turn", [{ type: "thinking", thinking: "private reasoning", signature: "s" }]);
+    const run = async (captureRaw: boolean) => {
+      const h = harness({ step: (id, n) => id === STEP_IDS[0] && n === 1 ? answer() : split.details[id] });
+      const fetch = h.fetch;
+      return (await createStageRunner(settings(), { fetch, captureRaw })("to_be", fixture())).metrics;
+    };
+    const on = await run(true);
+    expect(on.rawFailures).toHaveLength(1);
+    const kept = JSON.parse(on.rawFailures![0]!.json) as { noToolPayload: { stopReason: string; blocks: { type: string; head?: string }[] } };
+    expect(on.rawFailures![0]).toMatchObject({ substage: "to_be_step", key: STEP_IDS[0] });
+    expect(kept.noToolPayload).toMatchObject({ stopReason: "end_turn", blocks: [{ type: "thinking" }, { type: "text", head: "Here is my plan, not JSON." }] });
+    expect(on.rawFailures![0]!.json).not.toContain("private reasoning");
+    expect((await run(false)).rawFailures).toBeUndefined();
   });
 });

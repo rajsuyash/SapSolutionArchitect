@@ -43,7 +43,11 @@ export const DetailedDesignSchema = z.strictObject({
   schemaVersion: z.union([z.literal(1), z.literal(2)]), processName: text, ...RegistersShape,
   steps: list(z.strictObject({
     id, sequence: z.number().int().positive(), title: text,
-    asIsStepIds: ids, requirementIds: ids.min(1), actor: text, trigger: text,
+    asIsStepIds: ids, requirementIds: ids,
+    /** Ids of the steps this one makes possible (project/WBS set-up, master data, org units). A step may leave requirementIds
+     * empty only when this is non-empty; version 1 designs never carry it, so their rule (at least one requirement) is unchanged. */
+    enablesStepIds: ids.optional(),
+    actor: text, trigger: text,
     inputDocuments: texts, outputDocuments: texts,
     actions: list(z.strictObject({ actor: text, system: text, operation: text, fields: texts })).min(1),
     businessRules: list(z.strictObject({ id, condition: text, response: text })).min(1),
@@ -60,7 +64,7 @@ export const DetailedDesignSchema = z.strictObject({
     addedValue: text,
     acceptanceTests: list(z.strictObject({
       id, kind: z.enum(["NORMAL", "EXCEPTION"]), given: text, when: text, then: text,
-      requirementIds: ids.min(1),
+      requirementIds: ids,
     })).min(1),
   })).min(1),
   eliminatedAsIsSteps: list(z.strictObject({ asIsStepId: id, reason: text })),
@@ -184,6 +188,14 @@ export function evaluateDesign(input: unknown, value: unknown): DesignEvaluation
     if (step.sequence !== i + 1) error("INVALID_SEQUENCE", path);
     unique(step.asIsStepIds, path, "DUPLICATE_TRACE");
     unique(step.requirementIds, path, "DUPLICATE_TRACE");
+    // A step with no requirement of its own is an enabling step; it must name the requirement-bearing steps it enables.
+    unique(step.enablesStepIds ?? [], path, "DUPLICATE_TRACE");
+    if (!step.requirementIds.length && !step.enablesStepIds?.length) error("ENABLING_STEP_UNLINKED", path);
+    for (const ref of step.enablesStepIds ?? []) {
+      const target = steps.get(ref);
+      if (!target) error("UNKNOWN_STEP", path);
+      else if (ref === step.id || !target.requirementIds.length) error("ENABLING_TARGET_INVALID", path);
+    }
     checkDecisions(step.decisionIds, path);
     if (step.asIsStepIds.some(ref => !asIs.has(ref))) error("UNKNOWN_AS_IS", path);
     for (const ref of step.requirementIds) {
@@ -197,6 +209,7 @@ export function evaluateDesign(input: unknown, value: unknown): DesignEvaluation
     if (step.exceptions.length && !step.acceptanceTests.some(test => test.kind === "EXCEPTION")) error("EXCEPTION_TEST_MISSING", path);
     step.acceptanceTests.forEach((test, j) => {
       unique(test.requirementIds, `${path}.acceptanceTests.${j}`, "DUPLICATE_TRACE");
+      if (step.requirementIds.length && !test.requirementIds.length) error("TEST_TRACE_MISSING", `${path}.acceptanceTests.${j}`);
       for (const ref of test.requirementIds) {
         if (!requirements.has(ref)) error("UNKNOWN_REQUIREMENT", `${path}.acceptanceTests.${j}`);
         else if (!step.requirementIds.includes(ref)) error("TEST_TRACE_MISMATCH", `${path}.acceptanceTests.${j}`);

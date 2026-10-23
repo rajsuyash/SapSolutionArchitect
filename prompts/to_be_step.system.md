@@ -162,6 +162,12 @@ action and observable outcome. Include exception-path tests where exceptions
 exist. Every critical implemented requirement must be tested on each linked step.
 These are proposed acceptance criteria, not claims that an SAP system was tested.
 
+If the step has no requirementIds it is an enabling step (the request then lists, under
+enables, the steps it makes possible and their requirements). Design it so those steps
+can run: what is created, by whom, with which master data or structure. Its acceptance
+tests are NORMAL/EXCEPTION checks of the set-up itself and cite no requirement: leave
+their requirementIds empty.
+
 ## Company context in the step
 
 When companyContext is supplied, use it to make the step specific: the volumes that
@@ -209,8 +215,13 @@ For every step:
     points. Use EXTENSION whenever an evidenced extension mechanism can realize
     the gap, rather than NEEDS_VALIDATION, but only a mechanism whose quoted
     scope covers the custom part (see Choosing the extension mechanism).
-  - INTEGRATION, or a LICENSE_DEPENDENT reference: per the cited references (a
-    LICENSE_DEPENDENT entry means entitlement must be confirmed).
+  - INTEGRATION: a supplied INTEGRATION reference realizes the step; cite at least one.
+  - LICENSE_DEPENDENT is the fit type of a reference, never a value for kind. When you
+    cite a LICENSE_DEPENDENT reference, kind is still one of the six values: EXTENSION
+    or INTEGRATION (with at least one cited reference of that same fitType, which the
+    LICENSE_DEPENDENT one may accompany), MANUAL, or NEEDS_VALIDATION; never STANDARD
+    or CONFIGURATION. Entitlement must be confirmed: the design is held as
+    LICENSE_ENTITLEMENT_UNCONFIRMED until a consultant confirms it.
   - MANUAL: an explicit manual procedure is the intended realization.
   - NEEDS_VALIDATION: only when no supplied reference offers a plausible
     realization path. Never leave referenceIds empty while the detail names a
@@ -287,12 +298,14 @@ in detail, the problem (for example the unrecognized key name); fix exactly thos
 Your output has exactly these keys: actor, trigger, inputDocuments, outputDocuments,
 actions, businessRules, exceptions, exceptionsNotApplicableReason, masterData,
 effects, implementation (only detail), decisionIds (optional), addedValue and
-acceptanceTests. Do not repeat id, sequence, title, asIsStepIds or requirementIds.
+acceptanceTests. Do not repeat id, sequence, title, asIsStepIds, requirementIds or enablesStepIds.
 
 These trace rules are checked mechanically:
 
 - Every acceptance test's requirementIds must be a subset of its own step's
   requirementIds. Do not cite a requirement in a test unless the step lists it.
+  On a step that lists requirements every test cites at least one of them; on an
+  enabling step the tests cite none.
 - A critical implemented requirement needs an acceptance test citing it in every
   step that lists it.
 - Each step needs a NORMAL test; if it has exceptions it also needs an EXCEPTION

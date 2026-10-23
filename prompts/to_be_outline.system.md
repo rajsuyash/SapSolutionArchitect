@@ -134,6 +134,14 @@ constraints and timeline. It is design input, not background:
   belonging to one of the step's asIsStepIds. Every supplied requirement must end
   up in coverage exactly once, and every implemented one on exactly the steps that
   list it.
+- Enabling steps. A step that implements no client requirement directly but that other
+  steps cannot run without (project or WBS set-up, master-data set-up, organisational
+  unit set-up) is allowed. Leave its requirementIds empty and list in enablesStepIds
+  the ids of the steps it enables, each of which must itself list at least one
+  requirement. Do not use this to hide a requirement: every requirement is still
+  implemented by a step that lists it in requirementIds, and coverage names only
+  those steps, never an enabling step. A step with requirements omits enablesStepIds
+  unless it also sets something up for another step.
 - Raise open questions here, with an accountable owner and the steps they hold in
   affectedStepIds. The step calls can only describe a hold; they cannot add a
   question, so every missing policy you can already see belongs in openQuestions.
@@ -180,8 +188,13 @@ For every step:
     points. Use EXTENSION whenever an evidenced extension mechanism can realize
     the gap, rather than NEEDS_VALIDATION, but only a mechanism whose quoted
     scope covers the custom part (see Choosing the extension mechanism).
-  - INTEGRATION, or a LICENSE_DEPENDENT reference: per the cited references (a
-    LICENSE_DEPENDENT entry means entitlement must be confirmed).
+  - INTEGRATION: a supplied INTEGRATION reference realizes the step; cite at least one.
+  - LICENSE_DEPENDENT is the fit type of a reference, never a value for kind. When you
+    cite a LICENSE_DEPENDENT reference, kind is still one of the six values: EXTENSION
+    or INTEGRATION (with at least one cited reference of that same fitType, which the
+    LICENSE_DEPENDENT one may accompany), MANUAL, or NEEDS_VALIDATION; never STANDARD
+    or CONFIGURATION. Entitlement must be confirmed: the design is held as
+    LICENSE_ENTITLEMENT_UNCONFIRMED until a consultant confirms it.
   - MANUAL: an explicit manual procedure is the intended realization.
   - NEEDS_VALIDATION: only when no supplied reference offers a plausible
     realization path. Never leave referenceIds empty while the detail names a
@@ -265,6 +278,8 @@ These trace rules are checked mechanically:
   requirement's own As-Is step).
 - Every acceptance test's requirementIds must be a subset of its own step's
   requirementIds. Do not cite a requirement in a test unless the step lists it.
+  On a step that lists requirements every test cites at least one of them; on an
+  enabling step the tests cite none.
 - Each requirement implemented in coverage must list exactly the steps whose
   requirementIds contain it, no more and no fewer. A DEFERRED or REJECTED
   requirement has no stepIds and appears in no step.
@@ -278,7 +293,9 @@ Further mechanical rules (each is also checked, none is optional):
 - Ids you create (steps, open questions) are 1 to 64 characters of letters, digits,
   underscore or hyphen, and unique across all steps and open questions. No list of
   ids may repeat an id. Every text value is non-empty.
-- Every step lists at least one requirementId, and `sequence` is exactly 1..n in the
+- Every step lists at least one requirementId, or is an enabling step with an empty
+  requirementIds and a non-empty enablesStepIds (never both empty, never a step that
+  enables itself or another enabling step), and `sequence` is exactly 1..n in the
   order the steps appear.
 - Every open question lists at least one step id in affectedStepIds, taken from
   your own steps.

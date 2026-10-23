@@ -20,7 +20,7 @@ export const OutlineSchema = z.strictObject({
   schemaVersion: z.literal(1), processName: text,
   steps: list(z.strictObject({
     id, sequence: z.number().int().positive(), title: text, purpose: text,
-    asIsStepIds: ids, requirementIds: ids.min(1),
+    asIsStepIds: ids, requirementIds: ids, enablesStepIds: DetailedDesignSchema.shape.steps.element.shape.enablesStepIds,
     implementation: z.strictObject({ kind: z.enum(IMPLEMENTATION_KINDS), referenceIds: ids }),
   })).min(1),
   eliminatedAsIsSteps: DetailedDesignSchema.shape.eliminatedAsIsSteps,
@@ -33,7 +33,7 @@ type OutlineStep = Outline["steps"][number];
 
 /** Everything in a design step that the outline does not already fix. Derived from DetailedDesignSchema so the two cannot drift. */
 export const StepDetailSchema = DetailedDesignSchema.shape.steps.element
-  .omit({ id: true, sequence: true, title: true, asIsStepIds: true, requirementIds: true, implementation: true })
+  .omit({ id: true, sequence: true, title: true, asIsStepIds: true, requirementIds: true, enablesStepIds: true, implementation: true })
   .extend({ implementation: z.strictObject({ detail: text }) });
 export type StepDetail = z.infer<typeof StepDetailSchema>;
 
@@ -72,6 +72,7 @@ const rePath = (issues: ValidationIssue[], from: string, to: string): Validation
 function skeleton(outline: Outline): DetailedDesign {
   const steps = outline.steps.map((step): DetailedDesign["steps"][number] => ({
     id: step.id, sequence: step.sequence, title: step.title, asIsStepIds: step.asIsStepIds, requirementIds: step.requirementIds,
+    ...(step.enablesStepIds && { enablesStepIds: step.enablesStepIds }),
     actor: PLACEHOLDER, trigger: PLACEHOLDER, inputDocuments: [PLACEHOLDER], outputDocuments: [PLACEHOLDER],
     actions: [{ actor: PLACEHOLDER, system: PLACEHOLDER, operation: PLACEHOLDER, fields: [PLACEHOLDER] }],
     businessRules: [{ id: `${step.id}-PH-BR`, condition: PLACEHOLDER, response: PLACEHOLDER }],
@@ -116,6 +117,7 @@ export function assemble(outline: Outline, details: ReadonlyMap<string, StepDeta
       const { implementation, businessRules, acceptanceTests, ...rest } = details.get(step.id)!;
       return {
         id: step.id, sequence: step.sequence, title: step.title, asIsStepIds: step.asIsStepIds, requirementIds: step.requirementIds,
+        ...(step.enablesStepIds && { enablesStepIds: step.enablesStepIds }),
         ...rest,
         businessRules: businessRules.map(rule => ({ ...rule, id: unique(step.id, rule.id) })),
         implementation: { kind: step.implementation.kind, detail: implementation.detail, referenceIds: step.implementation.referenceIds },
@@ -182,6 +184,10 @@ export function stepRequest(input: ToBeInput, references: DesignContext["referen
       coverage: outline.coverage.filter(item => step.requirementIds.includes(item.requirementId)),
       conflictDecisions: outline.conflictDecisions, openQuestions: outline.openQuestions },
     step, asIsSteps,
+    // An enabling step has no requirement of its own: it sees what the steps it enables must achieve, to design for them.
+    ...(step.enablesStepIds?.length && { enables: outline.steps.filter(other => step.enablesStepIds!.includes(other.id)).map(other => ({
+      id: other.id, title: other.title, purpose: other.purpose,
+      requirements: discovery.requirements.filter(r => other.requirementIds.includes(r.id)).map(r => ({ id: r.id, statement: r.statement })) })) }),
     requirements: requirements.map(r => ({ id: r.id, asIsStepId: r.asIsStepId, critical: r.critical, kind: r.kind,
       statement: r.statement, sourceId: r.evidence.sourceId, quote: r.evidence.quote })),
     sources: discovery.sources.filter(source => sourceIds.has(source.id)).map(({ id, locator, text }) => ({ id, locator, text })),
