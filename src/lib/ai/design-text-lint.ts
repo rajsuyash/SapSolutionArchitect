@@ -44,14 +44,18 @@ export const INTERNAL_TERM_PATTERNS: readonly RegExp[] = [
   /\b(?:to_be_[a-z_]+|submit_to_be\w*)\b/, /\b(?:needsValidation|referenceIds|stepIds|requirementIds|contextFieldIds|validationReason)\b/,
   /\b(?:UNKNOWN|DUPLICATE|REGISTER|REPAIRED|INVALID)_[A-Z_]{3,}\b/,
 ];
+/** The element a text field belongs to: `draft.steps.3` for anything inside the fourth step, `draft.roles.0` for a register row, `draft.processName` for a single field. */
+export const elementRoot = (path: string) => {
+  const parts = path.split(".");
+  return parts.slice(0, /^\d+$/.test(parts[2] ?? "") ? 3 : 2).join(".");
+};
 export type InternalTermHit = { path: string; term: string };
 const MAX_INTERNAL_HITS = 25;
 /** One hit per (element, term): `path` is the element (a step, a register row), `term` the matched words. */
 export function internalTermHits(design: unknown): InternalTermHit[] {
   const seen = new Set<string>(), hits: InternalTermHit[] = [];
   for (const [path, value] of strings(design, "draft")) {
-    const parts = path.split(".");
-    const root = parts.slice(0, /^\d+$/.test(parts[2] ?? "") ? 3 : 2).join(".");
+    const root = elementRoot(path);
     for (const pattern of INTERNAL_TERM_PATTERNS) {
       for (const match of value.matchAll(new RegExp(pattern.source, `${pattern.flags}g`))) {
         const term = match[0].toLowerCase().slice(0, 40), key = `${root}:${term}`;
@@ -64,9 +68,14 @@ export function internalTermHits(design: unknown): InternalTermHit[] {
 
 // --- ids the text cites that the design does not have ---------------------------------------------------------------------------
 
-/** An id-shaped token: upper-case segments joined by hyphens and ending in a number (ETO-OQ-4, TB-12, ETO-5-1-BR-2). */
-const ID_TOKEN = /(?<![A-Za-z0-9_-])[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)*-\d+(?![A-Za-z0-9_-])/g;
-const idFamily = (id: string) => /-\d+$/.test(id) ? id.replace(/\d+$/, "#") : undefined;
+/** An id-shaped token: upper-case segments joined by hyphens and ending in a number (ETO-OQ-4, TB-12, ETO-5-1-BR-2), optionally with a letter suffix after the number
+ * (ETO-OQ-5-F1: a sub-id of a question the design never defined). */
+const ID_TOKEN = /(?<![A-Za-z0-9_-])[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)*-\d+(?:-[A-Z]+\d*)*(?![A-Za-z0-9_-])/g;
+/** The pattern an id follows: its last number replaced by `#` (ETO-OQ-4 and ETO-OQ-5-F1 are both ETO-OQ-#). */
+export const idFamily = (id: string) => {
+  const base = id.replace(/(?:-[A-Z]+\d*)+$/, "");
+  return /-\d+$/.test(base) ? base.replace(/\d+$/, "#") : undefined;
+};
 /** Every string under an `id` key, at any depth: the ids a design gives its own steps, rules, tests, questions and register rows. */
 export function* designIds(value: unknown): Generator<string> {
   if (Array.isArray(value)) for (const item of value) yield* designIds(item);
@@ -81,8 +90,7 @@ export function danglingIdHits(design: unknown, own: Iterable<string>, known: Re
   const families = new Set([...own].flatMap(id => idFamily(id) ?? []));
   const seen = new Set<string>(), hits: DanglingIdHit[] = [];
   for (const [path, value] of strings(design, "draft")) {
-    const parts = path.split(".");
-    const root = parts.slice(0, /^\d+$/.test(parts[2] ?? "") ? 3 : 2).join(".");
+    const root = elementRoot(path);
     for (const [token] of value.matchAll(ID_TOKEN)) {
       const family = idFamily(token), key = `${root}:${token}`;
       if (family && families.has(family) && !known.has(token) && !seen.has(key) && hits.length < 25) { seen.add(key); hits.push({ path: root, token }); }

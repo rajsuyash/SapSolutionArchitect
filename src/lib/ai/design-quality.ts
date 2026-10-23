@@ -3,6 +3,7 @@ import { z } from "zod";
 import { FIT_TYPES, STEP_TYPES, id, ids, list, phase, text, texts } from "./design-primitives";
 import { checkRegisters, RegistersShape } from "./design-registers";
 import { danglingIdHits, designIds, internalTermHits, textFields } from "./design-text-lint";
+import { junkHits, languageHits, truncationHits } from "./design-text-quality";
 import { lintSapObjects } from "./sap-object-lint";
 
 export { id, ids, list, text, FIT_TYPES, STEP_TYPES };
@@ -153,6 +154,10 @@ export function evaluateDesign(input: unknown, value: unknown): DesignEvaluation
   const ownIds = [...designIds(draft), ...(context.decisionRegister ?? []).map(item => item.id)];
   const knownIds = new Set([...ownIds, ...inputIds(context)]);
   for (const hit of danglingIdHits(draft, ownIds, knownIds)) block("DANGLING_ID_REFERENCE", hit.path, `${hit.token} does not exist in this design`);
+  // Placeholder text is an error: the element is not finished and the part that owns it is asked again. Cut-off text and a foreign-language fragment are fixable blockers.
+  for (const hit of junkHits(draft)) error("PLACEHOLDER_TEXT", hit.path, hit.detail);
+  for (const hit of truncationHits(draft)) block("TRUNCATED_TEXT", hit.path, hit.detail);
+  for (const hit of languageHits(draft)) block("LANGUAGE_FRAGMENT", hit.path, hit.detail);
   const unique = (values: string[], path: string, code: string) => {
     if (new Set(values).size !== values.length) error(code, path);
   };

@@ -14,7 +14,7 @@ import { repairRegisterGroup, repairStepBody } from "./part-repair";
 import { toBeContext, validateToBeOutput, type ToBeInput, type ToBeOutput } from "./to-be";
 import { extractSapCodes, textFields, designIds } from "./design-text-lint";
 import { ReviewSchema, compactDesign, partKey, repairNote, routeFindings, reviewBlockers, type Part, type RoutedFinding, type ReviewOutcome } from "./to-be-review";
-import { collectTargets, explainBlocker, findingLine, fixNote, newStepNote, partPath } from "./to-be-fix";
+import { collectTargets, explainBlocker, findingLine, fixNote, newQuestionNote, newStepNote, partPath, type MissingQuestion } from "./to-be-fix";
 
 /** Skeleton-then-expansion To-Be generation. A slow model cannot emit a whole design inside the stage budget, so the model
  * first returns an outline (steps, traceability, coverage, questions), then one small call per step fills in the operational
@@ -150,10 +150,10 @@ export function outlinePatchRequest(input: ToBeInput, references: DesignContext[
     ...catalogNote(input, references), repairNote: patchNotes(validationErrors, outline, input, references) };
 }
 
-/** The fix pass asks for a patch that adds the step(s) the design lacks. Unlike a repair patch it carries the whole last outline: the model has to see what exists to add to it. */
-export function fixPatchRequest(input: ToBeInput, references: DesignContext["references"], outline: unknown, lines: readonly string[]) {
+/** The fix pass asks for a patch that adds the step(s) or open question(s) the design lacks. Unlike a repair patch it carries the whole last outline: the model has to see what exists to add to it. */
+export function fixPatchRequest(input: ToBeInput, references: DesignContext["references"], outline: unknown, lines: readonly string[], questions: readonly MissingQuestion[] = []) {
   return { input, approvedDecisions: [] as never[], references: references.map(outlineReference), outline, validationErrors: [] as ValidationIssue[],
-    ...catalogNote(input, references), repairNote: newStepNote(lines) };
+    ...catalogNote(input, references), repairNote: [...(lines.length ? [newStepNote(lines)] : []), ...(questions.length ? [newQuestionNote(questions)] : [])].join(" ") };
 }
 
 const PLACEHOLDER = "(filled in by the step call)";
@@ -644,11 +644,11 @@ export async function runDesign(input: ToBeInput, references: DesignContext["ref
     return { data, used: chosen.length };
   };
 
-  /** A finding that needs a step the design lacks: ONE outline patch, then only the new or changed steps are expanded again. Returns the design with the findings marked
-   * repaired, or undefined when the patch, an expansion or the whole design's validation failed (the caller restores its snapshot). */
-  const addSteps = async (data: ToBeOutput, indexes: readonly number[]): Promise<ToBeOutput | undefined> => {
+  /** A finding that needs a step the design lacks, or text that cites an open question the outline lacks: ONE outline patch, then only the new or changed steps are expanded again.
+   * Returns the design with the findings marked repaired, or undefined when the patch, an expansion or the whole design's validation failed (the caller restores its snapshot). */
+  const patchOutline = async (data: ToBeOutput, indexes: readonly number[], questions: readonly MissingQuestion[]): Promise<ToBeOutput | undefined> => {
     if (lastShaped === undefined) return undefined;
-    const raw = await deps.ask("to_be_fix", fixPatchRequest(input, references, lastShaped, indexes.map(i => findingLine(data.reviewFindings![i]!))), "patch");
+    const raw = await deps.ask("to_be_fix", fixPatchRequest(input, references, lastShaped, indexes.map(i => findingLine(data.reviewFindings![i]!)), questions), "patch");
     if (raw === TRUNCATED || raw === null) return undefined;
     const parsed = OutlinePatchSchema.safeParse(normalizeToolInput(OutlinePatchSchema, raw, "outline.patch").value);
     if (!parsed.success) return undefined;
@@ -666,27 +666,29 @@ export async function runDesign(input: ToBeInput, references: DesignContext["ref
     for (const stepId of [...details.keys()]) if (!patched.outline.steps.some(step => step.id === stepId)) details.delete(stepId);
     for (const [stepId, detail] of expanded) details.set(stepId, detail);
     outline = patched.outline; lastShaped = patched.shaped;
-    const findings = data.reviewFindings!.map((finding, i): ReviewOutcome => indexes.includes(i) ? { ...finding, outcome: "REPAIRED" } : finding);
+    const findings = data.reviewFindings?.map((finding, i): ReviewOutcome => indexes.includes(i) ? { ...finding, outcome: "REPAIRED" } : finding);
     const validated = validateToBeOutput(input, assemble(outline, details, registers), references, reviewBlockers(findings));
-    return validated.success ? { ...validated.data, reviewFindings: findings } : undefined;
+    return validated.success ? { ...validated.data, ...(findings && { reviewFindings: findings }) } : undefined;
   };
 
   const fixed = async (start: ToBeOutput): Promise<ToBeOutput> => {
     const cap = deps.maxFixParts ?? 0, remaining = () => deps.remainingBudget?.() ?? 1;
     if (cap <= 0) return start;
     const first = collectTargets(start.design, start.evaluation.blockers, start.reviewFindings, reviewTried);
-    if (!first.targets.length && !first.newStep.length) return start;
+    if (!first.targets.length && !first.newStep.length && !first.newQuestions.length) return start;
     if (remaining() <= FIX_MIN_REMAINING) { deps.warn?.([{ code: "FIX_SKIPPED_BUDGET", path: "to_be_fix" }]); return start; }
     const { data: afterParts, used } = await fixParts(start, cap);
-    // Findings that need a new step cannot be fixed per part. They are only kept as findings unless the budget allows a patch, and the patch is only kept if it leaves fewer blockers.
-    const missing = collectTargets(afterParts.design, afterParts.evaluation.blockers, afterParts.reviewFindings, reviewTried).newStep;
-    if (!missing.length) return afterParts;
+    // Findings that need a new step, and text citing an open question the outline lacks, cannot be fixed per part. They are only kept as findings unless the budget allows a patch,
+    // and the patch is only kept if it leaves fewer blockers (the open question it adds is itself a blocker, so open questions are not counted).
+    const { newStep: missing, newQuestions } = collectTargets(afterParts.design, afterParts.evaluation.blockers, afterParts.reviewFindings, reviewTried);
+    if (!missing.length && !newQuestions.length) return afterParts;
     if (remaining() <= FIX_PATCH_MIN_REMAINING) { deps.warn?.([{ code: "FIX_PATCH_SKIPPED_BUDGET", path: "to_be_fix" }]); return afterParts; }
     const snapshot = { outline, lastShaped, details: new Map(details), registers: new Map(registers) };
-    const patched = await addSteps(afterParts, missing).catch(() => undefined);
+    const patched = await patchOutline(afterParts, missing, newQuestions).catch(() => undefined);
     // The steps it added may leave blockers of their own (a new step with no objective, role or test): the same part-by-part pass clears them with what is left of the cap.
     const settled = patched && await fixParts(patched, Math.max(0, cap - used));
-    if (settled && settled.data.evaluation.blockers.length < afterParts.evaluation.blockers.length) {
+    const unanswered = (data: ToBeOutput) => data.evaluation.blockers.filter(blocker => blocker.code !== "OPEN_QUESTION").length;
+    if (settled && unanswered(settled.data) < unanswered(afterParts)) {
       deps.warn?.([{ code: "FIX_PATCH_APPLIED", path: "to_be_fix" }]);
       return settled.data;
     }

@@ -36,9 +36,15 @@ describe("fit-gap checks", () => {
   it("requires a row for every critical requirement", () => {
     expect(codes(design(draft => { draft.fitGap = draft.fitGap!.filter(row => row.requirementId !== "R-3"); }))).toEqual(["FIT_GAP_MISSING@draft.fitGap"]);
   });
-  it("requires ricefwType exactly when the classification is CLASSIC_RICEFW", () => {
+  it("requires ricefwType when the classification is CLASSIC_RICEFW, and rejects it where nothing is built", () => {
     expect(codes(design(draft => { draft.fitGap![4]!.ricefwType = null; }))).toEqual(["RICEFW_TYPE_MISSING@draft.fitGap.4"]);
-    expect(codes(design(draft => { draft.fitGap![0]!.ricefwType = "REPORT"; }))).toEqual(["RICEFW_TYPE_UNEXPECTED@draft.fitGap.0"]);
+    expect(codes(design(draft => { draft.fitGap![0]!.ricefwType = "REPORT"; draft.fitGap![0]!.classification = "CONFIGURATION"; }))).toEqual(["RICEFW_TYPE_UNEXPECTED@draft.fitGap.0"]);
+  });
+  it("lets a key-user extension or a side-by-side build state its RICEFW type, but does not require it", () => {
+    for (const classification of ["KEY_USER_EXTENSION", "SIDE_BY_SIDE_BTP"] as const) {
+      expect(codes(design(draft => { draft.fitGap![0]!.classification = classification; draft.fitGap![0]!.ricefwType = "REPORT"; }))).toEqual([]);
+      expect(codes(design(draft => { draft.fitGap![0]!.classification = classification; draft.fitGap![0]!.ricefwType = null; }))).toEqual([]);
+    }
   });
   it("accepts STANDARD_INTEGRATION without a ricefwType, and rejects one that carries it", () => {
     expect(codes(design(draft => { draft.fitGap![0]!.classification = "STANDARD_INTEGRATION" as never; }))).toEqual([]);

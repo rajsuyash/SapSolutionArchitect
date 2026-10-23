@@ -17,6 +17,10 @@ describe("DANGLING_ID_REFERENCE: an id the text cites in this design's own id pa
     expect(dangling(design(draft => { draft.steps[1]!.businessRules[0]!.response = "Apply rule BR-7 before posting."; }))).toEqual(["draft.steps.1 BR-7 does not exist in this design"]);
     expect(dangling(design(draft => { draft.steps[2]!.addedValue = "The open policy is held on question Q-4."; }))).toEqual(["draft.steps.2 Q-4 does not exist in this design"]);
   });
+  it("flags a sub-id of a question the design never defined (Q-1-F1), as the same family, and accepts the real ids around it", () => {
+    expect(dangling(design(draft => { draft.steps[0]!.effects.financial = "The release act is held under Q-1-F1."; }))).toEqual(["draft.steps.0 Q-1-F1 does not exist in this design"]);
+    expect(dangling(design(draft => { draft.steps[0]!.effects.financial = "The release act is held under Q-1."; }))).toEqual([]);
+  });
   it("flags it in an open question and in a register row", () => {
     expect(dangling(design(draft => { draft.openQuestions[0]!.question += " See also Q-12."; }))).toEqual(["draft.openQuestions.0 Q-12 does not exist in this design"]);
     expect(dangling(design(draft => { draft.reports![0]!.purpose += " Follows decision KDD-7."; }))).toEqual(["draft.reports.0 KDD-7 does not exist in this design"]);

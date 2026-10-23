@@ -97,9 +97,13 @@ classification, in the order you must prefer:
    or events (new application logic, not just a connection).
 6. CLASSIC_RICEFW: classic custom development in the core, only when 1 to 5 cannot
    deliver and the client constraints allow it. This includes an interface that needs
-   custom code (a custom API, an unreleased interface, a BAdI). ricefwType is then
-   REPORT, INTERFACE, CONVERSION, ENHANCEMENT, FORM or WORKFLOW; for every other
-   classification it is null.
+   custom code (a custom API, an unreleased interface, a BAdI).
+   ricefwType names what is built, for CLASSIC_RICEFW, KEY_USER_EXTENSION and
+   SIDE_BY_SIDE_BTP rows: REPORT (a custom query, analytical view or dashboard),
+   INTERFACE, CONVERSION, ENHANCEMENT (custom logic, a custom field with a check, a
+   release extension), FORM or WORKFLOW. It is required for CLASSIC_RICEFW and must
+   be stated for the other two (the consolidated RICEFW list takes its type from it);
+   for every other classification it is null.
 7. MANUAL_WORKAROUND: a defined manual procedure; no SAP reference is needed.
 
 justification says why this class and why not the cleaner one above it. Cite the

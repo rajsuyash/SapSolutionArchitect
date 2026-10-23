@@ -259,13 +259,73 @@ describe("fix pass: a finding that needs a new step takes one outline patch", ()
   });
 });
 
+describe("fix pass: text that cites an open question the outline lacks gets the question added by an outline patch", () => {
+  const citing = (id: string, token: string) => id === "TB-2" ? { ...split.details["TB-2"]!, effects: { ...split.details["TB-2"]!.effects, financial: `The proration policy is held under ${token}.` } } : undefined;
+  const question = { id: "Q-2", question: "Who may approve a partial final day?", owner: "Billing policy owner", affectedStepIds: ["TB-2"] };
+  const dangling = (out: Awaited<ReturnType<typeof run>["result"]>) => out.evaluation.blockers.filter(item => item.code === "DANGLING_ID_REFERENCE");
+
+  it("one patch adds the question with its citing steps in the note; the citing step is not rewritten; the blocker is gone", async () => {
+    const h = run({ step: id => citing(id, "Q-2"), patch: () => ({ openQuestions: [question] }) });
+    const out = await h.result;
+    expect(dangling(out)).toEqual([]);
+    expect(out.design.openQuestions.map(item => item.id)).toEqual(["Q-1", "Q-2"]);
+    const patches = h.fixCalls().filter(call => call.group === "patch");
+    expect(patches).toHaveLength(1);
+    expect(String(patches[0]!.user.repairNote)).toContain('"Q-2" (cited in steps TB-2)');
+    expect(h.fixCalls().filter(call => call.user.step)).toHaveLength(0);
+    expect(h.codes()).toContain("FIX_PATCH_APPLIED");
+    // The question it adds is itself an open item for the business, not a blocker the pass hides.
+    expect(blockerCodes(out)).toContain("OPEN_QUESTION");
+  });
+  it("keeps the original design and its blocker when the patch does not add the question or is not usable", async () => {
+    for (const patch of [() => ({ openQuestions: [] }), () => null, () => ({ openQuestions: [{ ...question, affectedStepIds: ["TB-99"] }] })]) {
+      const h = run({ step: id => citing(id, "Q-2"), patch });
+      const out = await h.result;
+      expect(dangling(out)).toHaveLength(1);
+      expect(out.design.openQuestions.map(item => item.id)).toEqual(["Q-1"]);
+      expect(h.codes()).toContain("FIX_PATCH_REJECTED");
+    }
+  });
+  it("a dangling id outside the open-question pattern (a step id) still goes back to the citing step, with no patch", async () => {
+    const h = run({ step: id => citing(id, "TB-9"), fixStep: (id, user) => id === "TB-2" ? { ...(user.currentAnswer as object), effects: split.details["TB-2"]!.effects } : undefined });
+    const out = await h.result;
+    expect(h.fixCalls().filter(call => call.group === "patch")).toHaveLength(0);
+    expect(h.fixCalls().filter(call => call.user.step)).toHaveLength(1);
+    expect(dangling(out)).toEqual([]);
+  });
+  it("a repair carries the part's current answer in full: long text is never the shortened form the consistency review reads", async () => {
+    const long = `${"A long statement about proration that runs well past every limit of the review's compact view. ".repeat(8)}Ends here. See TB-9.`;
+    const h = run({ step: id => id === "TB-2" ? { ...split.details["TB-2"]!, effects: { ...split.details["TB-2"]!.effects, financial: long } } : undefined });
+    await h.result;
+    const sent = h.fixCalls().find(call => call.user.step)!.user.currentAnswer as { effects: { financial: string } };
+    expect(sent.effects.financial).toBe(long);
+    expect(JSON.stringify(sent)).not.toContain("…");
+  });
+  it("is skipped, with a warning and no call, when 40% or less of the budget is left", async () => {
+    const h = run({ step: id => citing(id, "Q-2"), patch: () => ({ openQuestions: [question] }), deps: { remainingBudget: () => 0.4 } });
+    const out = await h.result;
+    expect(h.fixCalls()).toHaveLength(0);
+    expect(dangling(out)).toHaveLength(1);
+    expect(h.codes()).toContain("FIX_PATCH_SKIPPED_BUDGET");
+  });
+  it("collectTargets names the missing question and the steps that cite it, and leaves it out of the part targets", () => {
+    const draft = structuredClone(rentalDraftV3);
+    draft.steps[1]!.effects.financial = "Held under Q-7 and also TB-9.";
+    const blockers = [{ code: "DANGLING_ID_REFERENCE", path: "draft.steps.1", detail: "Q-7 does not exist in this design" }, { code: "DANGLING_ID_REFERENCE", path: "draft.steps.1", detail: "TB-9 does not exist in this design" },
+      { code: "DANGLING_ID_REFERENCE", path: "draft.openQuestions.0", detail: "Q-7 does not exist in this design" }];
+    const { targets, newQuestions } = collectTargets(draft, blockers);
+    expect(newQuestions).toEqual([{ token: "Q-7", stepIds: ["TB-2"] }]);
+    expect(targets.map(target => [target.part, target.blockers.map(blocker => blocker.detail)])).toEqual([[{ type: "step", stepId: "TB-2" }, ["TB-9 does not exist in this design"]]]);
+  });
+});
+
 describe("helpers", () => {
   it("only the blockers a rewrite of one part can clear are fixable", () => {
     for (const open of ["OPEN_QUESTION", "IMPLEMENTATION_UNVERIFIED", "TARGET_RELEASE_MISSING", "LICENSE_ENTITLEMENT_UNCONFIRMED", "INPUT_QUESTION_UNRESOLVED", "COVERAGE_CONDITIONAL"]) {
       expect(FIXABLE_BLOCKERS.has(open), open).toBe(false);
     }
     for (const code of ["OBJECTIVE_STEP_UNMAPPED", "STATUS_TRANSITION_MISSING", "REPORT_PAIN_POINT_UNCOVERED", "CONTROL_UNMAPPED", "UNRESOLVED_CODE", "INTERFACE_STEP_UNCOVERED",
-      "CONFIG_CONFIRMATION_UNSUPPORTED", "KPI_VALUE_IGNORED"]) expect(FIXABLE_BLOCKERS.has(code), code).toBe(true);
+      "CONFIG_CONFIRMATION_UNSUPPORTED", "KPI_VALUE_IGNORED", "TRUNCATED_TEXT", "LANGUAGE_FRAGMENT"]) expect(FIXABLE_BLOCKERS.has(code), code).toBe(true);
   });
   it("collectTargets groups by part and orders the busiest first; unattributable blockers and resolved findings are left out", () => {
     const blockers = [{ code: "OBJECTIVE_STEP_UNMAPPED", path: "draft.objectives" }, { code: "INTERNAL_TERM", path: "draft.steps.1", detail: "outline" }, { code: "OPEN_QUESTION", path: "draft.openQuestions.0" },
@@ -281,6 +341,8 @@ describe("helpers", () => {
   it("explains a blocker with the ids it concerns", () => {
     const note = explainBlocker({ code: "CONTROL_UNMAPPED", path: "draft.controlMappings" }, rentalDraftV3, withCompanyContext(fixture(), {}));
     expect(note).toContain("have no control mapping");
+    expect(explainBlocker({ code: "TRUNCATED_TEXT", path: "draft.steps.0", detail: "ends with an ellipsis in field accountingEntry" }, rentalDraftV3, fixture())).toContain("ends with an ellipsis in field accountingEntry");
+    expect(explainBlocker({ code: "LANGUAGE_FRAGMENT", path: "draft.steps.0", detail: "German text in field event" }, rentalDraftV3, fixture())).toContain("German text in field event");
     expect(explainBlocker({ code: "SOMETHING_NEW", path: "draft" }, rentalDraftV3, fixture())).toBe("SOMETHING_NEW");
   });
 });

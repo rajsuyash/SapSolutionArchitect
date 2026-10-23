@@ -1,6 +1,7 @@
 import type { DetailedDesign } from "./design-quality";
 import { REGISTER_GROUPS, groupOf, type RegisterGroup, type RegisterKey } from "./design-registers";
 import { norm } from "./design-register-types";
+import { idFamily, mentionsCode, textFields } from "./design-text-lint";
 import type { ToBeInput } from "./to-be";
 import { routeFindings, type Part, type ReviewOutcome, type RoutedFinding } from "./to-be-review";
 
@@ -15,6 +16,7 @@ export const FIXABLE_BLOCKERS: ReadonlySet<string> = new Set([
   "OBJECTIVE_STEP_UNMAPPED", "OBJECTIVE_CONTEXT_UNCOVERED", "STATUS_TRANSITION_MISSING", "CONFIG_DOCUMENT_TYPE_MISSING", "CONFIG_CONFIRMATION_UNSUPPORTED",
   "CONTROL_UNMAPPED", "UNRESOLVED_CODE", "REPORT_PAIN_POINT_UNCOVERED", "E2E_STEP_UNCOVERED", "INTERFACE_STEP_UNCOVERED", "ROLE_STEP_UNCOVERED",
   "ROLE_ACTOR_UNMATCHED", "SOD_CONFLICT_STEPS", "PERIOD_END_MISSING", "ORG_CODE_NOT_IN_CONTEXT", "KPI_VALUE_IGNORED", "INTERNAL_TERM", "DANGLING_ID_REFERENCE",
+  "TRUNCATED_TEXT", "LANGUAGE_FRAGMENT",
 ]);
 /** Some blockers point at a step but are cleared in a register: the interface, role or report row has to be added there. */
 const GROUP_OF_CODE: Readonly<Record<string, RegisterGroup>> = { INTERFACE_STEP_UNCOVERED: "integration", ROLE_STEP_UNCOVERED: "governance", ROLE_ACTOR_UNMATCHED: "governance" };
@@ -34,15 +36,33 @@ export function blockerPart(blocker: Blocker, design: DetailedDesign): Part | un
 }
 
 export type FixTarget = { part: Part; blockers: Blocker[]; findingIndexes: number[] };
+/** An open question the text cites that the outline does not hold: `stepIds` are the steps whose text cites it. */
+export type MissingQuestion = { token: string; stepIds: string[] };
 const key = (part: Part) => part.type === "step" ? `step:${part.stepId}` : `group:${part.group}`;
 
-/** The parts to send back, the busiest first, and the unresolved review findings that need a step the design lacks (no part, a gap or a missing link).
+/** The id a DANGLING_ID_REFERENCE blocker names, when it follows the pattern of the design's own open questions (ETO-OQ-5-F1 beside ETO-OQ-1..5): then the question is what
+ * is missing, and a step cannot supply it. Any other dangling id is a wrong citation, which the part that cites it corrects. */
+function missingQuestionToken(blocker: Blocker, design: DetailedDesign): string | undefined {
+  const token = blocker.code === "DANGLING_ID_REFERENCE" ? /^(\S+) does not exist/.exec(blocker.detail ?? "")?.[1] : undefined;
+  const family = token && idFamily(token);
+  return family && design.openQuestions.some(question => idFamily(question.id) === family) ? token : undefined;
+}
+
+/** The parts to send back, the busiest first, the unresolved review findings that need a step the design lacks (no part, a gap or a missing link), and the open questions
+ * the text cites that the outline lacks (they need an outline patch, not a rewrite of the citing part).
  * `tried` are parts the consistency pass already sent back: their review findings are not sent again, their blockers are. */
 export function collectTargets(design: DetailedDesign, blockers: readonly Blocker[], findings: readonly ReviewOutcome[] = [], tried: ReadonlySet<string> = new Set()):
-  { targets: FixTarget[]; routed: RoutedFinding[]; newStep: number[] } {
+  { targets: FixTarget[]; routed: RoutedFinding[]; newStep: number[]; newQuestions: MissingQuestion[] } {
   const targets = new Map<string, FixTarget>();
   const entry = (part: Part) => { const k = key(part); return targets.get(k) ?? (targets.set(k, { part, blockers: [], findingIndexes: [] }).get(k)!); };
+  const questions = new Map<string, MissingQuestion>();
   for (const blocker of blockers) {
+    const token = missingQuestionToken(blocker, design);
+    if (token) {
+      const citing = design.steps.filter(step => textFields(step).some(text => mentionsCode(text, token))).map(step => step.id);
+      questions.set(token, { token, stepIds: citing });
+      continue;
+    }
     const part = FIXABLE_BLOCKERS.has(blocker.code) ? blockerPart(blocker, design) : undefined;
     if (part) entry(part).blockers.push(blocker);
   }
@@ -54,7 +74,7 @@ export function collectTargets(design: DetailedDesign, blockers: readonly Blocke
     for (const part of finding.parts) if (!tried.has(key(part))) entry(part).findingIndexes.push(i);
   });
   const weight = (target: FixTarget) => target.blockers.length + target.findingIndexes.length;
-  return { targets: [...targets.values()].sort((a, b) => weight(b) - weight(a)), routed, newStep };
+  return { targets: [...targets.values()].sort((a, b) => weight(b) - weight(a)), routed, newStep, newQuestions: [...questions.values()] };
 }
 
 // --- the repair note --------------------------------------------------------------------------------------------------------------
@@ -104,6 +124,8 @@ export function explainBlocker(blocker: Blocker, design: DetailedDesign, input: 
     case "ORG_CODE_NOT_IN_CONTEXT": return `Organisation unit ${design.orgStructure?.[at]?.id ?? "?"} is marked CODE_CONFIRMED but its code is in no company-context answer: set BUSINESS_TO_PROVIDE with a null code and an owner.`;
     case "KPI_VALUE_IGNORED": return `KPI ${design.kpis?.[at]?.id ?? "?"} says "not provided" for a baseline or target, but the company-context answers (kpi_baselines, kpi_targets) hold a value for this measure: copy it verbatim.`;
     case "INTERNAL_TERM": return `Client text uses the generation process's working term "${blocker.detail ?? "?"}": reword it in business language.`;
+    case "TRUNCATED_TEXT": return `Text that ${blocker.detail ?? "stops early"}: the sentence is not finished, so write it out in full.`;
+    case "LANGUAGE_FRAGMENT": return `Text with a fragment that is not English (${blocker.detail ?? "see the part"}): rewrite it in English; SAP terms may stay.`;
     default: return blocker.code;
   }
 }
@@ -117,6 +139,10 @@ export function fixNote(part: Part, lines: readonly string[]): string {
   const what = part.type === "step" ? `step ${part.stepId}` : `register group ${part.group} (${(REGISTER_GROUPS[part.group] as readonly RegisterKey[]).join(", ")})`;
   return `A check of the finished design found the following still open about ${what}: ${lines.slice(0, MAX_NOTE_LINES).join(" ")} Rewrite the complete answer so that each of these no longer holds, changing only what that needs and keeping every other field exactly as in "currentAnswer". Use only facts already in the input; invent nothing.`;
 }
+
+/** Note for the outline patch that adds the open question(s) the design's text cites but the outline lacks. */
+export const newQuestionNote = (missing: readonly MissingQuestion[]) =>
+  `The design's text cites open questions that the outline does not hold: ${missing.slice(0, MAX_NOTE_LINES).map(item => `"${item.token}" (cited in steps ${item.stepIds.length ? ids(item.stepIds) : "of the outline"})`).join("; ")}. Answer with submit_to_be_outline_patch: add each as an open question with exactly that id, the question the text says is held under it, the owner who must answer it, and affectedStepIds naming the steps that cite it. Leave everything else out of the patch.`;
 
 /** Note for the outline patch that adds the step(s) the findings say are missing. */
 export const newStepNote = (lines: readonly string[]) =>

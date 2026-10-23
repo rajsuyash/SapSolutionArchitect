@@ -272,6 +272,17 @@ describe("version 3 additions: codes, organisation codes, system of record, peri
     // Negative control: the same design without the definitions does flag, so the clean result above means something.
     expect(evaluateDesign(rentalContext, used).blockers.some(item => item.code === "UNRESOLVED_CODE")).toBe(true);
   });
+  it("a plant number in step text that no organisation unit holds is unresolved even when a configuration item merely discusses that number", () => {
+    const text = (draft: DetailedDesign) => { draft.steps[1]!.masterData[0]!.fields.push("plant 2000 (Sheffield)"); };
+    const mentioned = withText(draft => {
+      text(draft);
+      draft.configurationCatalogue!.push({ ...at(draft.configurationCatalogue), id: "CFG-3", category: "OTHER", name: "Planning segments behind org code 2000", purpose: "To be confirmed", stepIds: ["TB-2"] });
+    });
+    expect(evaluateDesign(rentalContext, mentioned).blockers).toContainEqual({ code: "UNRESOLVED_CODE", path: "draft.steps.1", detail: "org code 2000" });
+    // Negative control: an organisation unit that holds 2000 clears it.
+    const held = withText(draft => { text(draft); draft.orgStructure![0]!.proposal = "Plant 2000 for the hire business"; });
+    expect(evaluateDesign(rentalContext, held).blockers.some(item => item.code === "UNRESOLVED_CODE")).toBe(false);
+  });
   it("an organisational unit has a code status and an owner; a unit without a code is BUSINESS_TO_PROVIDE with an owner", () => {
     expect(codes(design(draft => { delete (draft.orgStructure![0] as Record<string, unknown>).owner; }))).toContain("REGISTER_FIELD_MISSING@draft.orgStructure.0");
     expect(codes(design(draft => { draft.orgStructure![0]!.codeStatus = "CODE_CONFIRMED"; }))).toContain("ORG_CODE_INCONSISTENT@draft.orgStructure.0");

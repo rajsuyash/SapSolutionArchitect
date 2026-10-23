@@ -12,6 +12,8 @@ export type { RegisterContext } from "./design-register-types";
  * Every row traces to requirements, company-context field ids and/or steps; every SAP object it names comes from the curated
  * catalog (`referenceIds`) or is flagged `needsValidation` with a reason. */
 export const FIT_CLASSES = ["STANDARD", "CONFIGURATION", "STANDARD_INTEGRATION", "KEY_USER_EXTENSION", "SIDE_BY_SIDE_BTP", "CLASSIC_RICEFW", "MANUAL_WORKAROUND"] as const;
+/** Classes that build something and so may carry a RICEFW type (it feeds the consolidated RICEFW list). */
+const BUILT_CLASSES: readonly string[] = ["KEY_USER_EXTENSION", "SIDE_BY_SIDE_BTP", "CLASSIC_RICEFW"];
 export const RICEFW_TYPES = ["REPORT", "INTERFACE", "CONVERSION", "ENHANCEMENT", "FORM", "WORKFLOW"] as const;
 export const NOT_PROVIDED = "not provided";
 
@@ -146,7 +148,8 @@ export function checkRegisters(draft: Draft, ctx: RegisterContext, error: Report
     if (!ctx.requirements.has(row.requirementId)) error("UNKNOWN_REQUIREMENT", path);
     if (row.stepIds?.some(ref => !ctx.stepIds.has(ref))) error("UNKNOWN_STEP", path);
     if (row.classification === "CLASSIC_RICEFW" && !row.ricefwType) error("RICEFW_TYPE_MISSING", path);
-    if (row.classification !== "CLASSIC_RICEFW" && row.ricefwType) error("RICEFW_TYPE_UNEXPECTED", path);
+    // Anything built (a key-user query, a side-by-side app) has a RICEFW type too, but only classic development must state one.
+    if (!BUILT_CLASSES.includes(row.classification) && row.ricefwType) error("RICEFW_TYPE_UNEXPECTED", path);
     based("fitGap", row, i, row.classification !== "MANUAL_WORKAROUND");
   });
   const covered = new Set(fitGap.map(row => row.requirementId));

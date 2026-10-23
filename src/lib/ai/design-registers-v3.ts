@@ -219,9 +219,11 @@ export function checkVersion3(kit: V3Kit): void {
   if ([...ctx.requirements].some(([requirementId, requirement]) => requirement.kind === "CONTROL" && !mapped.has(requirementId))) block("CONTROL_UNMAPPED", "draft.controlMappings");
 
   // Every code a step uses is defined in the configuration catalogue or the organisation structure (checklist 3).
+  // A plant or company code is defined only by an organisation unit (its code or its own text): a configuration item that merely discusses "org code 2000" does not define it.
   const defined = [...catalogue, ...org].flatMap(row => textFields(row)).join("\n");
+  const orgText = org.flatMap(row => textFields(row)).join("\n");
   steps.forEach((step, i) => {
-    const unresolved = [...new Map((step.texts ?? []).flatMap(extractSapCodes).filter(code => !mentionsCode(defined, code.token)).map(code => [`${code.kind}:${code.token}`, code])).values()];
+    const unresolved = [...new Map((step.texts ?? []).flatMap(extractSapCodes).filter(code => !mentionsCode(code.kind === "ORG_CODE" ? orgText : defined, code.token)).map(code => [`${code.kind}:${code.token}`, code])).values()];
     if (unresolved.length) block("UNRESOLVED_CODE", `draft.steps.${i}`, unresolved.slice(0, 8).map(code => `${code.kind.toLowerCase().replace("_", " ")} ${code.token}`).join(", "));
   });
 
