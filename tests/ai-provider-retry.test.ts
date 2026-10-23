@@ -4,7 +4,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { parseEnvironment } from "../src/lib/env";
 import { createStageRunner } from "../src/lib/ai/runStage";
-import { classifyProviderError } from "../src/lib/ai/provider";
+import { classifyProviderError, creditHint, isTransientProviderError } from "../src/lib/ai/provider";
 import { messageEvents, sseResponse } from "./support/sse";
 
 const local = parseEnv(readFileSync(new URL("../.env.example", import.meta.url), "utf8"));
@@ -68,7 +68,7 @@ describe("transient provider retry", () => {
     expect(h.times.slice(1).map((t, i) => t - h.times[i]!)).toEqual([7000, 30000]);
   });
 
-  it.each([400, 401, 403, 404])("does not retry a %s", async (status) => {
+  it.each([400, 401, 404])("does not retry a %s", async (status) => {
     vi.spyOn(console, "error").mockImplementation(() => {});
     const h = harness(() => anthropicError(status, "invalid_request_error"));
     await expect(createStageRunner(config(), { fetch: h.fetch })("problem_analysis", input))
@@ -79,7 +79,7 @@ describe("transient provider retry", () => {
   it("does not retry a 402 and logs the credit category with the status", async () => {
     const log = vi.spyOn(console, "error").mockImplementation(() => {});
     const h = harness(() => errorJson(402, { error: { code: 402, message: "Insufficient credits" } }));
-    await expect(createStageRunner(config(), { fetch: h.fetch })("problem_analysis", input)).rejects.toMatchObject({ code: "AI_PROVIDER_ERROR" });
+    await expect(createStageRunner(config(), { fetch: h.fetch })("problem_analysis", input)).rejects.toMatchObject({ code: "AI_PROVIDER_CREDIT" });
     expect(h.fetch).toHaveBeenCalledTimes(1);
     expect(lines(log)).toEqual([{ event: "ai_provider_error", provider: "openrouter", model: "synthetic/model", stage: "problem_analysis", status: 402, category: "credit" }]);
   });
@@ -146,5 +146,46 @@ describe("classifyProviderError status and OpenRouter codes", () => {
   ])("status %s body %j -> status %s, %s", (status, body, expectedStatus, category) => {
     const result = classifyProviderError(generate(status, body));
     expect(result.status).toBe(expectedStatus); expect(result.category).toBe(category);
+  });
+});
+
+const REFUSALS = {
+  openrouter: [403, { type: "error", error: { type: "permission_error", message: "Workspace monthly budget of $10.00 exceeded. Contact your org admin. $10.27 of $10.00 used; resets 2026-11-01T00:00:00.000Z.", error_type: "permission_denied" } }],
+  deepinfra: [402, { type: "error", error: { type: "invalid_request_error", message: "You need positive balance to do inference. Please add balance manually or setup top-up" } }],
+  anthropic: [400, { type: "error", error: { type: "invalid_request_error", message: "Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits." } }],
+} as const;
+
+describe("provider out of credit or budget", () => {
+  const apiError = (status: number, body: object) => Anthropic.APIError.generate(status, body, undefined, new Headers());
+  it.each(Object.entries(REFUSALS))("classifies the measured %s refusal as credit and never retries it", (_provider, [status, body]) => {
+    expect(classifyProviderError(apiError(status, body)).category).toBe("credit");
+    expect(isTransientProviderError(apiError(status, body))).toBe(false);
+  });
+  it.each(Object.entries(REFUSALS))("fails the %s stage once with AI_PROVIDER_CREDIT and a content-free log line", async (provider, [status, body]) => {
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    const h = harness(() => errorJson(status, body));
+    const env = { AI_PROVIDER: provider, ANTHROPIC_API_KEY: "a-test-key", DEEPINFRA_API_KEY: "d-test-key" };
+    await expect(createStageRunner(config(env), { fetch: h.fetch })("problem_analysis", input))
+      .rejects.toMatchObject({ code: "AI_PROVIDER_CREDIT", metrics: { providerRetries: 0 } });
+    expect(h.fetch).toHaveBeenCalledTimes(1);
+    expect(lines(log)).toMatchObject([{ event: "ai_provider_error", provider, category: "credit" }]);
+    expect(JSON.stringify(lines(log))).not.toMatch(/budget|balance|\$10|test-key/);
+  });
+  it("keeps a 429 rate limit retryable and not credit", () => {
+    const rateLimited = apiError(429, { type: "error", error: { type: "rate_limit_error", message: "Rate limit exceeded: too many requests, limit exceeded for this minute" } });
+    expect(classifyProviderError(rateLimited).category).toBe("rate_limit");
+    expect(isTransientProviderError(rateLimited)).toBe(true);
+  });
+  it("keeps a genuine 401 as auth (AI_PROVIDER_ERROR, not credit)", async () => {
+    const bad = apiError(401, { type: "error", error: { type: "authentication_error", message: "invalid x-api-key" } });
+    expect(classifyProviderError(bad).category).toBe("auth");
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const h = harness(() => errorJson(401, { type: "error", error: { type: "authentication_error", message: "invalid x-api-key" } }));
+    await expect(createStageRunner(config(), { fetch: h.fetch })("problem_analysis", input)).rejects.toMatchObject({ code: "AI_PROVIDER_ERROR" });
+  });
+  it("names the provider and the fix in the operator hint, without the provider message", () => {
+    expect(creditHint("openrouter")).toMatch(/openrouter.*budget.*top up/i);
+    expect(creditHint("deepinfra")).toMatch(/deepinfra/i);
+    expect(creditHint("anthropic")).toMatch(/anthropic/i);
   });
 });

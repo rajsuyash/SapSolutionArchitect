@@ -172,11 +172,11 @@ describe("provider failure logging", () => {
   it("maps SDK timeouts to timeout", () => {
     expect(classifyProviderError(new Anthropic.APIConnectionTimeoutError())).toEqual({ category: "timeout" });
   });
-  it("logs one safe line, keeps the user-facing code generic, and leaks no prompt or key", async () => {
+  it("logs one safe line, uses the distinct credit code, and leaks no prompt or key", async () => {
     const log = vi.spyOn(console, "error").mockImplementation(() => {});
     const h = harness(() => new Response(JSON.stringify({ type: "error", error: { type: "invalid_request_error",
       message: "Your credit balance is too low" } }), { status: 400, ...json }));
-    await expect(createStageRunner(deepinfra(), { fetch: h.fetch })("problem_analysis", input)).rejects.toMatchObject({ code: "AI_PROVIDER_ERROR" });
+    await expect(createStageRunner(deepinfra(), { fetch: h.fetch })("problem_analysis", input)).rejects.toMatchObject({ code: "AI_PROVIDER_CREDIT" });
     expect(log).toHaveBeenCalledTimes(1);
     const line = String(log.mock.calls[0]![0]);
     expect(JSON.parse(line)).toEqual({ event: "ai_provider_error", provider: "deepinfra", model: "XiaomiMiMo/MiMo-V2.6-Pro",

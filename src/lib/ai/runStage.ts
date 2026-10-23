@@ -4,7 +4,7 @@ import { z } from "zod";
 import { parseEnvironment, STAGE_NAMES, TO_BE_SUBSTAGES, type Environment } from "../env";
 import { ProblemAnalysisInputSchema, ProblemAnalysisSchema, redactInput, schemaIssues, validateProblemAnalysis,
   type ProblemAnalysis, type ValidationIssue } from "./problem-analysis";
-import { createProviderClient, logProviderFailure, logProviderRetry, logStageTimeout, type Provider } from "./provider";
+import { classifyProviderError, createProviderClient, logProviderFailure, logProviderRetry, logStageTimeout, type Provider } from "./provider";
 import { withProviderRetry } from "./retry";
 import { loadToBeReferences, parseToBeInput, type ToBeOutput } from "./to-be";
 import { REGISTER_GROUP_NAMES, RegisterGroupSchemas } from "./design-registers";
@@ -22,7 +22,7 @@ import { ExtractionToolSchema, InterviewChatToolSchema, InterviewTurnRawSchema, 
 
 type Stage = (typeof STAGE_NAMES)[number];
 type Payloads = { problem_analysis: ProblemAnalysis; to_be: ToBeOutput; interview_turn: InterviewTurn; extraction_turn: InterviewTurn };
-type Code = "AI_INPUT_INVALID" | "AI_INPUT_TOO_LARGE" | "AI_INVALID_OUTPUT" | "AI_PROVIDER_ERROR" | "AI_TIMEOUT" | "AI_CANCELLED";
+type Code = "AI_INPUT_INVALID" | "AI_INPUT_TOO_LARGE" | "AI_INVALID_OUTPUT" | "AI_PROVIDER_ERROR" | "AI_PROVIDER_CREDIT" | "AI_TIMEOUT" | "AI_CANCELLED";
 export type StageMetrics = { stage: Stage; provider: Provider; model: string; inputTokens: number;
   outputTokens: number; latencyMs: number; attempts: number; validationErrors: ValidationIssue[];
   /** The same issues grouped per failed attempt (validationErrors is their flat concatenation). */
@@ -202,7 +202,8 @@ export function createStageRunner(config: Config, options: Options = {}) {
         passthrough: error => error instanceof AIStageError,
         giveUp: (error, reason) => {
           logProviderFailure(provider, model, stage, error);
-          return fail(reason === "deadline" || error instanceof Anthropic.APIConnectionTimeoutError ? "AI_TIMEOUT" : "AI_PROVIDER_ERROR");
+          return fail(reason === "deadline" || error instanceof Anthropic.APIConnectionTimeoutError ? "AI_TIMEOUT"
+            : classifyProviderError(error).category === "credit" ? "AI_PROVIDER_CREDIT" : "AI_PROVIDER_ERROR");
         },
         onRetry: (retry, delay, error) => {
           metrics.providerRetries = (metrics.providerRetries ?? 0) + 1;

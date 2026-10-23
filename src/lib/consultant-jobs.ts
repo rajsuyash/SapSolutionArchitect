@@ -5,6 +5,7 @@ import { z } from "zod";
 import { AuthError, transaction, type AuthService } from "./auth";
 import { withTenantSession } from "./tenant";
 import { assertOrgCanRunAi } from "./org-limits";
+import { PROVIDER_CREDIT_MESSAGE } from "./ai/provider";
 import { validateDiscovery } from "./discovery";
 import { loadWorkspaceForWorker, persistWorkspaceTurn } from "./discovery-workspace";
 import { CONSULTANT_EXTRACT_QUEUE, extractionScope } from "./consultant-extraction";
@@ -247,12 +248,13 @@ export function createConsultantJobs(pool: Pool, auth: AuthService, queue: PgBos
           signal.throwIfAborted();
         });
       } catch (error) {
-        const safe = z.enum(["AI_INPUT_INVALID", "AI_INPUT_TOO_LARGE", "AI_INVALID_OUTPUT", "AI_PROVIDER_ERROR", "AI_TIMEOUT", "AI_CANCELLED", "STALE_INPUT"])
+        const safe = z.enum(["AI_INPUT_INVALID", "AI_INPUT_TOO_LARGE", "AI_INVALID_OUTPUT", "AI_PROVIDER_ERROR", "AI_PROVIDER_CREDIT", "AI_TIMEOUT", "AI_CANCELLED", "STALE_INPUT"])
           .safeParse((error as { code?: unknown })?.code);
         const code = signal.aborted ? "AI_CANCELLED" : safe.success ? safe.data : "CONSULTANT_FAILED";
         await pool.query(`UPDATE consultant_jobs SET status='FAILED',error=$3,run_token=NULL,deadline_at=NULL,finished_at=clock_timestamp()
           WHERE id=$1 AND status='RUNNING' AND run_token=$2`, [id, runToken, { code,
           message: code === "STALE_INPUT" ? "The answers changed while the consultant was working. Review the latest conversation and retry."
+            : code === "AI_PROVIDER_CREDIT" ? PROVIDER_CREDIT_MESSAGE
             : code === "AI_TIMEOUT" ? "The consultant took too long to respond. Your saved answers are safe; you can retry."
             : "The consultant could not finish this response. Your saved answers are safe; you can retry." }]);
       }

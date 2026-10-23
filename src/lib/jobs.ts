@@ -7,6 +7,7 @@ import { withTenantSession } from "./tenant";
 import { assertOrgCanRunAi } from "./org-limits";
 import { validateProblemAnalysis, type ProblemAnalysis } from "./ai/problem-analysis";
 import type { createStageRunner } from "./ai/runStage";
+import { PROVIDER_CREDIT_MESSAGE } from "./ai/provider";
 import { DEFAULT_STAGE_BUDGET_SECONDS, jobTiming } from "./ai/timeouts";
 
 export const ANALYSIS_QUEUE = "analysis.problem";
@@ -17,7 +18,7 @@ const metricSchema = z.object({ stage: z.literal("problem_analysis"), provider: 
   model: z.string().max(160), inputTokens: z.number().int().nonnegative(), outputTokens: z.number().int().nonnegative(),
   latencyMs: z.number().nonnegative(), attempts: z.number().int().nonnegative(),
   validationErrors: z.array(z.object({ path: z.string().max(200), code: z.string().max(80), detail: z.string().max(200).optional() })).max(1000) });
-const errorCodes = z.enum(["AI_INPUT_INVALID", "AI_INPUT_TOO_LARGE", "AI_INVALID_OUTPUT", "AI_PROVIDER_ERROR", "AI_TIMEOUT", "AI_CANCELLED"]);
+const errorCodes = z.enum(["AI_INPUT_INVALID", "AI_INPUT_TOO_LARGE", "AI_INVALID_OUTPUT", "AI_PROVIDER_ERROR", "AI_PROVIDER_CREDIT", "AI_TIMEOUT", "AI_CANCELLED"]);
 type Job = { id: string; kind: string; status: string; progressLabel: string;
   error: { code: string; message: string } | null; result: { analysisId: string } | null };
 type StoredJob = { id: string; org_id: string; project_id: string; requested_by: string; request_id: string; status: string };
@@ -163,7 +164,7 @@ export function createJobService(pool: Pool, auth: AuthService, queue: PgBoss, s
         metrics ??= detail.success ? detail.data.metrics : undefined;
         await pool.query(`UPDATE jobs SET status='FAILED',progress_label='Analysis failed',error=$4,metrics=$5,
           run_token=NULL,deadline_at=NULL,finished_at=now() WHERE id=$1 AND org_id=$2 AND status='RUNNING' AND run_token=$3`,
-          [id, job.org_id, runToken, { code, message: "Analysis could not be completed. You can retry." }, metrics ?? null]);
+          [id, job.org_id, runToken, { code, message: code === "AI_PROVIDER_CREDIT" ? PROVIDER_CREDIT_MESSAGE : "Analysis could not be completed. You can retry." }, metrics ?? null]);
       }
       console.info(JSON.stringify({ event: "analysis_attempt_finished", orgId: job.org_id, jobId: id, requestId: job.request_id }));
     },

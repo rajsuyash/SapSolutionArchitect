@@ -17,7 +17,7 @@ import {
   aggregateRuns, assessIndependence, assessJudgements, DEFAULT_DEADLINE_SECONDS, DEFAULT_JUDGE_CALL_TIMEOUT_MS, DEFAULT_MIN_RUNS, defaultConcurrency, runLimited, buildCaseBrief, calibrate, costUsd, DEFAULT_RUNS, DEFAULT_SPREAD_FLAG, defaultJudgeModel, degradeDesign, independenceLine, JudgeError, judgeOnce, loadToBe,
   RUBRIC, type Aggregate, type RunStatus, type Calibration, type CaseBrief, type Graded, type Independence, type ToBe, type Usage,
 } from "../src/lib/eval-judge";
-import { createProviderClient } from "../src/lib/ai/provider";
+import { classifyProviderError, createProviderClient, creditHint, type Provider } from "../src/lib/ai/provider";
 import { loadSapReferences } from "../src/lib/ai/sap-references";
 
 const flag = (name: string) => { const i = process.argv.indexOf(`--${name}`); return i >= 0 ? process.argv[i + 1] : undefined; };
@@ -80,6 +80,7 @@ async function main() {
       if (result.status === "fulfilled") { good.push(result.value.graded); statuses.push({ run: index, ok: true, detail: `total ${result.value.score.total}, ${result.value.usage.calls} calls` }); }
       else { failures.push(message(result.reason)); statuses.push({ run: index, ok: false, detail: message(result.reason) }); }
     });
+    if (settled.some(result => result.status === "rejected" && classifyProviderError(result.reason).category === "credit")) console.error(`eval-judge: ${creditHint(judgeProvider as Provider)}`);
     spent += costUsd(usage.inputTokens, usage.outputTokens);
     console.log(`${label}: ${good.length}/${runs} judgements ok, ${usage.calls} calls, ${usage.inputTokens} in / ${usage.outputTokens} out tokens, cumulative $${spent.toFixed(4)}`);
     const verdict = assessJudgements(statuses, minRuns);

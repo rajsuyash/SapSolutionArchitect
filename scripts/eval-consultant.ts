@@ -24,6 +24,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { parseEnv, promisify } from "node:util";
 import { Client, Pool } from "pg";
+import { creditHint, type Provider } from "../src/lib/ai/provider";
 import { AIStageError, createStageRunner, runStage, type StageMetrics } from "../src/lib/ai/runStage";
 import { parseEnvironment } from "../src/lib/env";
 import { reviewBlockers, type ReviewOutcome } from "../src/lib/ai/to-be-review";
@@ -426,6 +427,7 @@ async function main() {
     for (let run = 1; run <= runs; run++) {
       const transcript = await runOnce(fixture, { pool, provider, model, maxTurns, forceComplete: !has("no-force-complete"), toBe: !has("no-tobe"), toBeOnly: has("tobe-only"), fake: has("fake-model") });
       const { score, summary } = report(transcript, fixture, `Run ${run}/${runs}`);
+      if (transcript.turns.some(t => t.error === "AI_PROVIDER_CREDIT") || transcript.toBe?.errorCode === "AI_PROVIDER_CREDIT") console.error(`eval-consultant: ${creditHint(provider as Provider)}`);
       const file = `test-results/eval/${stamp}-${provider}-${model.replace(/[^A-Za-z0-9._-]+/g, "_")}${runs > 1 ? `-run${run}` : ""}.json`;
       writeFileSync(file, JSON.stringify({ transcript, score, summary }, null, 2));
       console.log(`Wrote ${file}`);

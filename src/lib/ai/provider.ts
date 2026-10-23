@@ -15,7 +15,8 @@ export function createProviderClient(provider: "anthropic" | "deepinfra" | "open
     logLevel: "off", openTelemetry: false, fetch });
 }
 
-const CREDIT = /credit balance|insufficient (funds|credit|balance)|billing|payment required|out of credit/i;
+// Provider wording for an exhausted balance or spend cap. Deliberately not a bare "limit exceeded": that is also a rate limit.
+const CREDIT = /credit balance|insufficient (funds|credit|balance)|positive balance|billing|payment required|out of credit|budget\b.{0,60}\bexceeded|(spend|spending|usage|credit) limit|exceeded your (current )?quota/i;
 
 /** OpenRouter reports its HTTP-like code in the body, `{"error":{"code":402,"message":...}}`, and repeats it there for errors
  * that arrive inside a 200 stream, where the SDK sees no failing status. Numeric (or numeric-string) 4xx/5xx codes only. */
@@ -55,6 +56,16 @@ export function isTransientProviderError(error: unknown): boolean {
   }
   // The stream ended without a complete message, or the socket was cut while the body was being read.
   return error instanceof Anthropic.AnthropicError || (error instanceof TypeError && error.message === "terminated");
+}
+
+/** What a tenant sees when the AI provider account is out of credit. Operator-side problem; no provider detail. */
+export const PROVIDER_CREDIT_MESSAGE = "The AI service is temporarily unavailable on our side. Your saved work is safe; please try again later or contact support.";
+
+/** One operator-facing line for a credit failure: names the provider and the fix, never the provider's own message. */
+export function creditHint(provider: Provider): string {
+  const fix = { openrouter: "raise the OpenRouter workspace budget or top up credits", deepinfra: "add DeepInfra balance or set up top-up",
+    anthropic: "purchase Anthropic credits under Plans & Billing", stub: "check the provider account" }[provider];
+  return `provider out of credit/budget: ${provider} refused the call. ${fix[0]!.toUpperCase()}${fix.slice(1)}, then re-run.`;
 }
 
 /** The provider's Retry-After (seconds or HTTP date) in ms, or undefined when absent or unusable. */
