@@ -20,7 +20,7 @@
 // accepts every proposal in one DECIDE_PROPOSALS call. A step walkthrough question is answered with one natural paragraph
 // built from that fixture step (what happens, who, system, controls, exceptions, pain points and wants).
 import { execFile } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { parseEnv, promisify } from "node:util";
 import { Client, Pool } from "pg";
@@ -35,6 +35,7 @@ import { buildInterviewInput, type WorkspaceState } from "../src/lib/discovery-w
 import { STEP_KEYS } from "../src/lib/workspace-fields";
 import { answerFor, composeReply, factStatus, fieldCommand, firstSentence, planForcedCompletion, type Asked, type Command, type Fixture } from "../src/lib/eval-user";
 import { toBeRun, toBeSummary } from "../src/lib/eval-tobe";
+import { deriveSections } from "../src/lib/to-be-derived";
 import { ScoringCaseSchema, scoreRun, summarize, TranscriptSchema, type Transcript } from "../src/lib/eval-score";
 
 const OUTPUT_TOKEN_CAP = 400_000;
@@ -318,14 +319,14 @@ async function forceComplete(fixture: Fixture, getState: () => WorkspaceState, r
 
 /** Mirrors the consultant-jobs worker: confirmed snapshot -> parseToBeInput -> runStage("to_be") -> validateToBeOutput. */
 async function generateToBe(pool: Pool, snapshotId: string, stage: typeof runStage): Promise<NonNullable<Transcript["toBe"]>> {
-  const row = (await pool.query(`SELECT target_product,payload FROM discovery_versions WHERE id=$1`, [snapshotId])).rows[0];
+  const row = (await pool.query(`SELECT target_product,payload,version_no,variant_code FROM discovery_versions WHERE id=$1`, [snapshotId])).rows[0];
   const input = parseToBeInput({ targetProduct: row.target_product, discovery: row.payload });
   const references = await loadToBeReferences(input);
   console.log(`catalog: ${input.targetProduct} ${input.discovery.targetRelease ?? "UNKNOWN"} -> ${references.length} verified references`);
   console.log(`To-Be input: ${input.discovery.asIsSteps.length} steps, ${input.discovery.requirements.length} requirements, ${input.discovery.companyContext?.length ?? 0} company-context fields`);
   const requirements = input.discovery.requirements.map(r => ({ id: r.id, statement: r.statement, evidence: r.evidence.quote }));
   const base = { attempted: true, requirements };
-  const finish = (m: StageMetrics | undefined, rest: { structurallyValid: boolean; errorCode: string | null; design: NonNullable<Transcript["toBe"]>["design"] }) => {
+  const finish = (m: StageMetrics | undefined, rest: { structurallyValid: boolean; errorCode: string | null; design: NonNullable<Transcript["toBe"]>["design"]; derived?: Record<string, unknown> }) => {
     const run = toBeRun(m);
     console.log(toBeSummary(run, rest.errorCode));
     return { ...base, ...run, ...rest };
@@ -333,8 +334,13 @@ async function generateToBe(pool: Pool, snapshotId: string, stage: typeof runSta
   try {
     const generated = await stage("to_be", input);
     const validation = validateToBeOutput(input, (generated.payload as { design?: unknown }).design, references);
+    // The sections the report builds without a model (document control, As-Is narratives, RICEFW list) travel with the design, so the judge reads the whole document.
+    const derived = validation.success ? deriveSections({ design: validation.data.design, asIsSteps: input.discovery.asIsSteps, meta: {
+      sourceRevision: row.version_no, variantCode: row.variant_code, variantName: input.discovery.variantName, snapshotId, generatedAt: new Date().toISOString(),
+      targetProduct: input.targetProduct, targetRelease: input.discovery.targetRelease,
+      sources: input.discovery.sources.map(({ id, title, revision, text }) => ({ id, title, revision, digest: createHash("sha256").update(text, "utf8").digest("hex") })) } }) : undefined;
     return finish(generated.metrics, { structurallyValid: validation.success, errorCode: validation.success ? null : "VALIDATION_FAILED",
-      design: validation.success ? validation.data.design as unknown as NonNullable<Transcript["toBe"]>["design"] : null });
+      design: validation.success ? validation.data.design as unknown as NonNullable<Transcript["toBe"]>["design"] : null, ...(derived && { derived: derived as unknown as Record<string, unknown> }) });
   } catch (error) {
     const failed = error instanceof AIStageError ? error : null;
     return finish(failed?.metrics, { structurallyValid: false, errorCode: failed?.code ?? `DRIVER_ERROR:${message(error).slice(0, 80)}`, design: null });

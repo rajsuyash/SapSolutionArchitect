@@ -174,7 +174,9 @@ export function createConsultantJobs(pool: Pool, auth: AuthService, queue: PgBos
         targetRelease: discovery.targetRelease, sourceRevision: stored.sourceRevision,
         generatedAt: rows.job.finished_at ? rows.job.finished_at.toISOString() : null,
         discovery: { asIsSteps: discovery.asIsSteps, requirements: discovery.requirements, conflicts: discovery.conflicts,
-          openQuestions: discovery.openQuestions, sources: discovery.sources.map(({ id, title, locator, revision }) => ({ id, title, locator, revision })) },
+          openQuestions: discovery.openQuestions, sources: discovery.sources.map(({ id, title, locator, revision, text }) =>
+          ({ id, title, locator, revision, digest: createHash("sha256").update(text, "utf8").digest("hex") })) },
+        snapshotId: stored.snapshotId,
         design: stored.design, blockers: stored.evaluation.blockers, unresolvedInputQuestions: stored.unresolvedInputQuestions,
         references: catalog.filter(reference => cited.has(reference.id)), catalogReferenceCount: catalog.length };
     },

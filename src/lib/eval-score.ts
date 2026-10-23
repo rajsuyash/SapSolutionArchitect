@@ -63,6 +63,8 @@ export const TranscriptSchema = z.object({
     /** The design exactly as the generator validated it (v1 or v2). Loose on purpose: unknown keys, including the v2 registers
      * and coverage, must survive parsing, or the judge and replays see a steps-only design. */
     design: z.looseObject({ steps: z.array(StepRecordSchema), ...RegisterRows }).nullable(),
+    /** Sections the server builds without a model (document control, As-Is narratives, RICEFW list); the judge reads them with the design. */
+    derived: z.record(z.string(), z.unknown()).optional(),
   }).nullable(),
   /** Active interviewer gaps left when the run ended (absent in older transcripts). */
   gapsRemaining: count.optional(),

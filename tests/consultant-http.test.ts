@@ -307,9 +307,13 @@ describe.skipIf(process.env.RUN_DB_TESTS !== "1")("consultant HTTP boundary", ()
     expect(ok.headers.get("cache-control")).toContain("no-store");
     const report = ok.body.data.report;
     expect(Object.keys(report).sort()).toEqual(["blockers", "catalogReferenceCount", "design", "discovery", "generatedAt", "jobId", "project", "references",
-      "sourceRevision", "targetProduct", "targetRelease", "unresolvedInputQuestions", "variant"]);
+      "snapshotId", "sourceRevision", "targetProduct", "targetRelease", "unresolvedInputQuestions", "variant"]);
     expect(report).toMatchObject({ jobId: r.jobId, project: { name: "Hire returns" }, variant: { code: "RENTAL", name: "Equipment hire" },
       sourceRevision: r.revision, design: { schemaVersion: 1 } });
+    expect(report.snapshotId).toMatch(/^[0-9a-f-]{36}$/);
+    // Document control carries each frozen source's digest, never its text.
+    expect(report.discovery.sources.length).toBeGreaterThan(0);
+    for (const source of report.discovery.sources) { expect(source.digest).toMatch(/^[a-f0-9]{64}$/); expect(source).not.toHaveProperty("text"); }
     expect(report.design.steps.length).toBeGreaterThan(0);
     expect(report.discovery.asIsSteps[0].name).toBe("Record return");
     const wire = JSON.stringify(ok.body);

@@ -46,4 +46,11 @@ describe("toBeRun", () => {
     expect(parsed.toBe!.design).toEqual(rentalDraftV3);
     expect(Object.keys(parsed.toBe!.design!)).toEqual(expect.arrayContaining(["schemaVersion", "processName", "coverage", "openQuestions", "fitGap", "orgStructure", "kpis", "interfaces", "cutover"]));
   });
+  it("keeps the server-built sections next to the design in the transcript", () => {
+    const derived = { documentControl: { version: "0.1 draft" }, ricefwList: [{ id: "RICEFW-1" }] };
+    const toBe = { attempted: true, structurallyValid: true, errorCode: null, requirements: [], design: JSON.parse(JSON.stringify(rentalDraftV3)), derived, ...toBeRun(failed) };
+    const parsed = TranscriptSchema.parse({ schemaVersion: 1, caseId: "c", provider: "p", model: "m", startedAt: "t", turns: [],
+      readiness: { reached: false, atTurn: null, forcedCompletion: false, directEdits: 0, blockers: [] }, toBe, aborted: null });
+    expect(parsed.toBe!.derived).toEqual(derived);
+  });
 });

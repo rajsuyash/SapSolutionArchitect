@@ -7,6 +7,8 @@ import pump from "../fixtures/eval/pump-o2c.json";
 import strongControl from "../fixtures/eval/controls/pump-o2c.strong.json";
 import { DetailedDesignSchema } from "../src/lib/ai/design-quality";
 import { rentalDraftV3 } from "../fixtures/ai/to-be/rental-registers";
+import { deriveSections } from "../src/lib/to-be-derived";
+import { fixture as rentalInput } from "./support/to-be-input";
 import { ScoringCaseSchema } from "../src/lib/eval-score";
 import { STEP_KEYS, WORKSPACE_FIELDS } from "../src/lib/workspace-fields";
 import {
@@ -399,5 +401,35 @@ describe("solution-design registers reach the judge", () => {
     for (const key of ["keyDesignDecisions", "fitGap", "orgStructure", "masterDataPrerequisites", "interfaces", "kpis", "dataMigration", "cutover"]) expect(weak).not.toHaveProperty(key);
     expect(v2.design).toHaveProperty("fitGap");
     expect(() => DetailedDesignSchema.parse(weak)).not.toThrow();
+  });
+});
+
+describe("server-built sections reach the judge", () => {
+  const derived = deriveSections({ design: rentalDraftV3, asIsSteps: rentalInput().discovery.asIsSteps, meta: { sourceRevision: 7, variantCode: "RENTAL", variantName: "Equipment hire",
+    snapshotId: "33333333-3333-4333-8333-333333333333", generatedAt: "2026-10-21T09:30:00.000Z", targetProduct: "S4HANA_CLOUD_PRIVATE", targetRelease: "2023",
+    sources: [{ id: "SRC-1", title: "Workshop 1", revision: "v1", digest: "cd".repeat(32) }] } });
+  const withDerived = loadToBe({ transcript: { toBe: { design: rentalDraftV3, requirements: [], derived } } });
+  it("loadToBe keeps the derived sections of a saved run, and a run without them still loads", () => {
+    expect(withDerived.derived).toEqual(JSON.parse(JSON.stringify(derived)));
+    expect(loadToBe({ design: rentalDraftV3 })).not.toHaveProperty("derived");
+  });
+  it("puts document control, the As-Is narratives and the RICEFW list in the judge user message, whole", () => {
+    const sent = JSON.parse(buildUserPrompt(buildCaseBrief(pump), withDerived)) as { derivedSections: typeof derived; toBeDesign: unknown };
+    expect(sent.derivedSections.documentControl.sourceRevision.snapshotId).toBe("33333333-3333-4333-8333-333333333333");
+    expect(sent.derivedSections.documentControl.signOff.every(item => item.status === "HUMAN_REVIEW_REQUIRED")).toBe(true);
+    expect(sent.derivedSections.asIsNarratives[0]!.asIs[0]!.description).toBe(rentalInput().discovery.asIsSteps[0]!.description);
+    expect(sent.derivedSections.ricefwList.map(item => item.id)).toEqual(["RICEFW-1", "RICEFW-2", "RICEFW-3", "RICEFW-4"]);
+    expect(buildUserPrompt(buildCaseBrief(pump), loadToBe({ design: rentalDraftV3 }))).not.toContain("derivedSections");
+  });
+  it("lets a verdict cite a derived item or a version 3 register row, and the system prompt explains both", () => {
+    const ids = citableIds(withDerived);
+    for (const id of ["RICEFW-2", "AS-1", "documentControl", "ricefwList", "OBJ-1", "ROLE-3", "DSM-1", "CFG-1", "SOD-1", "REP-1", "E2E-1", "roles", "reports"]) expect(isGrounded(`see ${id}`, ids), id).toBe(true);
+    expect(isGrounded("see RICEFW-2", citableIds(loadToBe({ design: rentalDraftV3 })))).toBe(false);
+    const prompt = buildSystemPrompt(RUBRIC);
+    for (const phrase of ["derivedSections", "schemaVersion 3", "documentStatusModels", "sodAssessments", "never approved"]) expect(prompt).toContain(phrase);
+  });
+  it("the weak control drops the version 3 registers too", () => {
+    const weak = degradeDesign(withDerived.design);
+    for (const key of ["objectives", "scopeStatements", "documentStatusModels", "configurationCatalogue", "roles", "sodAssessments", "controlMappings", "reports", "endToEndTests"]) expect(weak, key).not.toHaveProperty(key);
   });
 });

@@ -130,7 +130,8 @@ const DesignLooseSchema = z.looseObject({
   steps: z.array(z.looseObject({ id: z.string() })).min(1),
 });
 const RequirementSchema = z.object({ id: z.string(), statement: z.string(), critical: z.boolean().optional() });
-export type ToBe = { design: Record<string, unknown>; requirements: z.infer<typeof RequirementSchema>[] };
+/** `derived` is what the server builds without a model (document control, As-Is narratives, RICEFW list, actor-role matrix); see to-be-derived.ts. */
+export type ToBe = { design: Record<string, unknown>; requirements: z.infer<typeof RequirementSchema>[]; derived?: Record<string, unknown> };
 
 /** Accepts an eval run file ({transcript}), a bare transcript ({toBe}), {design, requirements?} or a bare design. */
 export function loadToBe(raw: unknown): ToBe {
@@ -143,7 +144,8 @@ export function loadToBe(raw: unknown): ToBe {
   const parsed = DesignLooseSchema.safeParse(design);
   if (!parsed.success && typeof toBe.errorCode === "string" && !toBe.design) throw new Error(`No design to judge: the run's To-Be was not valid (${toBe.errorCode})`);
   if (!parsed.success) throw new Error("No To-Be design found: expected an eval run file, a transcript, {design, requirements} or a design object");
-  return { design: design as Record<string, unknown>, requirements: z.array(RequirementSchema).parse(requirements) };
+  const derived = toBe.derived ?? root.derived;
+  return { design: design as Record<string, unknown>, requirements: z.array(RequirementSchema).parse(requirements), ...(derived && typeof derived === "object" ? { derived: derived as Record<string, unknown> } : {}) };
 }
 
 const CaseSchema = z.looseObject({
@@ -188,8 +190,10 @@ export function buildSystemPrompt(rubric: readonly Criterion[]): string {
     "Evidence rules:",
     "- Grade only what is written. Do not give credit for intent, for things the case implies but the plan does not say, or for length.",
     "- Generic phrases such as 'handled in SAP standard', 'improves efficiency' or 'per standard' are not specifics: FAIL for any criterion that demands specifics.",
-    "- The design has no dedicated field for some artefacts (document control, role catalogue). Such a criterion is satisfied only if the text of the design actually contains it.",
+    "- Some artefacts have no field in the design itself. Such a criterion is satisfied only if the text of the design or of `derivedSections` actually contains it.",
+    "- `derivedSections` is written by the application from the saved discovery revision, not by the author of the design, and is part of the document under review: documentControl (version, date, source revision with digests, reviewer roles, sign-off table; sign-off is always HUMAN_REVIEW_REQUIRED and never approved), asIsNarratives (the client's own words per To-Be step, apart from the To-Be), eliminatedAsIs, ricefwList (every fit-gap row that needs something built or connected, with type, linked steps and rationale) and actorRoles (each step's actor next to the role-catalogue rows that cover it). Cite its ids (RICEFW-1, an As-Is step id, a step id) like any other element. A design without `derivedSections` was judged from an older run: grade those criteria on the design alone.",
     "- A design with schemaVersion 2 also carries solution-design registers: keyDesignDecisions (options, recommendation, owner), fitGap (clean-core class and RICEFW type per requirement), orgStructure, masterDataPrerequisites, interfaces, kpis, dataMigration and cutover. Read them as the decision log, gap and RICEFW register, interface list, KPI list and migration/cutover plan. A schemaVersion 1 design has none of them.",
+    "- A design with schemaVersion 3 adds: step stepType, phase and interimProcess; objectives and scopeStatements (objectives and in/out of scope); documentStatusModels (statuses, transitions per step, edit and lock rules); configurationCatalogue (document types, reason codes, pricing elements, number ranges, each CONFIRMED_IN_CATALOG, BUSINESS_TO_PROVIDE or NEEDS_VALIDATION with an owner); roles (role catalogue), sodAssessments (segregation of duties) and controlMappings (each discovery control to a rule, workflow, authorization or report); reports; endToEndTests (one scenario per value stream); and on the older registers: orgStructure.parentId, masterDataPrerequisites.creationChannel and governance, interfaces.failureHandling (how a failed message is seen, alerted, rerun and kept from posting twice), kpis.owner and producingStepId, fitGap.mitigationType, owner and status (the gap register).",
     "- case.sapCatalog.verifiedReferences is how many verified SAP references the author had. When it is 0 there was no verified SAP catalog for the target product and release, so NEEDS_VALIDATION realizations that name the SAP object to validate are correct: do not penalise them for being unverified.",
     "- Values marked 'business to provide' or held in an open decision with an owner are correctly flagged uncertainty; invented thresholds, rates or accounting rules are not.",
     "- For PASS and PARTIAL, `citation` must name the strongest specific element: stepId.field (for example O2C-ORD-030.effects.financial), or a rule, test, open-question or requirement id from the design. A PASS or PARTIAL whose citation names no real element id is rejected and scored FAIL.",
@@ -203,12 +207,13 @@ export function buildSystemPrompt(rubric: readonly Criterion[]): string {
 
 export function buildUserPrompt(brief: CaseBrief, tobe: ToBe, issues: Issue[] = []): string {
   const requirements = tobe.requirements.length ? tobe.requirements : brief.requirements.map(r => ({ id: r.id, statement: r.statement, critical: r.critical }));
-  return JSON.stringify({ case: { ...brief, requirements: undefined }, requirements, toBeDesign: tobe.design, validationErrors: issues });
+  return JSON.stringify({ case: { ...brief, requirements: undefined }, requirements, toBeDesign: tobe.design, ...(tobe.derived && { derivedSections: tobe.derived }), validationErrors: issues });
 }
 
 // --- validation and grading ----------------------------------------------------------------------------------
 
 /** Every element id a citation may legitimately point at. */
+const V3_REGISTERS = ["objectives", "scopeStatements", "documentStatusModels", "configurationCatalogue", "roles", "sodAssessments", "controlMappings", "reports", "endToEndTests"] as const;
 export function citableIds(tobe: ToBe): Set<string> {
   const ids = new Set<string>(["processName", "coverage", "openQuestions", "eliminatedAsIsSteps", "conflictDecisions", "steps"]);
   const add = (value: unknown) => { if (typeof value === "string" && value) ids.add(value); };
@@ -220,10 +225,16 @@ export function citableIds(tobe: ToBe): Set<string> {
     for (const test of list(step.acceptanceTests)) add(test.id);
   }
   for (const q of list(design.openQuestions)) add(q.id);
-  for (const key of ["keyDesignDecisions", "orgStructure", "masterDataPrerequisites", "interfaces", "kpis", "dataMigration", "cutover"]) {
+  for (const key of ["keyDesignDecisions", "orgStructure", "masterDataPrerequisites", "interfaces", "kpis", "dataMigration", "cutover", ...V3_REGISTERS]) {
     add(key);
     for (const row of list(design[key])) add(row.id);
   }
+  // The derived sections are part of the document under review, so their ids are citable too.
+  const derived = (tobe.derived ?? {}) as Record<string, unknown>;
+  if (tobe.derived) for (const key of ["documentControl", "asIsNarratives", "eliminatedAsIs", "ricefwList", "actorRoles"]) add(key);
+  for (const item of list(derived.ricefwList)) add(item.id);
+  for (const item of list(derived.asIsNarratives)) for (const asIs of list(item.asIs)) add(asIs.asIsStepId);
+  for (const item of list(derived.eliminatedAsIs)) add(item.asIsStepId);
   add("fitGap");
   for (const c of list(design.coverage)) add(c.requirementId);
   for (const r of tobe.requirements) add(r.id);
@@ -375,7 +386,7 @@ export function degradeDesign(design: Record<string, unknown>): Record<string, u
   copy.coverage = (copy.coverage ?? []).map(c => ({ ...c, rationale: "Covered.", decisionId: null }));
   copy.openQuestions = [];
   // A weak plan has no registers; a version 2 flag without them would only be inconsistent.
-  for (const key of ["keyDesignDecisions", "fitGap", "orgStructure", "masterDataPrerequisites", "interfaces", "kpis", "dataMigration", "cutover"]) delete copy[key];
+  for (const key of ["keyDesignDecisions", "fitGap", "orgStructure", "masterDataPrerequisites", "interfaces", "kpis", "dataMigration", "cutover", ...V3_REGISTERS]) delete copy[key];
   copy.processName = "To-Be process (weak control)";
   return copy;
 }
