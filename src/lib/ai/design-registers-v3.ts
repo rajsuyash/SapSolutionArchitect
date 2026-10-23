@@ -58,7 +58,7 @@ export const NEW_REGISTER_KEYS = ["objectives", "scopeStatements", "documentStat
 
 type Rows = Record<string, unknown>;
 export type V3Kit = {
-  ctx: RegisterContext; error: Report; known: ReadonlyMap<string, string>;
+  ctx: RegisterContext; error: Report; /** Review finding: the design stays valid and is delivered, the finding is shown in the report. */ block: Report; known: ReadonlyMap<string, string>;
   rows: (key: string) => (Row & Rows)[];
   dup: (values: string[], path: string, code: string) => void;
   /** Checks that the ids a row cites exist; `required` also demands at least one. */
@@ -67,9 +67,11 @@ export type V3Kit = {
 };
 
 /** Version 3 checks. Everything here is decidable from the design and the company-context answers; a free-text claim is only compared
- * with another register of the same design (a role name with the step actors, a document type with the step outputs). */
+ * with another register of the same design (a role name with the step actors, a document type with the step outputs).
+ * Structural integrity (schema, ids that must exist, traceability links, catalog-only SAP objects) is an error the model must fix.
+ * Completeness and consistency heuristics (name overlap, "every X has a Y" across registers) are review findings: `block`, never `error`. */
 export function checkVersion3(kit: V3Kit): void {
-  const { ctx, error, known, rows, dup, traced, based } = kit;
+  const { ctx, error, block, known, rows, dup, traced, based } = kit;
   const steps = ctx.steps ?? [];
   const missing = (key: string, fields: readonly string[]) => rows(key).forEach((row, i) => {
     if (fields.some(field => row[field] === undefined)) error("REGISTER_FIELD_MISSING", `draft.${key}.${i}`);
@@ -119,8 +121,8 @@ export function checkVersion3(kit: V3Kit): void {
     if (!row.stepIds?.length) error("OBJECTIVE_NO_STEPS", `draft.objectives.${i}`);
   });
   const served = new Set(objectives.flatMap(row => row.stepIds ?? []));
-  if ([...ctx.stepIds].some(stepId => !served.has(stepId))) error("OBJECTIVE_STEP_UNMAPPED", "draft.objectives");
-  if (OBJECTIVE_FIELDS.some(field => known.has(field) && !objectives.some(row => row.contextFieldIds?.includes(field)))) error("OBJECTIVE_CONTEXT_UNCOVERED", "draft.objectives");
+  if ([...ctx.stepIds].some(stepId => !served.has(stepId))) block("OBJECTIVE_STEP_UNMAPPED", "draft.objectives");
+  if (OBJECTIVE_FIELDS.some(field => known.has(field) && !objectives.some(row => row.contextFieldIds?.includes(field)))) block("OBJECTIVE_CONTEXT_UNCOVERED", "draft.objectives");
   const scope = rows("scopeStatements");
   scope.forEach((row, i) => traced("scopeStatements", row, i, [], false));
   for (const kind of ["IN_SCOPE", "OUT_OF_SCOPE"]) if (!scope.some(row => row.kind === kind)) error("SCOPE_STATEMENT_MISSING", `draft.scopeStatements.${kind}`);
@@ -142,7 +144,7 @@ export function checkVersion3(kit: V3Kit): void {
   for (const step of steps) models.forEach((model, i) => {
     const type = norm(model.documentType);
     if (type.length >= 5 && step.outputDocuments.some(output => norm(output).includes(type)) && !model.transitions.some(transition => transition.stepId === step.id)) {
-      error("STATUS_TRANSITION_MISSING", `draft.documentStatusModels.${i}`);
+      block("STATUS_TRANSITION_MISSING", `draft.documentStatusModels.${i}`);
     }
   });
   const catalogue = rows("configurationCatalogue") as (Row & { category: string; name: string; status: string; note: string | null })[];
@@ -156,7 +158,7 @@ export function checkVersion3(kit: V3Kit): void {
     if (row.status !== "CONFIRMED_IN_CATALOG" && !row.note) error("VALIDATION_REASON_MISSING", path);
   });
   models.forEach((model, i) => {
-    if (!catalogue.some(item => item.category === "DOCUMENT_TYPE" && sameType(item.name, model.documentType))) error("CONFIG_DOCUMENT_TYPE_MISSING", `draft.documentStatusModels.${i}`);
+    if (!catalogue.some(item => item.category === "DOCUMENT_TYPE" && sameType(item.name, model.documentType))) block("CONFIG_DOCUMENT_TYPE_MISSING", `draft.documentStatusModels.${i}`);
   });
 
   // Roles, segregation of duties and control mappings (checklists 24 to 26).
@@ -164,11 +166,12 @@ export function checkVersion3(kit: V3Kit): void {
   if (!roles.length) error("ROLE_MISSING", "draft.roles");
   dup(roles.map(row => norm(row.name)), "draft.roles", "DUPLICATE_ROLE");
   roles.forEach((row, i) => traced("roles", row, i, [], false));
-  for (const step of steps) {
+  // Paths point at the step, so the report shows the finding on the step it concerns.
+  steps.forEach((step, i) => {
     const covering = roles.filter(role => role.stepIds?.includes(step.id));
-    if (!covering.length) error("ROLE_STEP_UNCOVERED", "draft.roles");
-    else if (!covering.some(role => sameType(role.name, step.actor))) error("ROLE_ACTOR_UNMATCHED", "draft.roles");
-  }
+    if (!covering.length) block("ROLE_STEP_UNCOVERED", `draft.steps.${i}`);
+    else if (!covering.some(role => sameType(role.name, step.actor))) block("ROLE_ACTOR_UNMATCHED", `draft.steps.${i}`);
+  });
   const roleIds = new Set(roles.map(row => row.id as string));
   const sod = rows("sodAssessments");
   if (!sod.length) error("SOD_ASSESSMENT_MISSING", "draft.sodAssessments");
@@ -188,14 +191,14 @@ export function checkVersion3(kit: V3Kit): void {
     if (row.ruleId && !ruleIdsOf(row.stepIds).has(row.ruleId)) error("CONTROL_RULE_UNKNOWN", path);
   });
   const mapped = new Set(mappings.map(row => row.requirementId));
-  if ([...ctx.requirements].some(([requirementId, requirement]) => requirement.kind === "CONTROL" && !mapped.has(requirementId))) error("CONTROL_UNMAPPED", "draft.controlMappings");
+  if ([...ctx.requirements].some(([requirementId, requirement]) => requirement.kind === "CONTROL" && !mapped.has(requirementId))) block("CONTROL_UNMAPPED", "draft.controlMappings");
 
   // Reports and end-to-end tests (checklists 22, 33).
   const reports = rows("reports");
   if (!reports.length) error("REPORT_MISSING", "draft.reports");
   reports.forEach((row, i) => { traced("reports", row, i); based("reports", row, i); });
   const cited = new Set([...reports, ...rows("kpis")].flatMap(row => row.requirementIds ?? []));
-  if ([...ctx.requirements].some(([requirementId, requirement]) => requirement.kind === "PAIN_POINT" && !cited.has(requirementId))) error("REPORT_PAIN_POINT_UNCOVERED", "draft.reports");
+  if ([...ctx.requirements].some(([requirementId, requirement]) => requirement.kind === "PAIN_POINT" && !cited.has(requirementId))) block("REPORT_PAIN_POINT_UNCOVERED", "draft.reports");
   const tests = rows("endToEndTests");
   if (!tests.length) error("E2E_TEST_MISSING", "draft.endToEndTests");
   tests.forEach((row, i) => {
@@ -204,5 +207,5 @@ export function checkVersion3(kit: V3Kit): void {
     dup(row.stepIds ?? [], path, "DUPLICATE_TRACE");
   });
   const walked = new Set(tests.flatMap(row => row.stepIds ?? []));
-  if ([...ctx.stepIds].some(stepId => !walked.has(stepId))) error("E2E_STEP_UNCOVERED", "draft.endToEndTests");
+  if ([...ctx.stepIds].some(stepId => !walked.has(stepId))) block("E2E_STEP_UNCOVERED", "draft.endToEndTests");
 }

@@ -1,5 +1,5 @@
 // Markdown and CSV renderings of the same ReportModel the page shows.
-import { TEST_LABEL, testKindLabel, type Register, type ReportModel } from "./consultant-report";
+import { REVIEW_FINDINGS_CATEGORY, TEST_LABEL, testKindLabel, type Register, type ReportModel } from "./consultant-report";
 
 /** Table cells cannot hold newlines or bare pipes. */
 const cell = (value: string | number | boolean) => String(value).replace(/\\/g, "\\\\").replace(/\|/g, "\\|").replace(/\r?\n/g, "<br>") || "-";
@@ -44,10 +44,14 @@ export function renderMarkdown(source: ReportModel): string {
   "**Sources (frozen revision)**", table(["Source", "Title", "Revision", "SHA-256 digest"], control.sourceRevision.sources.map(source => row(source.id, source.title, source.revision, source.digest))),
   "**Reviewers**", table(["Role", "Assigned to"], control.reviewerRoles.map(item => row(item.role, item.assignee))),
   "**Sign-off.** Nothing here is approved; each line is completed by a person.", table(["Role", "Name", "Date", "Status"], control.signOff.map(item => row(item.role, item.name, item.date, item.status))));
-  if (model.blockersByCategory.length) {
+  const finding = (item: (typeof model.blockers)[number]) => `${item.subject}: ${item.label} (code ${item.code}, at ${item.path})`;
+  const findings = model.blockersByCategory.find(group => group.category === REVIEW_FINDINGS_CATEGORY);
+  const blocking = model.blockersByCategory.filter(group => group !== findings);
+  if (blocking.length) {
     add("## Blockers");
-    for (const group of model.blockersByCategory) add(`### ${group.category}`, bullets(group.items.map(item => `${item.subject}: ${item.label} (code ${item.code})`)));
+    for (const group of blocking) add(`### ${group.category}`, bullets(group.items.map(item => `${item.subject}: ${item.label} (code ${item.code})`)));
   }
+  if (findings) add("## Review findings", "The design is complete and valid. These checks compare one part of it with another and could not confirm a match; a consultant confirms or corrects each one.", bullets(findings.items.map(finding)));
   add("## Executive summary",
     `Scope: ${summary.asIsSteps} current steps (${summary.eliminated} eliminated by design) redesigned as ${summary.toBeSteps} To-Be steps, with ${summary.rules} business rules, ${summary.exceptions} exceptions and ${summary.tests} acceptance-test specifications (${TEST_LABEL.toLowerCase()}).`);
   add(table(["Requirement coverage", "Count"], [row("Total requirements", summary.requirements), row("Implemented in the To-Be design", summary.implemented),

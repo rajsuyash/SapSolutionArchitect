@@ -770,15 +770,25 @@ describe("late register groups (documents, governance)", () => {
       expect(sent.steps![0]!.businessRules.map(rule => rule.id)).toEqual(["BR-1", "BR-2"]);
     }
   });
-  it("a governance answer whose roles do not match the step actors goes back to governance alone", async () => {
+  it("a governance answer whose roles do not match the step actors is delivered as a review finding, with no repair call", async () => {
     const wrong = { ...rentalRegisterGroups.governance, roles: rentalRegisterGroups.governance.roles.map((role, i) => i === 2 ? { ...role, name: "Accounts clerk" } : role) };
+    const h = harness({ registers: group => group === "governance" ? wrong : rentalRegisterGroups[group] });
+    const result = await h.run();
+    expect(h.registerCount).toEqual(Object.fromEntries(REGISTER_GROUP_NAMES.map(group => [group, 1])));
+    const evaluation = evaluateDesign(toBeContext(parseToBeInput(fixture())), result.payload.design);
+    expect(evaluation.errors).toEqual([]);
+    expect(evaluation.blockers).toContainEqual({ code: "ROLE_ACTOR_UNMATCHED", path: "draft.steps.2" });
+  });
+  it("a governance answer that cites an unknown role is a structural error and goes back to governance alone", async () => {
+    const sod = rentalRegisterGroups.governance.sodAssessments.map((row, i) => i === 0 ? { ...row, roleIds: ["ROLE-99"] } : row);
+    const wrong = { ...rentalRegisterGroups.governance, sodAssessments: sod };
     const h = harness({ registers: (group, nth) => group === "governance" && nth === 1 ? wrong : rentalRegisterGroups[group] });
     const result = await h.run();
     expect(h.registerCount).toEqual(Object.fromEntries(REGISTER_GROUP_NAMES.map(group => [group, group === "governance" ? 2 : 1])));
     expect(h.stepCalls).toHaveLength(3);
     const repair = h.registerCalls.filter(call => call.group === "governance")[1]!.body.messages[0]!.content;
-    expect(repair).toContain("ROLE_ACTOR_UNMATCHED");
-    expect(repair).not.toContain("Accounts clerk");
+    expect(repair).toContain("UNKNOWN_ROLE");
+    expect(repair).not.toContain("ROLE-99");
     expect(result.payload.design).toEqual(rentalDraftV3);
   });
   it("a step answer without stepType is sent back to that step with the path of the field", async () => {

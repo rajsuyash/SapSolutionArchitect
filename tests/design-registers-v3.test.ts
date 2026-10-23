@@ -11,7 +11,21 @@ const withKinds = (kinds: Record<string, "PAIN_POINT" | "TO_BE_REQUIREMENT" | "C
   requirements: rentalContext.requirements.map(item => ({ ...item, kind: kinds[item.id] ?? "TO_BE_REQUIREMENT" })) });
 const design = (change: (draft: DetailedDesign) => void = () => {}) => { const draft = structuredClone(rentalDraftV3); change(draft); return draft; };
 const codes = (draft: DetailedDesign, context: DesignContext = rentalContext) => evaluateDesign(context, draft).errors.map(error => `${error.code}@${error.path}`);
+/** Blockers the change adds: the rental fixture already carries the ordinary ones (open question, unverified implementation). */
+const blocked = (draft: DetailedDesign, context: DesignContext = rentalContext) => {
+  const key = (item: { code: string; path: string }) => `${item.code}@${item.path}`;
+  const baseline = new Set(evaluateDesign(rentalContext, rentalDraftV3).blockers.map(key));
+  return evaluateDesign(context, draft).blockers.map(key).filter(item => !baseline.has(item));
+};
 const answered = (...pairs: [string, string][]): Partial<DesignContext> => ({ companyContext: pairs.map(([fieldId, value]) => ({ fieldId, value })) });
+/** A heuristic finding: no error, the design is structurally valid, and the finding is the only blocker the check adds. */
+const expectFinding = (draft: DetailedDesign, finding: string, context: DesignContext = rentalContext) => {
+  const result = evaluateDesign(context, draft);
+  expect(result.errors).toEqual([]);
+  expect(result.structurallyValid).toBe(true);
+  expect(result.reviewStatus).toBe("BLOCKED");
+  expect(blocked(draft, context)).toEqual([finding]);
+};
 // Each helper below is non-null by construction of the rental fixture.
 const at = <T,>(list: T[] | undefined, i = 0) => list![i]!;
 
@@ -115,15 +129,16 @@ describe("extended registers (checklists 15, 17, 21, 23, 27)", () => {
 
 describe("objectives and scope (checklist 2)", () => {
   it("needs an objective, and every step must serve one", () => {
-    expect(codes(design(draft => { draft.objectives = []; }))).toEqual(["OBJECTIVE_MISSING@draft.objectives", "OBJECTIVE_STEP_UNMAPPED@draft.objectives"]);
-    expect(codes(design(draft => { draft.objectives![1]!.stepIds = []; }))).toEqual(["OBJECTIVE_NO_STEPS@draft.objectives.1", "OBJECTIVE_STEP_UNMAPPED@draft.objectives"]);
-    expect(codes(design(draft => { draft.objectives![1]!.stepIds = ["TB-2"]; }))).toEqual(["OBJECTIVE_STEP_UNMAPPED@draft.objectives"]);
+    expect(codes(design(draft => { draft.objectives = []; }))).toEqual(["OBJECTIVE_MISSING@draft.objectives"]);
+    expect(codes(design(draft => { draft.objectives![1]!.stepIds = []; }))).toEqual(["OBJECTIVE_NO_STEPS@draft.objectives.1"]);
+    // A step no objective serves is a review finding: the design stays valid.
+    expectFinding(design(draft => { draft.objectives![1]!.stepIds = ["TB-2"]; }), "OBJECTIVE_STEP_UNMAPPED@draft.objectives");
   });
   it("an objective must cite a requirement or a context answer, and every answered outcome, target or constraint must be cited", () => {
     expect(codes(design(draft => { Object.assign(draft.objectives![0]!, { requirementIds: [], contextFieldIds: [] }); }))).toEqual(["REGISTER_TRACE_MISSING@draft.objectives.0"]);
     const context = { ...rentalContext, ...answered(["desired_outcome", "Every hire unit tracked on its own"], ["constraints", "No custom code in the core"]) };
-    expect(codes(design(), context)).toEqual(["OBJECTIVE_CONTEXT_UNCOVERED@draft.objectives"]);
-    expect(codes(design(draft => { draft.objectives![0]!.contextFieldIds = ["desired_outcome", "constraints"]; }), context)).toEqual([]);
+    expectFinding(design(), "OBJECTIVE_CONTEXT_UNCOVERED@draft.objectives", context);
+    expect(blocked(design(draft => { draft.objectives![0]!.contextFieldIds = ["desired_outcome", "constraints"]; }), context)).toEqual([]);
   });
   it("needs both an in-scope and an out-of-scope statement", () => {
     expect(codes(design(draft => { draft.scopeStatements = draft.scopeStatements!.filter(row => row.kind === "IN_SCOPE"); }))).toEqual(["SCOPE_STATEMENT_MISSING@draft.scopeStatements.OUT_OF_SCOPE"]);
@@ -143,11 +158,13 @@ describe("document status models and configuration catalogue (checklists 10, 11,
   it("needs edit and lock rules (schema), and a transition at each step whose output names the document type", () => {
     const model = at(rentalRegisterGroups.documents.documentStatusModels);
     expect(RegisterGroupSchemas.documents.safeParse({ ...rentalRegisterGroups.documents, documentStatusModels: [{ ...model, editLockRules: [] }] }).success).toBe(false);
-    expect(codes(design(draft => { draft.documentStatusModels![0]!.transitions = draft.documentStatusModels![0]!.transitions.filter(item => item.stepId !== "TB-1"); }))).toEqual(["STATUS_TRANSITION_MISSING@draft.documentStatusModels.0"]);
+    expectFinding(design(draft => { draft.documentStatusModels![0]!.transitions = draft.documentStatusModels![0]!.transitions.filter(item => item.stepId !== "TB-1"); }), "STATUS_TRANSITION_MISSING@draft.documentStatusModels.0");
   });
   it("every modelled document type is in the catalogue as a document type", () => {
-    expect(codes(design(draft => { draft.configurationCatalogue![0]!.name = "Return voucher"; }))).toEqual(["CONFIG_DOCUMENT_TYPE_MISSING@draft.documentStatusModels.0"]);
-    expect(codes(design(draft => { draft.configurationCatalogue = []; }))).toEqual(["CONFIG_CATALOGUE_MISSING@draft.configurationCatalogue", "CONFIG_DOCUMENT_TYPE_MISSING@draft.documentStatusModels.0"]);
+    expectFinding(design(draft => { draft.configurationCatalogue![0]!.name = "Return voucher"; }), "CONFIG_DOCUMENT_TYPE_MISSING@draft.documentStatusModels.0");
+    const empty = design(draft => { draft.configurationCatalogue = []; });
+    expect(codes(empty)).toEqual(["CONFIG_CATALOGUE_MISSING@draft.configurationCatalogue"]);
+    expect(blocked(empty)).toEqual(["CONFIG_DOCUMENT_TYPE_MISSING@draft.documentStatusModels.0"]);
   });
   it("a catalogue item is confirmed only with a catalog reference, and otherwise says what is missing", () => {
     const item = (draft: DetailedDesign) => draft.configurationCatalogue![0]!;
@@ -164,11 +181,17 @@ describe("document status models and configuration catalogue (checklists 10, 11,
 
 describe("roles, segregation of duties and control mappings (checklists 24 to 26)", () => {
   it("every step is covered by a role named like the step's actor", () => {
-    expect(codes(design(draft => { draft.roles = draft.roles!.slice(0, 2); }))).toEqual(["ROLE_STEP_UNCOVERED@draft.roles", "UNKNOWN_ROLE@draft.sodAssessments.0"]);
-    expect(codes(design(draft => { draft.roles![2]!.name = "Accounts clerk"; }))).toEqual(["ROLE_ACTOR_UNMATCHED@draft.roles"]);
-    expect(codes(design(draft => { draft.roles = []; }))).toEqual(expect.arrayContaining(["ROLE_MISSING@draft.roles", "ROLE_STEP_UNCOVERED@draft.roles"]));
-    expect(codes(design(draft => { draft.roles![2]!.name = "billing CLERK"; }))).toEqual([]); // case does not matter
-    expect(codes(design(draft => { draft.roles![1]!.name = "Billing clerk"; }))).toEqual(["DUPLICATE_ROLE@draft.roles", "ROLE_ACTOR_UNMATCHED@draft.roles"]);
+    const short = design(draft => { draft.roles = draft.roles!.slice(0, 2); });
+    expect(codes(short)).toEqual(["UNKNOWN_ROLE@draft.sodAssessments.0"]);
+    expect(blocked(short)).toEqual(["ROLE_STEP_UNCOVERED@draft.steps.2"]);
+    expectFinding(design(draft => { draft.roles![2]!.name = "Accounts clerk"; }), "ROLE_ACTOR_UNMATCHED@draft.steps.2");
+    const none = design(draft => { draft.roles = []; });
+    expect(codes(none)).toEqual(expect.arrayContaining(["ROLE_MISSING@draft.roles"]));
+    expect(blocked(none)).toEqual(["ROLE_STEP_UNCOVERED@draft.steps.0", "ROLE_STEP_UNCOVERED@draft.steps.1", "ROLE_STEP_UNCOVERED@draft.steps.2"]);
+    expect(blocked(design(draft => { draft.roles![2]!.name = "billing CLERK"; }))).toEqual([]); // case does not matter
+    const twin = design(draft => { draft.roles![1]!.name = "Billing clerk"; });
+    expect(codes(twin)).toEqual(["DUPLICATE_ROLE@draft.roles"]);
+    expect(blocked(twin)).toEqual(["ROLE_ACTOR_UNMATCHED@draft.steps.1"]);
   });
   it("segregation of duties is assessed: a row exists, uses known roles, and a conflict spans two steps", () => {
     expect(codes(design(draft => { draft.sodAssessments = []; }))).toEqual(["SOD_ASSESSMENT_MISSING@draft.sodAssessments"]);
@@ -179,9 +202,9 @@ describe("roles, segregation of duties and control mappings (checklists 24 to 26
   const control = withKinds({ "R-4": "CONTROL" });
   const mapping = (extra: object = {}) => ({ id: "CTL-1", requirementId: "R-4", mechanism: "BUSINESS_RULE" as const, realization: "A missing return date blocks completion.", stepIds: ["TB-2"], ruleId: "BR-3", ...extra });
   it("every control requirement from discovery has a mapping", () => {
-    expect(codes(design(), control)).toEqual(["CONTROL_UNMAPPED@draft.controlMappings"]);
-    expect(codes(design(draft => { draft.controlMappings = [mapping()]; }), control)).toEqual([]);
-    expect(codes(design(draft => { draft.controlMappings = [mapping({ mechanism: "WORKFLOW", ruleId: null })]; }), control)).toEqual([]);
+    expectFinding(design(), "CONTROL_UNMAPPED@draft.controlMappings", control);
+    expect(evaluateDesign(control, design(draft => { draft.controlMappings = [mapping()]; })).blockers.map(item => item.code)).not.toContain("CONTROL_UNMAPPED");
+    expect(blocked(design(draft => { draft.controlMappings = [mapping({ mechanism: "WORKFLOW", ruleId: null })]; }), control)).not.toContain("CONTROL_UNMAPPED@draft.controlMappings");
   });
   it("a mapping to a business rule names a rule that belongs to its steps", () => {
     expect(codes(design(draft => { draft.controlMappings = [mapping({ ruleId: null })]; }), control)).toEqual(["CONTROL_RULE_MISSING@draft.controlMappings.0"]);
@@ -195,12 +218,14 @@ describe("reports and end-to-end tests (checklists 22, 33)", () => {
   it("needs a report with a purpose and SAP basis; every pain point is cited by a report or KPI", () => {
     expect(codes(design(draft => { draft.reports = []; }))).toEqual(["REPORT_MISSING@draft.reports"]);
     expect(codes(design(draft => { draft.reports![0]!.needsValidation = false; }))).toEqual(["SAP_BASIS_MISSING@draft.reports.0"]);
-    expect(codes(design(), pain)).toEqual(["REPORT_PAIN_POINT_UNCOVERED@draft.reports"]);
-    expect(codes(design(draft => { draft.reports![0]!.requirementIds = ["R-3", "R-4"]; }), pain)).toEqual([]);
+    expectFinding(design(), "REPORT_PAIN_POINT_UNCOVERED@draft.reports", pain);
+    expect(blocked(design(draft => { draft.reports![0]!.requirementIds = ["R-3", "R-4"]; }), pain)).not.toContain("REPORT_PAIN_POINT_UNCOVERED@draft.reports");
   });
   it("end-to-end scenarios span at least two steps, cite a requirement, and together walk every step", () => {
-    expect(codes(design(draft => { draft.endToEndTests = []; }))).toEqual(["E2E_TEST_MISSING@draft.endToEndTests", "E2E_STEP_UNCOVERED@draft.endToEndTests"]);
-    expect(codes(design(draft => { draft.endToEndTests![0]!.stepIds = ["TB-1", "TB-2"]; }))).toEqual(["E2E_STEP_UNCOVERED@draft.endToEndTests"]);
+    const noTests = design(draft => { draft.endToEndTests = []; });
+    expect(codes(noTests)).toEqual(["E2E_TEST_MISSING@draft.endToEndTests"]);
+    expect(blocked(noTests)).toEqual(["E2E_STEP_UNCOVERED@draft.endToEndTests"]);
+    expectFinding(design(draft => { draft.endToEndTests![0]!.stepIds = ["TB-1", "TB-2"]; }), "E2E_STEP_UNCOVERED@draft.endToEndTests");
     const row = at(rentalRegisterGroups.reporting.endToEndTests);
     expect(RegisterGroupSchemas.reporting.safeParse({ ...rentalRegisterGroups.reporting, endToEndTests: [{ ...row, stepIds: ["TB-1"] }] }).success).toBe(false);
     expect(RegisterGroupSchemas.reporting.safeParse({ ...rentalRegisterGroups.reporting, endToEndTests: [{ ...row, requirementIds: [] }] }).success).toBe(false);

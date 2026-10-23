@@ -98,7 +98,7 @@ const segments = (value: string, needsDigit = false) => value.split(/\r?\n|;/).m
   part.length >= 3 && !part.endsWith(":") && (!needsDigit || /\d/.test(part)));
 
 /** Checks the registers of a schemaVersion 2 design. A version 1 design must carry none. Codes only: no model text is echoed. */
-export function checkRegisters(draft: Draft, ctx: RegisterContext, error: Report): void {
+export function checkRegisters(draft: Draft, ctx: RegisterContext, error: Report, block: Report): void {
   // Version 1 carries no registers, version 2 the first eight, version 3 all of them.
   const expected: readonly RegisterKey[] = draft.schemaVersion === 1 ? [] : draft.schemaVersion === 2 ? VERSION_2_KEYS : REGISTER_KEYS;
   for (const key of REGISTER_KEYS) {
@@ -189,7 +189,7 @@ export function checkRegisters(draft: Draft, ctx: RegisterContext, error: Report
     if (segments(targets, true).some(part => !stated.some(target => overlaps(part, target)))) error("KPI_TARGET_UNCOVERED", "draft.kpis");
   }
   if (draft.schemaVersion === 3) {
-    checkVersion3({ ctx, error, known, dup, rows: key => rows(key as RegisterKey), based: (key, row, i, needed) => based(key as RegisterKey, row, i, needed),
+    checkVersion3({ ctx, error, block, known, dup, rows: key => rows(key as RegisterKey), based: (key, row, i, needed) => based(key as RegisterKey, row, i, needed),
       traced: (key, row, i, extra, required) => traced(key as RegisterKey, row, i, extra, required) });
   }
 }

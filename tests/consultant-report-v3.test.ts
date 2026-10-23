@@ -84,6 +84,24 @@ describe("version 3 report: model-generated sections", () => {
   });
 });
 
+describe("version 3 report: review findings", () => {
+  const found = renderMarkdown(buildReport({ ...data(rentalDraftV3), blockers: [
+    { code: "CONFIG_DOCUMENT_TYPE_MISSING", path: "draft.documentStatusModels.0" }, { code: "ROLE_ACTOR_UNMATCHED", path: "draft.steps.1" },
+    { code: "OPEN_QUESTION", path: "draft.openQuestions.0" }] }));
+  it("lists each heuristic finding with its code, path and a plain explanation, apart from the blockers", () => {
+    const findings = section("Review findings", found);
+    expect(findings).toContain("CONFIG_DOCUMENT_TYPE_MISSING, at draft.documentStatusModels.0");
+    expect(findings).toContain("no matching document-type entry in the configuration catalogue");
+    expect(findings).toContain("ROLE_ACTOR_UNMATCHED, at draft.steps.1");
+    expect(findings).not.toContain("OPEN_QUESTION");
+    expect(section("Blockers", found)).toContain("OPEN_QUESTION");
+    expect(section("Blockers", found)).not.toContain("ROLE_ACTOR_UNMATCHED");
+  });
+  it("has no section when there are no findings", () => {
+    expect(markdown).not.toContain("## Review findings");
+  });
+});
+
 describe("older designs still render", () => {
   it("a version 2 design shows its registers without the version 3 sections", () => {
     const text = renderMarkdown(buildReport(data(rentalDraftV2)));

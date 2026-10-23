@@ -36,6 +36,7 @@ import { STEP_KEYS } from "../src/lib/workspace-fields";
 import { answerFor, composeReply, factStatus, fieldCommand, firstSentence, planForcedCompletion, type Asked, type Command, type Fixture } from "../src/lib/eval-user";
 import { toBeRun, toBeSummary } from "../src/lib/eval-tobe";
 import { deriveSections } from "../src/lib/to-be-derived";
+import { REVIEW_FINDINGS } from "../src/lib/consultant-report";
 import { ScoringCaseSchema, scoreRun, summarize, TranscriptSchema, type Transcript } from "../src/lib/eval-score";
 
 const OUTPUT_TOKEN_CAP = 400_000;
@@ -339,6 +340,10 @@ async function generateToBe(pool: Pool, snapshotId: string, stage: typeof runSta
       sourceRevision: row.version_no, variantCode: row.variant_code, variantName: input.discovery.variantName, snapshotId, generatedAt: new Date().toISOString(),
       targetProduct: input.targetProduct, targetRelease: input.discovery.targetRelease,
       sources: input.discovery.sources.map(({ id, title, revision, text }) => ({ id, title, revision, digest: createHash("sha256").update(text, "utf8").digest("hex") })) } }) : undefined;
+    // Heuristic findings the application reports (REVIEW_FINDINGS) travel with the derived sections, so the judge sees the system is honest about gaps.
+    const reviewFindings = validation.success ? validation.data.evaluation.blockers.filter(item => item.code in REVIEW_FINDINGS)
+      .map(item => ({ code: item.code, path: item.path, explanation: REVIEW_FINDINGS[item.code] })) : [];
+    if (derived) Object.assign(derived, { reviewFindings });
     return finish(generated.metrics, { structurallyValid: validation.success, errorCode: validation.success ? null : "VALIDATION_FAILED",
       design: validation.success ? validation.data.design as unknown as NonNullable<Transcript["toBe"]>["design"] : null, ...(derived && { derived: derived as unknown as Record<string, unknown> }) });
   } catch (error) {

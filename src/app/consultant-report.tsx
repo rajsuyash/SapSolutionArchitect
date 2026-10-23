@@ -103,7 +103,7 @@ export function ConsultantReport({ model, downloads }: { model: ReportModel; dow
       <h2 id="blockers-h">Blockers by category</h2>
       {model.blockersByCategory.map(group => <div key={group.category}><h3>{group.category} ({group.items.length})</h3>
         <ul className={styles.tight}>{group.items.map((item, index) => <li key={index}>
-          {item.anchor ? <a href={`#${item.anchor}`}>{item.subject}</a> : item.subject}: {item.label} <span className={styles.code}>{item.code}</span></li>)}</ul></div>)}
+          {item.anchor ? <a href={`#${item.anchor}`}>{item.subject}</a> : item.subject}: {item.label} <span className={styles.code}>{item.code} at {item.path}</span></li>)}</ul></div>)}
     </section>}
 
     <section id="summary" aria-labelledby="summary-h" className={styles.section}>

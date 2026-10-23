@@ -308,7 +308,7 @@ export function evaluateDesign(input: unknown, value: unknown): DesignEvaluation
       interimProcess: step.interimProcess, businessRuleIds: step.businessRules.map(rule => rule.id) })),
     takenIds: new Set([...steps.keys(), ...draft.steps.flatMap(step => [...step.businessRules.map(rule => rule.id), ...step.acceptanceTests.map(test => test.id)]),
       ...draft.openQuestions.map(question => question.id)]),
-  }, error);
+  }, error, block);
   return result();
 }
 

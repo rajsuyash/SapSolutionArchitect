@@ -50,7 +50,22 @@ const MECHANISM_LABELS: Record<string, string> = { BUSINESS_RULE: "Business rule
 const SOD_LABELS: Record<string, string> = { CONFLICT_IDENTIFIED: "Conflict identified", NO_CONFLICT_ASSESSED: "Assessed: no conflict" };
 const contextLabel = (fieldId: string) => WORKSPACE_FIELDS.find(field => field.id === fieldId)?.label ?? "Company context";
 const KIND_LABELS: Record<string, string> = { PAIN_POINT: "Pain point", TO_BE_REQUIREMENT: "Future requirement", CONTROL: "Control" };
+/** Category of the findings that come from completeness and consistency checks. The design is valid and delivered; a person confirms or fixes each one. */
+export const REVIEW_FINDINGS_CATEGORY = "Review findings";
+/** Plain-English explanation of each heuristic finding (design-registers-v3.ts `block`). The model is not asked to repair these. */
+export const REVIEW_FINDINGS: Record<string, string> = {
+  OBJECTIVE_STEP_UNMAPPED: "A To-Be step is not listed under any objective, so it is unclear which goal it serves.",
+  OBJECTIVE_CONTEXT_UNCOVERED: "An answered desired outcome, KPI target or constraint is not cited by any objective.",
+  STATUS_TRANSITION_MISSING: "A step produces a document that has a status model, but the model has no status change recorded for that step.",
+  CONFIG_DOCUMENT_TYPE_MISSING: "A document status model names a document type that has no matching document-type entry in the configuration catalogue.",
+  ROLE_STEP_UNCOVERED: "No role in the role catalogue is assigned to this step.",
+  ROLE_ACTOR_UNMATCHED: "The roles assigned to this step do not match the actor named on the step.",
+  CONTROL_UNMAPPED: "A control from discovery has no control mapping saying how the design enforces it.",
+  REPORT_PAIN_POINT_UNCOVERED: "A pain point from discovery is not addressed by any report or KPI.",
+  E2E_STEP_UNCOVERED: "A To-Be step is not walked by any end-to-end test scenario.",
+};
 const BLOCKERS: Record<string, { category: string; label: string }> = {
+  ...Object.fromEntries(Object.entries(REVIEW_FINDINGS).map(([code, label]) => [code, { category: REVIEW_FINDINGS_CATEGORY, label }])),
   TARGET_RELEASE_MISSING: { category: "Target release", label: "The target SAP release has not been decided." },
   IMPLEMENTATION_UNVERIFIED: { category: "SAP validation", label: "The SAP realization is not yet validated against the target release." },
   LICENSE_ENTITLEMENT_UNCONFIRMED: { category: "Licensing", label: "A cited SAP capability depends on a licence that is not confirmed." },
@@ -75,7 +90,7 @@ export const formatTimestamp = (iso: string | null) => iso && !Number.isNaN(Date
 
 export type RefView = { id: string; found: boolean; capability: string; fit: string; objects: string[]; limitations: string[]; urls: string[] };
 export type ImplementationView = { kind: string; kindLabel: string; detail: string; refs: RefView[] };
-export type BlockerView = { code: string; category: string; label: string; subject: string; anchor: string | null };
+export type BlockerView = { code: string; path: string; category: string; label: string; subject: string; anchor: string | null };
 export type StepStatus = { code: "BLOCKED" | "REVIEW"; label: string; blockers: BlockerView[] };
 type Design = DetailedDesign["steps"][number];
 export type StepView = { anchor: string; heading: string; step: Design; asIsNames: string[]; implementation: ImplementationView; status: StepStatus;
@@ -140,7 +155,7 @@ export function buildReport(data: ReportData) {
     return { subject: path.startsWith("input.targetRelease") ? "Project" : "Design", anchor: null };
   };
   const blockers: BlockerView[] = data.blockers.map(blocker => ({
-    code: blocker.code, ...(BLOCKERS[blocker.code] ?? { category: "Other", label: "Review is needed before this can progress." }), ...subjectOf(blocker.path) }));
+    code: blocker.code, path: blocker.path, ...(BLOCKERS[blocker.code] ?? { category: "Other", label: "Review is needed before this can progress." }), ...subjectOf(blocker.path) }));
   const byCategory = [...Map.groupBy(blockers, item => item.category)].map(([category, items]) => ({ category, items }));
 
   const refView = (id: string): RefView => {
