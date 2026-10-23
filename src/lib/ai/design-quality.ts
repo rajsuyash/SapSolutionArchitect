@@ -1,10 +1,10 @@
 import { z } from "zod";
 
-import { FIT_TYPES, id, ids, list, text, texts } from "./design-primitives";
+import { FIT_TYPES, STEP_TYPES, id, ids, list, phase, text, texts } from "./design-primitives";
 import { checkRegisters, RegistersShape } from "./design-registers";
 import { lintSapObjects } from "./sap-object-lint";
 
-export { id, ids, list, text, FIT_TYPES };
+export { id, ids, list, text, FIT_TYPES, STEP_TYPES };
 export const IMPLEMENTATION_KINDS = ["STANDARD", "CONFIGURATION", "EXTENSION", "INTEGRATION", "MANUAL", "NEEDS_VALIDATION"] as const;
 
 /** A reference is trusted only because a server-side curated catalog supplied it. */
@@ -24,7 +24,9 @@ export const DesignContextSchema = z.strictObject({
   targetRelease: text,
   asIsSteps: list(z.strictObject({ id, name: text })).min(1),
   sources: list(z.strictObject({ id, locator: text, text: text.max(40000) })).min(1),
-  requirements: list(z.strictObject({ id, asIsStepId: id, sourceId: id, quote: text, critical: z.boolean() })).min(1),
+  requirements: list(z.strictObject({ id, asIsStepId: id, sourceId: id, quote: text, critical: z.boolean(),
+    /** Optional so older callers keep working; the version 3 register checks use it to find controls and pain points. */
+    kind: z.enum(["PAIN_POINT", "TO_BE_REQUIREMENT", "CONTROL"]).optional() })).min(1),
   conflicts: list(z.strictObject({ id, sourceIds: ids.min(1), question: text })),
   approvedDecisions: list(z.strictObject({
     id, subjectType: z.enum(["REQUIREMENT", "CONFLICT"]), subjectId: id,
@@ -37,10 +39,11 @@ export const DesignContextSchema = z.strictObject({
   companyContext: list(z.strictObject({ fieldId: id, value: text })).optional(),
 });
 
-/** Version 1 designs (steps only) stay readable forever; version 2 adds the solution-design registers. evaluateDesign enforces
- * which version carries which: a version 2 design needs every register, a version 1 design carries none. */
+/** Version 1 designs (steps only) stay readable forever; version 2 adds the solution-design registers and version 3 the scope, document,
+ * governance and reporting registers plus step type and phase. evaluateDesign enforces which version carries which: version 3 needs every
+ * register and the step fields, version 2 the first eight registers, version 1 none. */
 export const DetailedDesignSchema = z.strictObject({
-  schemaVersion: z.union([z.literal(1), z.literal(2)]), processName: text, ...RegistersShape,
+  schemaVersion: z.union([z.literal(1), z.literal(2), z.literal(3)]), processName: text, ...RegistersShape,
   steps: list(z.strictObject({
     id, sequence: z.number().int().positive(), title: text,
     asIsStepIds: ids, requirementIds: ids,
@@ -48,6 +51,8 @@ export const DetailedDesignSchema = z.strictObject({
      * empty only when this is non-empty; version 1 designs never carry it, so their rule (at least one requirement) is unchanged. */
     enablesStepIds: ids.optional(),
     actor: text, trigger: text,
+    /** Version 3: how the step is performed, the phase it goes live in, and the interim process while it is not yet live. */
+    stepType: z.enum(STEP_TYPES).optional(), phase: phase.optional(), interimProcess: text.nullable().optional(),
     inputDocuments: texts, outputDocuments: texts,
     actions: list(z.strictObject({ actor: text, system: text, operation: text, fields: texts })).min(1),
     businessRules: list(z.strictObject({ id, condition: text, response: text })).min(1),
@@ -297,8 +302,10 @@ export function evaluateDesign(input: unknown, value: unknown): DesignEvaluation
     block("OPEN_QUESTION", path);
   });
   checkRegisters(draft, {
-    requirements: new Map(context.requirements.map(item => [item.id, { critical: item.critical }])),
+    requirements: new Map(context.requirements.map(item => [item.id, { critical: item.critical, kind: item.kind }])),
     stepIds: new Set(steps.keys()), referenceIds: new Set(references.keys()), companyContext: context.companyContext ?? [],
+    steps: draft.steps.map(step => ({ id: step.id, actor: step.actor, outputDocuments: step.outputDocuments, stepType: step.stepType, phase: step.phase,
+      interimProcess: step.interimProcess, businessRuleIds: step.businessRules.map(rule => rule.id) })),
     takenIds: new Set([...steps.keys(), ...draft.steps.flatMap(step => [...step.businessRules.map(rule => rule.id), ...step.acceptanceTests.map(test => test.id)]),
       ...draft.openQuestions.map(question => question.id)]),
   }, error);

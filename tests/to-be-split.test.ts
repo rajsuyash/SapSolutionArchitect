@@ -6,8 +6,8 @@ import { createStageRunner } from "../src/lib/ai/runStage";
 import { evaluateDesign, DetailedDesignSchema } from "../src/lib/ai/design-quality";
 import { toBeContext, parseToBeInput } from "../src/lib/ai/to-be";
 import { rentalDraft } from "../fixtures/ai/to-be/rental-benchmark";
-import { rentalDraftV2, rentalRegisterGroups } from "../fixtures/ai/to-be/rental-registers";
-import { REGISTER_GROUP_NAMES, type RegisterGroup } from "../src/lib/ai/design-registers";
+import { rentalDraftV3, rentalRegisterGroups } from "../fixtures/ai/to-be/rental-registers";
+import { LATE_GROUPS, REGISTER_GROUP_NAMES, type RegisterGroup } from "../src/lib/ai/design-registers";
 import { asStream } from "./support/sse";
 import { fixture, withCompanyContext } from "./support/to-be-input";
 import { registerGroupOf, splitDesign, stepIdOf, toolOf, toolResponse, type RequestBody } from "./support/to-be-split";
@@ -187,14 +187,14 @@ describe("skeleton-then-expansion assembly", () => {
     const design = result.payload.design;
     expect(DetailedDesignSchema.safeParse(design).success).toBe(true);
     expect(evaluateDesign(toBeContext(parseToBeInput(fixture())), design)).toMatchObject({ structurallyValid: true, errors: [] });
-    expect(design).toEqual(rentalDraftV2);
+    expect(design).toEqual(rentalDraftV3);
     expect(result.payload.evaluation.structurallyValid).toBe(true);
     expect(h.outlineCalls).toHaveLength(1);
     expect(h.stepCalls.map(call => call.id).sort()).toEqual([...STEP_IDS].sort());
     expect(h.registerCalls.map(call => call.group).sort()).toEqual([...REGISTER_GROUP_NAMES].sort());
-    expect(result.metrics).toMatchObject({ stage: "to_be", attempts: 8, inputTokens: 800, outputTokens: 1600,
+    expect(result.metrics).toMatchObject({ stage: "to_be", attempts: 12, inputTokens: 1200, outputTokens: 2400,
       substages: { to_be_outline: { calls: 1, inputTokens: 100, outputTokens: 200 }, to_be_step: { calls: 3, inputTokens: 300, outputTokens: 600 },
-        to_be_registers: { calls: 4, inputTokens: 400, outputTokens: 800 } } });
+        to_be_registers: { calls: 8, inputTokens: 800, outputTokens: 1600 } } });
   });
   it("gives each step call only its own requirements, sources and the frozen outline", async () => {
     const h = harness(); await h.run();
@@ -249,12 +249,12 @@ describe("per-step repair", () => {
     const result = await h.run();
     expect(h.stepCount).toEqual({ "TB-1": 1, "TB-2": 2, "TB-3": 1 });
     expect(h.outlineCalls).toHaveLength(1);
-    expect(h.registerCalls).toHaveLength(4);
+    expect(h.registerCalls).toHaveLength(REGISTER_GROUP_NAMES.length);
     const repair = h.stepCalls.filter(call => call.id === "TB-2")[1]!.body.messages[0]!.content;
     expect(repair).toContain("INVALID_DRAFT");
     expect(repair).not.toContain("private-invalid-model-output");
-    expect(result.payload.design).toEqual(rentalDraftV2);
-    expect(result.metrics.attempts).toBe(9);
+    expect(result.payload.design).toEqual(rentalDraftV3);
+    expect(result.metrics.attempts).toBe(13);
     expect(result.metrics.substages!.to_be_step!.calls).toBe(4);
   });
   it("re-requests only the step that a post-assembly check attributes the error to", async () => {
@@ -263,7 +263,7 @@ describe("per-step repair", () => {
     const result = await h.run();
     expect(h.stepCount).toEqual({ "TB-1": 1, "TB-2": 1, "TB-3": 2 });
     expect(h.stepCalls.filter(call => call.id === "TB-3")[1]!.body.messages[0]!.content).toContain("TEST_TRACE_MISMATCH");
-    expect(result.payload.design).toEqual(rentalDraftV2);
+    expect(result.payload.design).toEqual(rentalDraftV3);
   });
   it("fails with AI_INVALID_OUTPUT when the step is still invalid after its AI_TO_BE_PART_REPAIRS=2 retries", async () => {
     const h = harness({ step: id => id === "TB-1" ? { oops: true } : split.details[id] });
@@ -277,7 +277,7 @@ describe("per-step repair", () => {
     const result = await h.run();
     expect(h.stepCount["TB-2"]).toBe(3);
     expect(h.stepCalls.filter(call => call.id === "TB-2")[2]!.body.messages[0]!.content).toContain("INVALID_DRAFT");
-    expect(result.payload.design).toEqual(rentalDraftV2);
+    expect(result.payload.design).toEqual(rentalDraftV3);
   });
   it("AI_TO_BE_PART_REPAIRS=1 allows one retry and 0 allows none", async () => {
     for (const [repairs, calls] of [["1", 2], ["0", 1]] as const) {
@@ -291,7 +291,7 @@ describe("per-step repair", () => {
     const result = await h.run();
     expect(h.registerCount.fitgap).toBe(1);
     expect(result.metrics.warnings).toEqual(expect.arrayContaining([{ code: "REPAIRED_WRAPPED_PAYLOAD", path: "draft", detail: "parameter" }]));
-    expect(result.payload.design).toEqual(rentalDraftV2);
+    expect(result.payload.design).toEqual(rentalDraftV3);
   });
   it("repairs an outline that omits a coverage row with a patch of the missing rows, then expands every step once", async () => {
     // The first outline omits R-6; the missing row is a path-attributable error, so the model is asked for that row only.
@@ -302,7 +302,7 @@ describe("per-step repair", () => {
     expect(h.patchCalls).toHaveLength(1);
     expect(h.patchCalls[0]!.messages[0]!.content).toContain("REQUIREMENT_UNDISPOSITIONED");
     for (const id of STEP_IDS) expect(h.stepCount[id]).toBe(1);
-    expect(result.payload.design).toEqual(rentalDraftV2);
+    expect(result.payload.design).toEqual(rentalDraftV3);
   });
 });
 
@@ -316,7 +316,7 @@ describe("outline validation and repair", () => {
     expect(JSON.stringify(request.validationErrors)).toContain("REQUIREMENT_UNDISPOSITIONED");
     expect(JSON.stringify(request.validationErrors)).not.toContain("private-invalid-model-output");
     expect(request.repairNote).not.toContain("private-invalid-model-output");
-    expect(result.payload.design).toEqual({ ...rentalDraftV2, processName: "private-invalid-model-output" }); // the patch replaces only what was flagged
+    expect(result.payload.design).toEqual({ ...rentalDraftV3, processName: "private-invalid-model-output" }); // the patch replaces only what was flagged
   });
   it("fails with AI_INVALID_OUTPUT, before any step call, when the outline is still invalid", async () => {
     const wrong = { ...split.outline, conflictDecisions: [{ conflictId: "CON-1", decisionId: "FAKE-APPROVAL" }] };
@@ -396,8 +396,11 @@ describe("company context as design input", () => {
   const answers = { operating_scale: long, approval_rules: "Credit memos above 500 need the finance lead.", kpi_targets: "Quote turnaround under 2 days" };
   const input = () => withCompanyContext(fixture(), answers);
   const kpiRows = [{ id: "KPI-1", name: "Quote turnaround in days", baseline: "not provided", target: "Quote turnaround under 2 days", measuredFrom: "Quotation documents",
-    referenceIds: [], needsValidation: true, validationReason: "Confirm the app", requirementIds: [], contextFieldIds: ["kpi_targets"], stepIds: ["TB-1"] }];
-  const registers = (group: RegisterGroup) => group === "integration" ? { ...rentalRegisterGroups.integration, kpis: kpiRows } : rentalRegisterGroups[group];
+    referenceIds: [], needsValidation: true, validationReason: "Confirm the app", requirementIds: [], contextFieldIds: ["kpi_targets"], stepIds: ["TB-1"],
+    owner: "Rental operations lead", producingStepId: "TB-1" }];
+  const objectives = [{ ...rentalRegisterGroups.scope.objectives[0]!, contextFieldIds: ["kpi_targets"] }, rentalRegisterGroups.scope.objectives[1]!];
+  const registers = (group: RegisterGroup) => group === "integration" ? { ...rentalRegisterGroups.integration, kpis: kpiRows }
+    : group === "scope" ? { ...rentalRegisterGroups.scope, objectives } : rentalRegisterGroups[group];
 
   it("sends the answered fields to the outline call and to every register call, whole", async () => {
     const h = harness({ registers: group => registers(group) });
@@ -405,7 +408,7 @@ describe("company context as design input", () => {
     const outline = JSON.parse(h.outlineCalls[0]!.messages[0]!.content).input.discovery.companyContext as { fieldId: string; value: string; evidence: unknown }[];
     expect(outline.map(item => item.fieldId)).toEqual(["operating_scale", "approval_rules", "kpi_targets"]);
     expect(outline[0]!.value).toBe(long);
-    expect(h.registerCalls).toHaveLength(4);
+    expect(h.registerCalls).toHaveLength(REGISTER_GROUP_NAMES.length);
     for (const call of h.registerCalls) {
       const sent = JSON.parse(call.body.messages[0]!.content);
       expect(sent.companyContext).toEqual([
@@ -446,14 +449,14 @@ describe("register calls: repair and checks", () => {
   it("re-requests only the invalid register group, once, with paths and codes but never the model's values", async () => {
     const h = harness({ registers: (group, nth) => group === "fitgap" && nth === 1 ? badFitGap : rentalRegisterGroups[group] });
     const result = await h.run();
-    expect(h.registerCount).toEqual({ decisions: 1, fitgap: 2, foundation: 1, integration: 1 });
+    expect(h.registerCount).toEqual(Object.fromEntries(REGISTER_GROUP_NAMES.map(group => [group, group === "fitgap" ? 2 : 1])));
     expect(h.stepCalls).toHaveLength(3);
     expect(h.outlineCalls).toHaveLength(1);
     const repair = h.registerCalls.filter(call => call.group === "fitgap")[1]!.body.messages[0]!.content;
     expect(repair).toContain("INVALID_DRAFT");
     expect(repair).toContain("draft.fitGap.0");
     expect(repair).not.toContain("private-register-output");
-    expect(result.payload.design).toEqual(rentalDraftV2);
+    expect(result.payload.design).toEqual(rentalDraftV3);
   });
   it("fails with AI_INVALID_OUTPUT when a register group is still invalid after its retries", async () => {
     const h = harness({ registers: group => group === "decisions" ? { oops: true } : rentalRegisterGroups[group] });
@@ -474,7 +477,8 @@ describe("register calls: repair and checks", () => {
     const withRetained = withCompanyContext(fixture(), { retained_systems: "Customer portal\nLegacy dispatch system" });
     const rows = ["Customer portal", "Legacy dispatch system"].map((system, i) => ({ id: `IF-${i + 1}`, counterpartSystem: system, direction: "BIDIRECTIONAL" as const,
       triggerFrequency: "Daily", payload: "Hire orders", errorOwner: "Integration lead", outOfScopeReason: null, referenceIds: [], needsValidation: true,
-      validationReason: "Confirm the API", requirementIds: [], contextFieldIds: ["retained_systems"], stepIds: ["TB-1"] }));
+      validationReason: "Confirm the API", requirementIds: [], contextFieldIds: ["retained_systems"], stepIds: ["TB-1"],
+      failureHandling: { detection: "Error list", alerting: "Mail to the integration lead", rerun: "Resend the message", idempotency: "Message key is stored" } }));
     const h = harness({ registers: (group, nth) => group !== "integration" ? rentalRegisterGroups[group]
       : { interfaces: nth === 1 ? rows.slice(0, 1) : rows, kpis: [] } });
     const result = await h.run(withRetained);
@@ -487,12 +491,14 @@ describe("register calls: repair and checks", () => {
       ? { ...split.details[id], effects: { ...split.details[id]!.effects, financial: "Post with movement type 777 and Fiori app F9999." } } : split.details[id] });
     const result = await h.run();
     expect(h.stepCount).toEqual({ "TB-1": 1, "TB-2": 2, "TB-3": 1 });
-    expect(h.registerCalls).toHaveLength(4);
+    // The documents and governance groups read the step bodies, so they are written again once a step has been redone.
+    expect(h.registerCalls).toHaveLength(REGISTER_GROUP_NAMES.length + LATE_GROUPS.length);
+    expect(Object.fromEntries(LATE_GROUPS.map(group => [group, h.registerCount[group]]))).toEqual({ documents: 2, governance: 2 });
     const repair = h.stepCalls.filter(call => call.id === "TB-2")[1]!.body.messages[0]!.content;
     expect(repair).toContain("UNKNOWN_SAP_OBJECT");
     expect(repair).toContain("draft.steps.1.effects.financial");
     expect(repair).toContain("F9999");
-    expect(result.payload.design).toEqual(rentalDraftV2);
+    expect(result.payload.design).toEqual(rentalDraftV3);
   });
   it("sends an SAP object outside the catalog in a register back to that register group", async () => {
     const h = harness({ registers: (group, nth) => group === "decisions" && nth === 1
@@ -543,7 +549,7 @@ describe("outline repair by patch", () => {
   it("asks for a small patch when the only error is one bad step, merges it, and counts the call under to_be_outline", async () => {
     const h = harness({ outline: () => badKindOutline, patch: () => ({ steps: [split.outline.steps[0]] }) });
     const result = await h.run();
-    expect(result.payload.design).toEqual(rentalDraftV2);
+    expect(result.payload.design).toEqual(rentalDraftV3);
     expect(h.outlineCalls).toHaveLength(1);
     expect(h.patchCalls).toHaveLength(1);
     expect(result.metrics.substages!.to_be_outline!.calls).toBe(2); // the outline and its patch
@@ -562,7 +568,7 @@ describe("outline repair by patch", () => {
   it("a patch that is cut off or fails its schema is a failed repair; the third answer is a patch again, built on the same outline", async () => {
     const h = harness({ outline: () => badKindOutline, patch: n => n === 1 ? { steps: "x" } : { steps: [split.outline.steps[0]] } });
     const result = await h.run();
-    expect(result.payload.design).toEqual(rentalDraftV2);
+    expect(result.payload.design).toEqual(rentalDraftV3);
     expect(h.patchCalls).toHaveLength(2);
     expect(result.metrics.substages!.to_be_outline!.calls).toBe(3);
     expect(result.metrics.attemptIssues!.flat().map(issue => issue.path)).toEqual(["outline.steps.0.implementation.kind", "outline.patch.steps"]);
@@ -585,7 +591,7 @@ describe("model slips in tool inputs", () => {
     const h = harness({ outline: () => stringy });
     const result = await h.run();
     expect(h.outlineCalls).toHaveLength(1);
-    expect(result.payload.design).toEqual(rentalDraftV2);
+    expect(result.payload.design).toEqual(rentalDraftV3);
     expect(notes(result)).toEqual(expect.arrayContaining(["REPAIRED_STRINGIFIED_JSON@outline.coverage", "REPAIRED_STRINGIFIED_JSON@outline.conflictDecisions",
       "REPAIRED_STRINGIFIED_JSON@outline.openQuestions"]));
   });
@@ -632,8 +638,18 @@ describe("enabling steps through the pipeline", () => {
       acceptanceTests: base.acceptanceTests.map(test => ({ ...test, id: `TB-0-${test.id}`, requirementIds: [] as string[] })) };
   };
 
+  /** The fixture registers with TB-0 added where every step must appear (objectives, roles, end-to-end tests). */
+  const withSetup = (group: RegisterGroup) => {
+    const base = structuredClone(rentalRegisterGroups[group]) as Record<string, { stepIds: string[] }[]>;
+    if (group === "scope") base.objectives![0]!.stepIds.push("TB-0");
+    if (group === "governance") base.roles![0]!.stepIds.push("TB-0");
+    if (group === "reporting") base.endToEndTests![0]!.stepIds.push("TB-0");
+    // The set-up step is a copy of TB-1, so it also produces the hire order and needs a transition of its own.
+    if (group === "documents") (base.documentStatusModels![0] as unknown as { transitions: unknown[] }).transitions.push({ from: "Open", to: "Open", stepId: "TB-0", event: "Set-up" });
+    return base;
+  };
   it("accepts an outline step with no requirements that enables a step, expands it with the enabled step's requirements in view, and assembles it", async () => {
-    const h = harness({ outline: () => outlineWithSetup(), step: id => id === "TB-0" ? setupDetail() : split.details[id] });
+    const h = harness({ outline: () => outlineWithSetup(), step: id => id === "TB-0" ? setupDetail() : split.details[id], registers: group => withSetup(group) });
     const result = await h.run();
     const setup = result.payload.design.steps[0]!;
     expect(setup).toMatchObject({ id: "TB-0", requirementIds: [], enablesStepIds: ["TB-1"] });
@@ -647,7 +663,7 @@ describe("enabling steps through the pipeline", () => {
 
   it("links an empty-requirement outline step that enables nothing to the next requirement-bearing step", async () => {
     const bad = outlineWithSetup(); delete (bad.steps[0] as { enablesStepIds?: string[] }).enablesStepIds;
-    const h = harness({ outline: () => bad, step: id => id === "TB-0" ? setupDetail() : split.details[id], overrides: { AI_TO_BE_OUTLINE_REPAIRS: "0" } });
+    const h = harness({ outline: () => bad, step: id => id === "TB-0" ? setupDetail() : split.details[id], registers: group => withSetup(group), overrides: { AI_TO_BE_OUTLINE_REPAIRS: "0" } });
     const result = await h.run();
     expect(result.payload.design.steps[0]).toMatchObject({ id: "TB-0", requirementIds: [], enablesStepIds: ["TB-1"] });
     expect(result.metrics.warnings).toContainEqual({ code: "REPAIRED_ENABLING_LINK", path: "outline.steps.0" });
@@ -665,7 +681,7 @@ describe("To-Be answers without a tool call", () => {
     const result = await h.run();
     expect(result.metrics.textFallbacks).toBe(3);
     expect(h.stepCount[STEP_IDS[0]!]).toBe(1);
-    expect(result.payload.design).toEqual(rentalDraftV2);
+    expect(result.payload.design).toEqual(rentalDraftV3);
   });
 
   it("does not trust text that is invalid for the schema: it is repaired twice, then fails closed", async () => {
@@ -715,15 +731,14 @@ describe("tool input schemas sent to the provider", () => {
     for (const branch of node.anyOf ?? []) missing(branch, path, out, seen);
     return out;
   };
-  it("lists every non-optional field as required in the outline, step and all four register tools (nested objects included)", async () => {
+  it("lists every non-optional field as required in the outline, step and all eight register tools (nested objects included)", async () => {
     const seen: RequestBody[] = [];
     // The first outline has one bad field, so the repair asks for a patch and every tool the pipeline can send is requested once.
     const h = harness({ outline: () => badKindOutline, patch: () => ({ steps: [split.outline.steps[0]] }) });
     const spy = vi.fn<typeof globalThis.fetch>(async (url, init) => { seen.push(JSON.parse(String(init?.body))); return h.fetch(url, init); });
     await createStageRunner(settings(), { fetch: spy })("to_be", fixture());
     const tools = new Map(seen.flatMap(body => body.tools ?? []).map((tool: { name: string; input_schema: unknown }) => [tool.name, tool.input_schema as Node] as const));
-    expect([...tools.keys()].sort()).toEqual(["submit_to_be_outline", "submit_to_be_outline_patch", "submit_to_be_registers_decisions", "submit_to_be_registers_fitgap",
-      "submit_to_be_registers_foundation", "submit_to_be_registers_integration", "submit_to_be_step"]);
+    expect([...tools.keys()].sort()).toEqual(["submit_to_be_outline", "submit_to_be_outline_patch", ...REGISTER_GROUP_NAMES.map(group => `submit_to_be_registers_${group}`), "submit_to_be_step"].sort());
     // The patch's four sections are each optional (a patch names only what it replaces); the items inside them must be fully required.
     const patchSections = ["steps", "coverage", "openQuestions", "eliminatedAsIsSteps"].map(key => `submit_to_be_outline_patch.${key}`);
     for (const [name, schema] of tools) expect(missing(schema, name).filter(path => !patchSections.includes(path)), name).toEqual([]);
@@ -735,5 +750,49 @@ describe("tool input schemas sent to the provider", () => {
     // A tool whose required list has been dropped must be caught by the same walker.
     const stripped = structuredClone(step); delete stripped.properties!.effects!.required;
     expect(missing(stripped, "step").length).toBeGreaterThan(0);
+  });
+});
+
+describe("late register groups (documents, governance)", () => {
+  const isLate = (group: RegisterGroup) => (LATE_GROUPS as readonly string[]).includes(group);
+  it("run only after every step call, and are the only register calls that receive the step digest", async () => {
+    const order: string[] = [];
+    const h = harness({ step: id => { order.push(`step:${id}`); return split.details[id]; },
+      registers: group => { order.push(`group:${group}`); return rentalRegisterGroups[group]; } });
+    await h.run();
+    const lastStep = Math.max(...STEP_IDS.map(id => order.indexOf(`step:${id}`)));
+    for (const group of LATE_GROUPS) expect(order.indexOf(`group:${group}`), group).toBeGreaterThan(lastStep);
+    for (const call of h.registerCalls) {
+      const sent = JSON.parse(call.body.messages[0]!.content) as { steps?: { id: string; actor: string; outputDocuments: string[]; businessRules: { id: string }[] }[] };
+      if (!isLate(call.group)) { expect(sent.steps, call.group).toBeUndefined(); continue; }
+      expect(sent.steps!.map(step => step.id)).toEqual(STEP_IDS);
+      expect(sent.steps![0]).toMatchObject({ actor: "Rental coordinator", outputDocuments: rentalDraft.steps[0]!.outputDocuments });
+      expect(sent.steps![0]!.businessRules.map(rule => rule.id)).toEqual(["BR-1", "BR-2"]);
+    }
+  });
+  it("a governance answer whose roles do not match the step actors goes back to governance alone", async () => {
+    const wrong = { ...rentalRegisterGroups.governance, roles: rentalRegisterGroups.governance.roles.map((role, i) => i === 2 ? { ...role, name: "Accounts clerk" } : role) };
+    const h = harness({ registers: (group, nth) => group === "governance" && nth === 1 ? wrong : rentalRegisterGroups[group] });
+    const result = await h.run();
+    expect(h.registerCount).toEqual(Object.fromEntries(REGISTER_GROUP_NAMES.map(group => [group, group === "governance" ? 2 : 1])));
+    expect(h.stepCalls).toHaveLength(3);
+    const repair = h.registerCalls.filter(call => call.group === "governance")[1]!.body.messages[0]!.content;
+    expect(repair).toContain("ROLE_ACTOR_UNMATCHED");
+    expect(repair).not.toContain("Accounts clerk");
+    expect(result.payload.design).toEqual(rentalDraftV3);
+  });
+  it("a step answer without stepType is sent back to that step with the path of the field", async () => {
+    const h = harness({ step: (id, nth) => id === "TB-2" && nth === 1 ? { ...split.details[id], stepType: undefined } : split.details[id] });
+    const result = await h.run();
+    expect(h.stepCount).toEqual({ "TB-1": 1, "TB-2": 2, "TB-3": 1 });
+    expect(h.stepCalls.filter(call => call.id === "TB-2")[1]!.body.messages[0]!.content).toContain("draft.steps.1.stepType");
+    expect(result.payload.design).toEqual(rentalDraftV3);
+  });
+  it("a phase other than Phase 1 without an interim process is attributed to the step, not to a register", async () => {
+    const h = harness({ step: (id, nth) => id === "TB-3" && nth === 1 ? { ...split.details[id], phase: "Deferred" } : split.details[id] });
+    const result = await h.run();
+    expect(h.stepCount["TB-3"]).toBe(2);
+    expect(h.stepCalls.filter(call => call.id === "TB-3")[1]!.body.messages[0]!.content).toContain("STEP_INTERIM_MISSING");
+    expect(result.payload.design.steps[2]).toMatchObject({ phase: "Phase 1", interimProcess: null });
   });
 });

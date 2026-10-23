@@ -38,6 +38,7 @@ export const rentalDraft: DetailedDesign = {
       id: "TB-1", sequence: 1, title: "Create individually traceable hire items",
       asIsStepIds: ["AS-1"], requirementIds: ["R-1", "R-2"],
       actor: "Rental coordinator", trigger: "A customer accepts a quotation containing four identical hire units.",
+      stepType: "IN_SYSTEM_MANUAL", phase: "Phase 1", interimProcess: null,
       inputDocuments: ["Accepted quotation and item quantity", "Customer and delivery location", "Available asset identifiers"],
       actions: [
         { actor: "Rental coordinator", system: "Proposed hire workspace", operation: "Select the accepted quotation lines and confirm the quantity to convert.",
@@ -70,6 +71,7 @@ export const rentalDraft: DetailedDesign = {
       id: "TB-2", sequence: 2, title: "Receive a partial return and end charges per item",
       asIsStepIds: ["AS-2"], requirementIds: ["R-3", "R-4"],
       actor: "Rental stores clerk", trigger: "One of four hired assets physically returns.",
+      stepType: "IN_SYSTEM_MANUAL", phase: "Phase 1", interimProcess: null,
       inputDocuments: ["Open hire items", "Customer return note", "Returned asset identifier"],
       actions: [
         { actor: "Rental stores clerk", system: "Proposed returns workspace", operation: "Match the returned asset to the open hire item and record receipt details.",
@@ -101,6 +103,7 @@ export const rentalDraft: DetailedDesign = {
       id: "TB-3", sequence: 3, title: "Prepare recurring hire billing with one-time charges separated",
       asIsStepIds: ["AS-3"], requirementIds: ["R-5", "R-6"],
       actor: "Billing clerk", trigger: "The monthly billing period is ready for review.",
+      stepType: "IN_SYSTEM_MANUAL", phase: "Phase 1", interimProcess: null,
       inputDocuments: ["Hire items and their charge types", "Item-specific return records", "Prior billing records", "Approved billing rules"],
       actions: [
         { actor: "System", system: "Proposed billing workspace", operation: "Select eligible hire items for the period and separate recurring hire from installation charges.",

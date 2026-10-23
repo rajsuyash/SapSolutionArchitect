@@ -47,8 +47,8 @@ export function toBeContext(input: ToBeInput, references: DesignContext["referen
     targetProduct: input.targetProduct, targetRelease: discovery.targetRelease ?? "UNKNOWN",
     asIsSteps: discovery.asIsSteps.map(({ id, name }) => ({ id, name })),
     sources: discovery.sources.map(({ id, locator, text }) => ({ id, locator, text })),
-    requirements: discovery.requirements.map(({ id, asIsStepId, critical, evidence }) =>
-      ({ id, asIsStepId, critical, ...evidence })),
+    requirements: discovery.requirements.map(({ id, asIsStepId, critical, kind, evidence }) =>
+      ({ id, asIsStepId, critical, kind, ...evidence })),
     conflicts: discovery.conflicts,
     // No approved-decision workflow exists yet; source notes and sharedRules/decisionRegister
     // cannot confer approval. References are trusted only via the curated catalog.

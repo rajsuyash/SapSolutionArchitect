@@ -27,11 +27,11 @@ describe("worked example fixture", () => {
     expect(cited.size).toBeGreaterThan(0);
     for (const reference of cited) expect(references.map(item => item.id)).toContain(reference);
   });
-  it("passes evaluateDesign as an assembled version 2 design with no structural errors", () => {
+  it("passes evaluateDesign as an assembled version 3 design with no structural errors", () => {
     const evaluation = evaluateDesign(context, design());
     expect(evaluation.errors).toEqual([]);
     expect(evaluation.structurallyValid).toBe(true);
-    expect(design().schemaVersion).toBe(2);
+    expect(design().schemaVersion).toBe(3);
   });
   it("passes the SAP-object linter", () => {
     expect(lintSapObjects(design(), references)).toEqual([]);

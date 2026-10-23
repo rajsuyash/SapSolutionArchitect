@@ -1,5 +1,12 @@
 import { z } from "zod";
-import { FIT_TYPES, id, ids, list, text } from "./design-primitives";
+import { FIT_TYPES, basis, id, ids, list, text, trace } from "./design-primitives";
+import { norm, overlaps, type RegisterContext, type Report, type Row } from "./design-register-types";
+import {
+  ConfigurationItemSchema, ControlMappingSchema, DocumentStatusModelSchema, EndToEndTestSchema, ObjectiveSchema, ReportRowSchema, RoleSchema,
+  ScopeStatementSchema, SodAssessmentSchema, checkVersion3, fitGapExtension, interfaceExtension, kpiExtension, masterDataExtension, orgExtension,
+} from "./design-registers-v3";
+
+export type { RegisterContext } from "./design-register-types";
 
 /** The solution-design registers a principal consultant's blueprint carries beyond the step walkthrough (schemaVersion 2).
  * Every row traces to requirements, company-context field ids and/or steps; every SAP object it names comes from the curated
@@ -8,8 +15,9 @@ export const FIT_CLASSES = ["STANDARD", "CONFIGURATION", "STANDARD_INTEGRATION",
 export const RICEFW_TYPES = ["REPORT", "INTERFACE", "CONVERSION", "ENHANCEMENT", "FORM", "WORKFLOW"] as const;
 export const NOT_PROVIDED = "not provided";
 
-const trace = { requirementIds: ids, contextFieldIds: ids, stepIds: ids };
-const basis = { referenceIds: ids, needsValidation: z.boolean(), validationReason: text.nullable() };
+/** The fields version 3 adds to a version 2 row are required when the model answers and optional when a stored design is read. */
+const optionally = <T extends z.ZodRawShape>(shape: T) =>
+  Object.fromEntries(Object.entries(shape).map(([key, value]) => [key, (value as z.ZodType).optional()])) as unknown as { [K in keyof T]: z.ZodOptional<T[K]> };
 
 export const KeyDesignDecisionSchema = z.strictObject({
   id, topic: text,
@@ -17,36 +25,54 @@ export const KeyDesignDecisionSchema = z.strictObject({
   recommendation: text, rationale: text, impactedStepIds: ids.min(1), requirementIds: ids, contextFieldIds: ids,
   owner: text, status: z.literal("PROPOSED"),
 });
-export const FitGapRowSchema = z.strictObject({
-  requirementId: id, classification: z.enum(FIT_CLASSES), ricefwType: z.enum(RICEFW_TYPES).nullable(), justification: text,
-  stepIds: ids, ...basis,
-});
-export const OrgUnitSchema = z.strictObject({ id, unitType: text, proposal: text, openPoint: text.nullable(), ...trace });
-export const MasterDataPrerequisiteSchema = z.strictObject({
-  id, object: text, owner: text, keyFields: z.array(text).min(1).max(50), migrationSource: text, ...trace,
-});
-export const InterfaceSchema = z.strictObject({
+const fitGapBase = { requirementId: id, classification: z.enum(FIT_CLASSES), ricefwType: z.enum(RICEFW_TYPES).nullable(), justification: text, stepIds: ids, ...basis };
+const orgBase = { id, unitType: text, proposal: text, openPoint: text.nullable(), ...trace };
+const masterDataBase = { id, object: text, owner: text, keyFields: z.array(text).min(1).max(50), migrationSource: text, ...trace };
+const interfaceBase = {
   id, counterpartSystem: text, direction: z.enum(["INBOUND", "OUTBOUND", "BIDIRECTIONAL"]), triggerFrequency: text, payload: text,
   errorOwner: text, outOfScopeReason: text.nullable(), ...basis, ...trace,
-});
-export const KpiSchema = z.strictObject({ id, name: text, baseline: text, target: text, measuredFrom: text, ...basis, ...trace });
+};
+const kpiBase = { id, name: text, baseline: text, target: text, measuredFrom: text, ...basis, ...trace };
+export const FitGapRowSchema = z.strictObject({ ...fitGapBase, ...fitGapExtension });
+export const OrgUnitSchema = z.strictObject({ ...orgBase, ...orgExtension });
+export const MasterDataPrerequisiteSchema = z.strictObject({ ...masterDataBase, ...masterDataExtension });
+export const InterfaceSchema = z.strictObject({ ...interfaceBase, ...interfaceExtension });
+export const KpiSchema = z.strictObject({ ...kpiBase, ...kpiExtension });
 export const DataMigrationSchema = z.strictObject({ id, object: text, source: text, approach: text, sequence: z.number().int().positive(), risk: text, ...trace });
 export const CutoverSchema = z.strictObject({ id, activity: text, sequence: z.number().int().positive(), owner: text, risk: text, ...trace });
 
+/** What a stored design may hold: the version 3 fields of the version 2 registers are optional here. */
+const StoredFitGapSchema = z.strictObject({ ...fitGapBase, ...optionally(fitGapExtension) });
+const StoredOrgUnitSchema = z.strictObject({ ...orgBase, ...optionally(orgExtension) });
+const StoredMasterDataSchema = z.strictObject({ ...masterDataBase, ...optionally(masterDataExtension) });
+const StoredInterfaceSchema = z.strictObject({ ...interfaceBase, ...optionally(interfaceExtension) });
+const StoredKpiSchema = z.strictObject({ ...kpiBase, ...optionally(kpiExtension) });
+
 export const RegistersShape = {
-  keyDesignDecisions: list(KeyDesignDecisionSchema).optional(), fitGap: list(FitGapRowSchema).optional(),
-  orgStructure: list(OrgUnitSchema).optional(), masterDataPrerequisites: list(MasterDataPrerequisiteSchema).optional(),
-  interfaces: list(InterfaceSchema).optional(), kpis: list(KpiSchema).optional(),
+  keyDesignDecisions: list(KeyDesignDecisionSchema).optional(), fitGap: list(StoredFitGapSchema).optional(),
+  orgStructure: list(StoredOrgUnitSchema).optional(), masterDataPrerequisites: list(StoredMasterDataSchema).optional(),
+  interfaces: list(StoredInterfaceSchema).optional(), kpis: list(StoredKpiSchema).optional(),
   dataMigration: list(DataMigrationSchema).optional(), cutover: list(CutoverSchema).optional(),
+  // Version 3.
+  objectives: list(ObjectiveSchema).optional(), scopeStatements: list(ScopeStatementSchema).optional(),
+  documentStatusModels: list(DocumentStatusModelSchema).optional(), configurationCatalogue: list(ConfigurationItemSchema).optional(),
+  roles: list(RoleSchema).optional(), sodAssessments: list(SodAssessmentSchema).optional(), controlMappings: list(ControlMappingSchema).optional(),
+  reports: list(ReportRowSchema).optional(), endToEndTests: list(EndToEndTestSchema).optional(),
 };
 export type RegisterKey = keyof typeof RegistersShape;
 export const REGISTER_KEYS = Object.keys(RegistersShape) as RegisterKey[];
+/** The registers a version 2 design carries; version 3 adds the rest. */
+export const VERSION_2_KEYS = REGISTER_KEYS.slice(0, 8);
 
 /** One model call per group; each stays within roughly 4k output tokens. */
 export const REGISTER_GROUPS = {
   decisions: ["keyDesignDecisions"], fitgap: ["fitGap"],
-  foundation: ["orgStructure", "masterDataPrerequisites", "dataMigration", "cutover"], integration: ["interfaces", "kpis"],
+  foundation: ["masterDataPrerequisites", "dataMigration", "cutover"], integration: ["interfaces", "kpis"],
+  scope: ["objectives", "scopeStatements", "orgStructure"], reporting: ["reports", "endToEndTests"],
+  documents: ["documentStatusModels", "configurationCatalogue"], governance: ["roles", "sodAssessments", "controlMappings"],
 } as const satisfies Record<string, readonly RegisterKey[]>;
+/** Groups that need the finished step bodies (actors, output documents, rule ids), so they run after the step calls. */
+export const LATE_GROUPS = ["documents", "governance"] as const satisfies readonly (keyof typeof REGISTER_GROUPS)[];
 export type RegisterGroup = keyof typeof REGISTER_GROUPS;
 export const REGISTER_GROUP_NAMES = Object.keys(REGISTER_GROUPS) as RegisterGroup[];
 export const groupOf = (key: string): RegisterGroup | undefined => REGISTER_GROUP_NAMES.find(group => (REGISTER_GROUPS[group] as readonly string[]).includes(key));
@@ -54,36 +80,32 @@ export const groupOf = (key: string): RegisterGroup | undefined => REGISTER_GROU
 export const RegisterGroupSchemas = {
   decisions: z.strictObject({ keyDesignDecisions: list(KeyDesignDecisionSchema) }),
   fitgap: z.strictObject({ fitGap: list(FitGapRowSchema) }),
-  foundation: z.strictObject({ orgStructure: list(OrgUnitSchema), masterDataPrerequisites: list(MasterDataPrerequisiteSchema),
-    dataMigration: list(DataMigrationSchema), cutover: list(CutoverSchema) }),
+  foundation: z.strictObject({ masterDataPrerequisites: list(MasterDataPrerequisiteSchema), dataMigration: list(DataMigrationSchema), cutover: list(CutoverSchema) }),
   integration: z.strictObject({ interfaces: list(InterfaceSchema), kpis: list(KpiSchema) }),
+  scope: z.strictObject({ objectives: list(ObjectiveSchema), scopeStatements: list(ScopeStatementSchema), orgStructure: list(OrgUnitSchema) }),
+  reporting: z.strictObject({ reports: list(ReportRowSchema), endToEndTests: list(EndToEndTestSchema) }),
+  documents: z.strictObject({ documentStatusModels: list(DocumentStatusModelSchema), configurationCatalogue: list(ConfigurationItemSchema) }),
+  governance: z.strictObject({ roles: list(RoleSchema), sodAssessments: list(SodAssessmentSchema), controlMappings: list(ControlMappingSchema) }),
 } as const;
 export type RegisterPayloads = { [G in RegisterGroup]: z.infer<(typeof RegisterGroupSchemas)[G]> };
 
 // --- mechanical checks --------------------------------------------------------------------------------------
 
-type Row = { id?: string; requirementIds?: string[]; contextFieldIds?: string[]; stepIds?: string[]; referenceIds?: string[];
-  needsValidation?: boolean; validationReason?: string | null };
-export type RegisterContext = {
-  requirements: ReadonlyMap<string, { critical: boolean }>; stepIds: ReadonlySet<string>;
-  referenceIds: ReadonlySet<string>; companyContext: readonly { fieldId: string; value: string }[]; takenIds: ReadonlySet<string>;
-};
-type Report = (code: string, path: string, detail?: string) => void;
-type Draft = { schemaVersion: 1 | 2 } & { [K in RegisterKey]?: unknown[] };
+type Draft = { schemaVersion: 1 | 2 | 3 } & { [K in RegisterKey]?: unknown[] };
 
-const norm = (value: string) => value.toLowerCase().replace(/\s+/g, " ").replace(/[.\s]+$/, "").trim();
 /** Lines and semicolon items of a free-text answer that a register must account for. Headings ("Systems we keep:") are skipped. */
 const segments = (value: string, needsDigit = false) => value.split(/\r?\n|;/).map(norm).filter(part =>
   part.length >= 3 && !part.endsWith(":") && (!needsDigit || /\d/.test(part)));
-const overlaps = (a: string, b: string) => !!a && !!b && (a.includes(b) || b.includes(a));
 
 /** Checks the registers of a schemaVersion 2 design. A version 1 design must carry none. Codes only: no model text is echoed. */
 export function checkRegisters(draft: Draft, ctx: RegisterContext, error: Report): void {
-  if (draft.schemaVersion === 1) {
-    for (const key of REGISTER_KEYS) if (draft[key] !== undefined) error("REGISTER_VERSION_MISMATCH", `draft.${key}`);
-    return;
+  // Version 1 carries no registers, version 2 the first eight, version 3 all of them.
+  const expected: readonly RegisterKey[] = draft.schemaVersion === 1 ? [] : draft.schemaVersion === 2 ? VERSION_2_KEYS : REGISTER_KEYS;
+  for (const key of REGISTER_KEYS) {
+    if (expected.includes(key) && draft[key] === undefined) error("REGISTER_MISSING", `draft.${key}`);
+    if (!expected.includes(key) && draft[key] !== undefined) error("REGISTER_VERSION_MISMATCH", `draft.${key}`);
   }
-  for (const key of REGISTER_KEYS) if (draft[key] === undefined) error("REGISTER_MISSING", `draft.${key}`);
+  if (draft.schemaVersion === 1) return;
   const rows = (key: RegisterKey) => (draft[key] ?? []) as (Row & Record<string, unknown>)[];
   const known = new Map(ctx.companyContext.map(item => [item.fieldId, item.value]));
   const dup = (values: string[], path: string, code: string) => { if (new Set(values).size !== values.length) error(code, path); };
@@ -94,13 +116,13 @@ export function checkRegisters(draft: Draft, ctx: RegisterContext, error: Report
     if (seenIds.has(row.id)) error("DUPLICATE_OUTPUT_ID", `draft.${key}.${i}`);
     seenIds.add(row.id);
   });
-  const traced = (key: RegisterKey, row: Row, i: number, extra: string[] = []) => {
+  const traced = (key: RegisterKey, row: Row, i: number, extra: string[] = [], required = true) => {
     const path = `draft.${key}.${i}`;
     if (row.requirementIds?.some(ref => !ctx.requirements.has(ref))) error("UNKNOWN_REQUIREMENT", path);
     if (row.contextFieldIds?.some(ref => !known.has(ref))) error("UNKNOWN_CONTEXT_FIELD", path);
     if (row.stepIds?.some(ref => !ctx.stepIds.has(ref))) error("UNKNOWN_STEP", path);
     for (const list of [row.requirementIds, row.contextFieldIds, row.stepIds]) dup(list ?? [], path, "DUPLICATE_TRACE");
-    if (!(row.requirementIds?.length || row.contextFieldIds?.length || row.stepIds?.length || extra.length)) error("REGISTER_TRACE_MISSING", path);
+    if (required && !(row.requirementIds?.length || row.contextFieldIds?.length || row.stepIds?.length || extra.length)) error("REGISTER_TRACE_MISSING", path);
   };
   const based = (key: RegisterKey, row: Row, i: number, needed = true) => {
     const path = `draft.${key}.${i}`;
@@ -165,5 +187,9 @@ export function checkRegisters(draft: Draft, ctx: RegisterContext, error: Report
   if (targets !== undefined) {
     const stated = kpis.map(row => norm(row.target)).filter(target => target !== NOT_PROVIDED);
     if (segments(targets, true).some(part => !stated.some(target => overlaps(part, target)))) error("KPI_TARGET_UNCOVERED", "draft.kpis");
+  }
+  if (draft.schemaVersion === 3) {
+    checkVersion3({ ctx, error, known, dup, rows: key => rows(key as RegisterKey), based: (key, row, i, needed) => based(key as RegisterKey, row, i, needed),
+      traced: (key, row, i, extra, required) => traced(key as RegisterKey, row, i, extra, required) });
   }
 }

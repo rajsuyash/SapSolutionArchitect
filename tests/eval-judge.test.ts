@@ -6,7 +6,7 @@ import engineering from "../fixtures/eval/engineering-mto.json";
 import pump from "../fixtures/eval/pump-o2c.json";
 import strongControl from "../fixtures/eval/controls/pump-o2c.strong.json";
 import { DetailedDesignSchema } from "../src/lib/ai/design-quality";
-import { rentalDraftV2 } from "../fixtures/ai/to-be/rental-registers";
+import { rentalDraftV3 } from "../fixtures/ai/to-be/rental-registers";
 import { ScoringCaseSchema } from "../src/lib/eval-score";
 import { STEP_KEYS, WORKSPACE_FIELDS } from "../src/lib/workspace-fields";
 import {
@@ -358,7 +358,7 @@ describe("judgeOnce", () => {
 });
 
 describe("solution-design registers reach the judge", () => {
-  const v2 = loadToBe({ design: rentalDraftV2 });
+  const v2 = loadToBe({ design: rentalDraftV3 });
   it("sends the registers inside the design and the company context inside the case brief", () => {
     const brief = buildCaseBrief(pump);
     expect(brief.companyContext.map(item => item.fieldId)).toEqual(expect.arrayContaining(["operating_scale", "retained_systems", "kpi_baselines", "kpi_targets"]));
@@ -370,7 +370,7 @@ describe("solution-design registers reach the judge", () => {
   it("puts the content of every register and of coverage and open questions in the judge user message, not just the keys", () => {
     // The rental fixture leaves kpis and interfaces empty: add one row each so every register carries content.
     const trace = { requirementIds: [], contextFieldIds: [], stepIds: ["TB-1"] }, basis = { referenceIds: [], needsValidation: false, validationReason: null };
-    const full = loadToBe({ design: { ...rentalDraftV2,
+    const full = loadToBe({ design: { ...rentalDraftV3,
       kpis: [{ id: "KPI-X", name: "OTIF", baseline: "80%", target: "92% by Q4", measuredFrom: "Delivery docs", ...basis, ...trace }],
       interfaces: [{ id: "IF-X", counterpartSystem: "Salesforce", direction: "INBOUND", triggerFrequency: "On quote", payload: "Quote", errorOwner: "Sales ops", outOfScopeReason: null, ...basis, ...trace }] } });
     const text = buildUserPrompt(buildCaseBrief(pump), full);
@@ -384,8 +384,8 @@ describe("solution-design registers reach the judge", () => {
     for (const row of d.openQuestions!) expect(text).toContain(JSON.stringify(row));
   });
   it("loadToBe keeps the whole design of a saved eval run file", () => {
-    const run = { transcript: { toBe: { design: rentalDraftV2, requirements: [] } } };
-    expect(loadToBe(run).design).toEqual(rentalDraftV2);
+    const run = { transcript: { toBe: { design: rentalDraftV3, requirements: [] } } };
+    expect(loadToBe(run).design).toEqual(rentalDraftV3);
   });
   it("lets a verdict cite a register row, and tells the judge how to read the registers without touching the rubric", () => {
     const ids = citableIds(v2);

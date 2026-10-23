@@ -8,9 +8,11 @@ prose or execute another tool. The application, not this prompt, controls approv
 A second stage then expands every outline step into its operational detail (actor,
 trigger, documents, actions, rules, exceptions, master data, effects, SAP
 realization detail, acceptance tests), one separate call per step, with this
-outline frozen. In parallel, four register calls write the solution-design
-registers (key design decisions, clean-core fit-gap, organisation structure, master
-data, interfaces, KPIs, data migration, cutover) from this same frozen outline. So the outline must be complete and consistent on its own: the
+outline frozen. In parallel, eight register calls write the solution-design
+registers (key design decisions, clean-core fit-gap, objectives and scope,
+organisation structure, master data, interfaces, KPIs, data migration, cutover,
+reports, end-to-end tests, document status models, configuration catalogue, roles,
+segregation of duties, control mappings) from this same frozen outline. So the outline must be complete and consistent on its own: the
 steps with their trace and SAP fit, the As-Is steps that are eliminated, the
 coverage of every requirement, conflict dispositions and open questions. Keep it
 compact: each step carries only id, sequence, title, a one-line purpose, the As-Is

@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { DesignContextSchema, id, list, text, type DesignContext } from "./design-quality";
-import { RegisterGroupSchemas } from "./design-registers";
-import { OutlineSchema, StepDetailSchema } from "./to-be-pipeline";
+import { REGISTER_GROUP_NAMES, RegisterGroupSchemas } from "./design-registers";
+import { OutlineSchema, StepDetailSchema, assemble, stepDigest } from "./to-be-pipeline";
 
 /** One compact, hand-written example per To-Be call type, rendered into the system prompts at build time. The example is a
  * fictional process unrelated to any evaluation case (reusable kegs lent to pubs); tests/worked-example.test.ts runs the same
@@ -17,10 +17,7 @@ export const WorkedExampleSchema = z.strictObject({
   }),
   outline: OutlineSchema,
   details: z.record(id, StepDetailSchema),
-  registers: z.strictObject({
-    decisions: RegisterGroupSchemas.decisions, fitgap: RegisterGroupSchemas.fitgap,
-    foundation: RegisterGroupSchemas.foundation, integration: RegisterGroupSchemas.integration,
-  }),
+  registers: z.strictObject(RegisterGroupSchemas),
 });
 export type WorkedExample = z.infer<typeof WorkedExampleSchema>;
 
@@ -31,7 +28,7 @@ export function workedExampleContext(example: WorkedExample, references: DesignC
   const { context } = example;
   return {
     targetProduct: context.targetProduct, targetRelease: context.targetRelease, asIsSteps: context.asIsSteps, sources: context.sources,
-    requirements: context.requirements.map(({ id: requirementId, asIsStepId, sourceId, quote, critical }) => ({ id: requirementId, asIsStepId, sourceId, quote, critical })), conflicts: context.conflicts,
+    requirements: context.requirements.map(({ id: requirementId, asIsStepId, sourceId, quote, critical, kind }) => ({ id: requirementId, asIsStepId, sourceId, quote, critical, kind })), conflicts: context.conflicts,
     approvedDecisions: [], references, companyContext: context.companyContext.map(({ fieldId, value }) => ({ fieldId, value })),
   };
 }
@@ -43,7 +40,7 @@ const INTRO = "The example is a fictional brewery lending reusable kegs to pubs.
   "never reuse its names, figures, steps or wording. It shows the level of concreteness a good answer reaches. Every id in it is from its own request.";
 
 const requirementsOf = (example: WorkedExample, ids?: readonly string[]) => example.context.requirements
-  .filter(item => !ids || ids.includes(item.id)).map(({ id: requirementId, critical, statement, quote }) => ({ id: requirementId, critical, statement, quote }));
+  .filter(item => !ids || ids.includes(item.id)).map(({ id: requirementId, critical, kind, statement, quote }) => ({ id: requirementId, critical, kind, statement, quote }));
 
 function outlineExample(example: WorkedExample): string {
   return [HEADING, INTRO, "",
@@ -63,17 +60,21 @@ function stepExample(example: WorkedExample): string {
     "tests as given, when, then with concrete quantities that cite the step's requirements."].join("\n");
 }
 
+/** What a late group (documents, governance) is shown of the finished steps: the same digest the real request carries. */
+export const exampleStepDigest = (example: WorkedExample) =>
+  stepDigest(assemble(example.outline, new Map(Object.entries(example.details))).steps);
+
 function registersExample(example: WorkedExample): string {
   const { registers } = example;
-  return [HEADING, INTRO, "The rows below are an excerpt: a real answer covers every requirement and retained system it is given.", "",
+  return [HEADING, INTRO, "The rows below are an excerpt: a real answer covers every requirement, step and retained system it is given.", "",
     "What its request said (excerpt):", json({ companyContext: example.context.companyContext, requirements: requirementsOf(example),
       steps: example.outline.steps.map(({ id: stepId, title }) => ({ id: stepId, title })) }), "",
-    "group decisions:", json(registers.decisions), "",
-    "group fitgap:", json(registers.fitgap), "",
-    "group foundation:", json(registers.foundation), "",
-    "group integration:", json(registers.integration), "",
+    "What the documents and governance groups also saw: the finished steps (`steps` in their request):", json(exampleStepDigest(example)), "",
+    ...REGISTER_GROUP_NAMES.flatMap(group => [`group ${group}:`, json(registers[group]), ""]),
     "Notice: a decision has genuine options with honest cons and a recommendation that is exactly one option name; a fit-gap row says why this class and not the cleaner one, " +
-    "cites the reference and flags what to validate; an interface gives direction, frequency, payload and the role that owns errors; a KPI copies baseline and target verbatim from the context and says what is counted and over what period."].join("\n");
+    "cites the reference and flags what to validate, and names the mitigation, an owner and status OPEN; an interface gives direction, frequency, payload, the role that owns errors and how a failed message is seen, alerted, rerun and kept from posting twice; " +
+    "a KPI copies baseline and target verbatim from the context and says what is counted and over what period; an objective cites the context answer it rests on; a status model names only statuses its transitions use, at the step that produces the document; " +
+    "a role is named exactly like the step actors it covers; a control requirement is mapped to the business rule that enforces it."].join("\n");
 }
 
 export function renderWorkedExamples(example: WorkedExample) {

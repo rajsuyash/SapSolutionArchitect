@@ -1,8 +1,9 @@
 import { z } from "zod";
 import { contextForStep } from "../company-context";
-import { DetailedDesignSchema, IMPLEMENTATION_KINDS, draftIssues, evaluateDesign, id, ids, list, text,
+import { phase } from "./design-primitives";
+import { DetailedDesignSchema, IMPLEMENTATION_KINDS, STEP_TYPES, draftIssues, evaluateDesign, id, ids, list, text,
   type DesignContext, type DetailedDesign } from "./design-quality";
-import { REGISTER_GROUPS, REGISTER_GROUP_NAMES, RegisterGroupSchemas, groupOf, type RegisterGroup, type RegisterPayloads } from "./design-registers";
+import { LATE_GROUPS, REGISTER_GROUPS, REGISTER_GROUP_NAMES, RegisterGroupSchemas, groupOf, type RegisterGroup, type RegisterPayloads } from "./design-registers";
 import type { ValidationIssue } from "./problem-analysis";
 import { repairOutlineLinks, repairOutlineShape, restoreFromPrevious } from "./outline-repair";
 import { allowedKinds, applyOutlinePatch, isPatchable, locate, type OutlinePatch } from "./outline-patch";
@@ -12,8 +13,10 @@ import { toBeContext, validateToBeOutput, type ToBeInput, type ToBeOutput } from
 
 /** Skeleton-then-expansion To-Be generation. A slow model cannot emit a whole design inside the stage budget, so the model
  * first returns an outline (steps, traceability, coverage, questions), then one small call per step fills in the operational
- * detail, and four register calls (decisions, fit-gap, foundation, integration) add the solution-design registers, all in parallel.
- * The assembled result is a schemaVersion 2 DetailedDesign, validated by the same checks as a one-shot design. */
+ * detail, and eight register calls (decisions, fit-gap, foundation, integration, scope, reporting, documents, governance) add the
+ * solution-design registers. All but documents and governance run in parallel with the steps; those two need the finished step bodies
+ * (actors, output documents, rule ids) and run once the steps are in. The assembled result is a schemaVersion 3 DetailedDesign,
+ * validated by the same checks as a one-shot design. */
 
 export type Substage = "to_be_outline" | "to_be_step" | "to_be_registers";
 
@@ -44,7 +47,9 @@ type OutlineStep = Outline["steps"][number];
 /** Everything in a design step that the outline does not already fix. Derived from DetailedDesignSchema so the two cannot drift. */
 export const StepDetailSchema = DetailedDesignSchema.shape.steps.element
   .omit({ id: true, sequence: true, title: true, asIsStepIds: true, requirementIds: true, enablesStepIds: true, implementation: true })
-  .extend({ implementation: z.strictObject({ detail: text }) });
+  .extend({ implementation: z.strictObject({ detail: text }),
+    // Required in a step answer; optional in a stored design, whose version 1 and 2 steps predate them.
+    stepType: z.enum(STEP_TYPES), phase, interimProcess: text.nullable() });
 export type StepDetail = z.infer<typeof StepDetailSchema>;
 
 /** What `ask` resolves to when the provider stopped on max_tokens: the answer was cut off, so it is neither parsed nor trusted. */
@@ -183,7 +188,7 @@ export function assemble(outline: Outline, details: ReadonlyMap<string, StepDeta
   const merged = registers && REGISTER_GROUP_NAMES.every(group => registers.has(group))
     ? Object.assign({}, ...REGISTER_GROUP_NAMES.map(group => registers.get(group))) as Partial<DetailedDesign> : undefined;
   return {
-    schemaVersion: merged ? 2 : 1, processName: outline.processName, ...merged,
+    schemaVersion: merged ? 3 : 1, processName: outline.processName, ...merged,
     steps: outline.steps.map(step => {
       const { implementation, businessRules, acceptanceTests, ...rest } = details.get(step.id)!;
       return {
@@ -269,9 +274,19 @@ export function stepRequest(input: ToBeInput, references: DesignContext["referen
   };
 }
 
+/** What the late register groups (documents, governance) read of the finished steps: who acts, which documents come out, which rules exist.
+ * Taken from the assembled steps so rule ids are the final ones. */
+export const stepDigest = (steps: DetailedDesign["steps"]) => steps.map(step => ({
+  id: step.id, title: step.title, actor: step.actor, actionActors: [...new Set(step.actions.map(action => action.actor))],
+  inputDocuments: step.inputDocuments, outputDocuments: step.outputDocuments, stepType: step.stepType,
+  businessRules: step.businessRules.map(rule => ({ id: rule.id, condition: rule.condition })),
+}));
+
 /** Per-group register input: the frozen outline, every answered company-context field, all requirements and the catalog's
- * objects. No source text, no evidence quotes, no step bodies (the step calls run in parallel and are not available yet). */
-export function registerRequest(input: ToBeInput, references: DesignContext["references"], outline: Outline, group: RegisterGroup, validationErrors: ValidationIssue[]) {
+ * objects. No source text, no evidence quotes. The early groups see no step bodies (the step calls run in parallel and are not available
+ * yet); the late groups also get the finished steps as a digest. */
+export function registerRequest(input: ToBeInput, references: DesignContext["references"], outline: Outline, group: RegisterGroup, validationErrors: ValidationIssue[],
+  steps?: DetailedDesign["steps"]) {
   const { discovery } = input;
   return {
     group, registerKeys: REGISTER_GROUPS[group],
@@ -280,6 +295,7 @@ export function registerRequest(input: ToBeInput, references: DesignContext["ref
     outline: { processName: outline.processName, steps: outline.steps, coverage: outline.coverage, openQuestions: outline.openQuestions },
     requirements: discovery.requirements.map(r => ({ id: r.id, asIsStepId: r.asIsStepId, critical: r.critical, kind: r.kind, statement: r.statement })),
     references: references.map(({ id, fitType, capability, objects }) => ({ id, fitType, capability, objects })),
+    ...(steps && { steps: stepDigest(steps) }),
     inputOpenQuestions: discovery.openQuestions, validationErrors, ...catalogNote(input, references), ...repairNotes(validationErrors),
   };
 }
@@ -366,6 +382,7 @@ export async function runDesign(input: ToBeInput, references: DesignContext["ref
 
   const details = new Map<string, StepDetail>(), registers = new Map<RegisterGroup, unknown>(), retries = new Map<string, number>();
   const registerKey = (group: RegisterGroup) => `register:${group}`;
+  const isLate = (group: RegisterGroup) => (LATE_GROUPS as readonly string[]).includes(group);
   // Re-requests per call in total (AI_TO_BE_PART_REPAIRS, the second only while the stage budget is more than half unspent),
   // whether the answer failed its schema or the assembled design's checks.
   const markRetry = (key: string) => {
@@ -394,8 +411,10 @@ export async function runDesign(input: ToBeInput, references: DesignContext["ref
     };
     const expandGroup = async (group: RegisterGroup) => {
       let validationErrors = errors.get(registerKey(group)) ?? [];
+      // A late group reads the finished steps; by the time it runs every step of `current` is in `details`.
+      const steps = isLate(group) ? assemble(current, details).steps : undefined;
       for (;;) {
-        const raw = await deps.ask("to_be_registers", registerRequest(input, references, current, group, validationErrors), group);
+        const raw = await deps.ask("to_be_registers", registerRequest(input, references, current, group, validationErrors, steps), group);
         const normalized = normalizeToolInput(RegisterGroupSchemas[group], raw, "draft");
         const parsed = RegisterGroupSchemas[group].safeParse(normalized.value);
         if (parsed.success) {
@@ -409,8 +428,9 @@ export async function runDesign(input: ToBeInput, references: DesignContext["ref
         markRetry(registerKey(group));
       }
     };
-    await runPool([...groups.map(group => () => expandGroup(group)), ...stepIds.map(stepId => () => expandStep(stepId))],
+    await runPool([...groups.filter(group => !isLate(group)).map(group => () => expandGroup(group)), ...stepIds.map(stepId => () => expandStep(stepId))],
       deps.parallelism, task => task());
+    await runPool(groups.filter(isLate).map(group => () => expandGroup(group)), deps.parallelism, task => task());
   };
 
   await expand(outline.steps.map(step => step.id), REGISTER_GROUP_NAMES, new Map());
@@ -424,6 +444,8 @@ export async function runDesign(input: ToBeInput, references: DesignContext["ref
     const redo = new Set(byStep.keys()), redoGroups = new Set(byGroup.keys());
     for (const stepId of redo) markRetry(stepId);
     for (const group of redoGroups) markRetry(registerKey(group));
+    // The late groups were written from the old step bodies; a redone step makes them stale, which is not their own failure.
+    if (redo.size) for (const group of LATE_GROUPS) redoGroups.add(group);
     if (global.length) {
       if (!canRepairOutline()) throw deps.invalid();
       outlineRepairs++;

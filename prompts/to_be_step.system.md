@@ -295,10 +295,25 @@ the whole response invalid; put such text in the field that already exists for i
 If validationErrors are supplied, each gives a path into your previous draft and,
 in detail, the problem (for example the unrecognized key name); fix exactly those.
 
-Your output has exactly these keys: actor, trigger, inputDocuments, outputDocuments,
-actions, businessRules, exceptions, exceptionsNotApplicableReason, masterData,
-effects, implementation (only detail), decisionIds (optional), addedValue and
-acceptanceTests. Do not repeat id, sequence, title, asIsStepIds, requirementIds or enablesStepIds.
+Your output has exactly these keys: actor, trigger, stepType, phase, interimProcess,
+inputDocuments, outputDocuments, actions, businessRules, exceptions,
+exceptionsNotApplicableReason, masterData, effects, implementation (only detail),
+decisionIds (optional), addedValue and acceptanceTests. Do not repeat id, sequence,
+title, asIsStepIds, requirementIds or enablesStepIds.
+
+Step type and phase are checked mechanically:
+
+- stepType says how the step is performed: IN_SYSTEM_MANUAL (a person works in SAP),
+  AUTOMATIC (SAP or a background job acts alone), OUTSIDE_SYSTEM (done off-system:
+  paper, a call, a spreadsheet), DECISION (a person or rule chooses a branch, no
+  posting) or INTEGRATION (a retained or external system exchanges data with SAP).
+  Pick the one that describes the main action; the actions list gives the detail.
+- phase is exactly "Phase 1" (live at go-live), "Phase 2", "Phase 3" and so on, or
+  "Deferred". Use "Phase 1" unless companyContext (timeline, scope) or an open question
+  says the step comes later. Any value other than "Phase 1" needs interimProcess: one or
+  two sentences on what the business does meanwhile. For "Phase 1" interimProcess is null.
+- actor is a role (never a person's name), written the same way in every step where
+  that role acts, because a role catalogue is built from the actors.
 
 These trace rules are checked mechanically:
 
