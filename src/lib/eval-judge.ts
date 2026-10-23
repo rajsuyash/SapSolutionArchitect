@@ -5,6 +5,7 @@
 // finished To-Be (never the generator's prompt or identity), and must cite a specific element for every credit.
 import type Anthropic from "@anthropic-ai/sdk";
 import { z } from "zod";
+import { withProviderRetry, type RetryOptions } from "./ai/retry";
 import { WORKSPACE_FIELDS } from "./workspace-fields";
 
 export const JUDGE_MODEL = "deepseek-ai/DeepSeek-V4-Pro-0813";
@@ -452,21 +453,27 @@ export class JudgeError extends Error {
     this.name = "JudgeError";
   }
 }
-export type JudgeOptions = { model?: string; temperature?: number; maxTokens?: number; timeoutMs?: number; signal?: AbortSignal; maxAttempts?: number };
+/** Per-call timeout for a judgement: a ~100k-token design needs minutes of streaming, so never below 15 minutes by default. */
+export const DEFAULT_JUDGE_CALL_TIMEOUT_MS = 900_000;
+export type JudgeOptions = { model?: string; temperature?: number; maxTokens?: number; timeoutMs?: number; signal?: AbortSignal; maxAttempts?: number;
+  /** Epoch ms after which no transient-failure retry starts (the judge deadline). */
+  deadlineAt?: number; onRetry?: RetryOptions["onRetry"] };
 
 /** One judgement: up to `maxAttempts` calls, each repair attempt carrying the previous validation issues. */
 export async function judgeOnce(client: JudgeClient, rubric: readonly Criterion[], brief: CaseBrief, tobe: ToBe, options: JudgeOptions = {}):
   Promise<{ graded: Graded[]; score: RunScore; usage: Usage; attempts: number }> {
-  const { model = JUDGE_MODEL, temperature = 0.2, maxTokens = 20000, timeoutMs = 600_000, signal, maxAttempts = 2 } = options;
+  const { model = JUDGE_MODEL, temperature = 0.2, maxTokens = 20000, timeoutMs = DEFAULT_JUDGE_CALL_TIMEOUT_MS, signal, maxAttempts = 2, deadlineAt, onRetry } = options;
   const jsonSchema = z.toJSONSchema(JudgeOutputSchema);
   const tools: Anthropic.Tool[] = [{ name: JUDGE_TOOL, description: "Submit the verdicts for every rubric criterion.", input_schema: { ...jsonSchema, type: "object" } }];
   const system = buildSystemPrompt(rubric);
   const usage: Usage = { inputTokens: 0, outputTokens: 0, calls: 0 };
   let issues: Issue[] = [];
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    const message = await client.messages.stream({ model, max_tokens: maxTokens, temperature, system,
-      messages: [{ role: "user", content: buildUserPrompt(brief, tobe, issues) }], tools, tool_choice: { type: "auto" } },
-      { signal, timeout: timeoutMs }).finalMessage();
+    const userPrompt = buildUserPrompt(brief, tobe, issues);
+    // Transient failures (5xx, 429, a connection cut mid-stream) re-send the same request: the retry policy runStage uses.
+    const message = await withProviderRetry(() => client.messages.stream({ model, max_tokens: maxTokens, temperature, system,
+      messages: [{ role: "user", content: userPrompt }], tools, tool_choice: { type: "auto" } },
+      { signal, timeout: timeoutMs }).finalMessage(), { signal, deadlineAt, callTimeoutMs: timeoutMs, onRetry });
     usage.calls++; usage.outputTokens += message.usage.output_tokens;
     // Cached prompt tokens are still prompt tokens (priced as input here, an upper bound), as runStage counts them.
     usage.inputTokens += message.usage.input_tokens + (message.usage.cache_creation_input_tokens ?? 0) + (message.usage.cache_read_input_tokens ?? 0);
@@ -480,4 +487,36 @@ export async function judgeOnce(client: JudgeClient, rubric: readonly Criterion[
     issues = result.issues;
   }
   throw new JudgeError(issues[0]?.code === "expected_exactly_one_tool_call" ? "JUDGE_NO_TOOL_CALL" : "JUDGE_INVALID_OUTPUT", usage, issues);
+}
+
+// --- running N judgements ------------------------------------------------------------------------------------
+
+/** Judgements that must succeed for a score to count as a measurement; fewer and the script exits non-zero. */
+export const DEFAULT_MIN_RUNS = 2;
+/** Default overall deadline for one set of judgements, in seconds. */
+export const DEFAULT_DEADLINE_SECONDS = 1800;
+/** Long judgements (~100k input tokens) on OpenRouter were cut mid-stream when three ran at once; DeepInfra coped with all three. */
+export function defaultConcurrency(provider: "deepinfra" | "openrouter"): number { return provider === "openrouter" ? 1 : 3; }
+
+export type RunStatus = { run: number; ok: boolean; detail: string };
+
+/** Runs `task(0..count-1)` with at most `concurrency` in flight. Every task settles; none is skipped. */
+export async function runLimited<T>(count: number, concurrency: number, task: (index: number) => Promise<T>): Promise<PromiseSettledResult<T>[]> {
+  const results = new Array<PromiseSettledResult<T>>(count);
+  let next = 0;
+  const worker = async () => {
+    for (let index = next++; index < count; index = next++) {
+      results[index] = await task(index).then(value => ({ status: "fulfilled" as const, value }), (reason: unknown) => ({ status: "rejected" as const, reason }));
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(Math.max(1, concurrency), count) }, worker));
+  return results;
+}
+
+/** One status line per judgement and, when too few succeeded, the verdict that the score is not a measurement. */
+export function assessJudgements(statuses: readonly RunStatus[], minRuns: number): { valid: boolean; lines: string[]; banner: string | null } {
+  const ok = statuses.filter(s => s.ok).length;
+  const valid = ok >= minRuns && ok > 0;
+  return { valid, lines: statuses.map(s => `  run ${s.run + 1}: ${s.ok ? "ok" : "FAILED"} ${s.detail}`),
+    banner: valid ? null : `NOT A MEASUREMENT: only ${ok} of ${statuses.length} judgements succeeded (minimum ${minRuns}). Any total below comes from too few runs, shows no real spread, and must not be quoted as a score.` };
 }

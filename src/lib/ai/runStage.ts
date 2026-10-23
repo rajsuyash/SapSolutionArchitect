@@ -4,7 +4,8 @@ import { z } from "zod";
 import { parseEnvironment, STAGE_NAMES, TO_BE_SUBSTAGES, type Environment } from "../env";
 import { ProblemAnalysisInputSchema, ProblemAnalysisSchema, redactInput, schemaIssues, validateProblemAnalysis,
   type ProblemAnalysis, type ValidationIssue } from "./problem-analysis";
-import { createProviderClient, isTransientProviderError, logProviderFailure, logProviderRetry, logStageTimeout, retryAfterMs, type Provider } from "./provider";
+import { createProviderClient, logProviderFailure, logProviderRetry, logStageTimeout, type Provider } from "./provider";
+import { withProviderRetry } from "./retry";
 import { loadToBeReferences, parseToBeInput, type ToBeOutput } from "./to-be";
 import { REGISTER_GROUP_NAMES, RegisterGroupSchemas } from "./design-registers";
 import { OutlinePatchSchema, OutlineSchema, StepDetailSchema, TRUNCATED, runDesign, type Substage } from "./to-be-pipeline";
@@ -54,14 +55,6 @@ export class AIStageError extends Error {
 type Config = Pick<Environment, "NODE_ENV" | "AI_PROVIDER" | "ANTHROPIC_API_KEY" | "DEEPINFRA_API_KEY" | "OPENROUTER_API_KEY" | "AI_REASONING_EFFORT" | "AI_MODEL" | "AI_MODEL_DESIGN" | "AI_MAX_INPUT_TOKENS" | "AI_MAX_CONCURRENCY" | "AI_CHAT_CONCURRENCY" | "AI_FAULT_INJECTION"
   | "AI_NO_THINKING_STAGES" | "AI_STAGE_BUDGET_SECONDS" | "AI_CALL_TIMEOUT_SECONDS" | "AI_DESIGN_CALL_TIMEOUT_SECONDS" | "AI_DESIGN_PARALLELISM" | "AI_TO_BE_OUTLINE_REPAIRS" | "AI_TO_BE_PART_REPAIRS" | "AI_TO_BE_OUTLINE_MAX_TOKENS" | "AI_TO_BE_STEP_MAX_TOKENS" | "AI_TO_BE_REGISTERS_MAX_TOKENS"> & Partial<Pick<Environment, "AI_TO_BE_REVIEW" | "AI_TO_BE_FIX_MAX_PARTS">>;
 const SDK_TIMEOUT_MARGIN_MS = 5000;
-/** Waits before retry 1, 2 and 3 of one provider call (so at most 3 retries), each scaled by +-RETRY_JITTER. */
-const RETRY_DELAYS_MS = [2000, 6000, 18000] as const;
-const RETRY_JITTER = 0.2;
-/** Upper bound for any wait, a provider's Retry-After included: the stage budget is minutes, not the hour a 429 may ask for. */
-const RETRY_DELAY_CAP_MS = 30000;
-/** A retry starts only if, after its wait, the stage budget still holds this long (or the per-call timeout, if shorter).
- * A streamed generation that has less than 30 s cannot realistically finish, and the attempt would only delay the AI_TIMEOUT. */
-const MIN_RETRY_WINDOW_MS = 30000;
 /** OpenRouter has no count_tokens endpoint: input size is estimated locally. 3.5 chars/token is deliberately below the ~4 of English prose
  * (JSON, SAP codes and non-English text tokenize worse), so the AI_MAX_INPUT_TOKENS guard errs towards refusing. Not a measured count. */
 const CHARS_PER_TOKEN = 3.5;
@@ -92,15 +85,6 @@ const BLOCK_HEAD_CHARS = 400;
 function describeBlock(block: Anthropic.Message["content"][number]) {
   return block.type === "text" ? { type: block.type, chars: block.text.length, head: block.text.slice(0, BLOCK_HEAD_CHARS) }
     : { type: block.type, chars: JSON.stringify(block).length };
-}
-
-function pause(ms: number, signal: AbortSignal): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const abort = () => { clearTimeout(timer); reject(signal.reason); };
-    const timer = setTimeout(() => { signal.removeEventListener("abort", abort); resolve(); }, ms);
-    signal.addEventListener("abort", abort, { once: true });
-    if (signal.aborted) abort();
-  });
 }
 
 /** A counting semaphore: `acquire` resolves when a slot is free (or rejects with the signal's reason), `release` frees one. */
@@ -212,25 +196,18 @@ export function createStageRunner(config: Config, options: Options = {}) {
       finally { clearTimeout(timeout); signal.removeEventListener("abort", abort); controller.signal.removeEventListener("abort", stop); }
     }
 
-    /** One provider request with the transient-retry policy: see RETRY_DELAYS_MS. Used by every stage, token counts included. */
+    /** One provider request with the transient-retry policy: see retry.ts. Used by every stage, token counts included. */
     async function transport<T>(work: (signal: AbortSignal) => Promise<T>, timeoutMs = callTimeout): Promise<T> {
-      for (let retry = 0; ; retry++) {
-        try { return await call(work, timeoutMs); }
-        catch (error) {
-          if (signal.aborted) throw error;
-          if (error instanceof AIStageError) throw error;
-          const giveUp = (code: Code) => { logProviderFailure(provider, model, stage, error); return fail(code); };
-          const timedOut = error instanceof Anthropic.APIConnectionTimeoutError;
-          if (!isTransientProviderError(error) || retry >= RETRY_DELAYS_MS.length) throw giveUp(timedOut ? "AI_TIMEOUT" : "AI_PROVIDER_ERROR");
-          const backoff = RETRY_DELAYS_MS[retry]! * (1 - RETRY_JITTER + 2 * RETRY_JITTER * Math.random());
-          const delay = Math.round(Math.min(Math.max(backoff, retryAfterMs(error) ?? 0), RETRY_DELAY_CAP_MS));
-          // The retry still needs a window in which a call can finish; otherwise it only burns the budget.
-          if (started + stageBudget - Date.now() - delay < Math.min(timeoutMs, MIN_RETRY_WINDOW_MS)) throw giveUp("AI_TIMEOUT");
+      return withProviderRetry(() => call(work, timeoutMs), { signal, deadlineAt: started + stageBudget, callTimeoutMs: timeoutMs,
+        passthrough: error => error instanceof AIStageError,
+        giveUp: (error, reason) => {
+          logProviderFailure(provider, model, stage, error);
+          return fail(reason === "deadline" || error instanceof Anthropic.APIConnectionTimeoutError ? "AI_TIMEOUT" : "AI_PROVIDER_ERROR");
+        },
+        onRetry: (retry, delay, error) => {
           metrics.providerRetries = (metrics.providerRetries ?? 0) + 1;
-          logProviderRetry(provider, model, stage, retry + 1, delay, error);
-          await pause(delay, signal);
-        }
-      }
+          logProviderRetry(provider, model, stage, retry, delay, error);
+        } });
     }
 
     try {

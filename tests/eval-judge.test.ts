@@ -2,7 +2,9 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { createProviderClient } from "../src/lib/ai/provider";
+import { messageEvents, sseResponse } from "./support/sse";
 import pharma from "../fixtures/eval/pharma-p2p.json";
 import services from "../fixtures/eval/services-r2r.json";
 import engineering from "../fixtures/eval/engineering-mto.json";
@@ -15,7 +17,7 @@ import { fixture as rentalInput } from "./support/to-be-input";
 import { ScoringCaseSchema } from "../src/lib/eval-score";
 import { STEP_KEYS, WORKSPACE_FIELDS } from "../src/lib/workspace-fields";
 import {
-  aggregateRuns, assessIndependence, buildCaseBrief, buildSystemPrompt, buildUserPrompt, calibrate, citableIds, CHECKLIST_TEXT, costUsd, defaultJudgeModel, degradeDesign, gradeRun, independenceLine, modelFamily, isGrounded, JUDGE_TOOL, JudgeError, judgeOnce,
+  aggregateRuns, assessIndependence, assessJudgements, DEFAULT_JUDGE_CALL_TIMEOUT_MS, DEFAULT_MIN_RUNS, defaultConcurrency, runLimited, buildCaseBrief, buildSystemPrompt, buildUserPrompt, calibrate, citableIds, CHECKLIST_TEXT, costUsd, defaultJudgeModel, degradeDesign, gradeRun, independenceLine, modelFamily, isGrounded, JUDGE_TOOL, JudgeError, judgeOnce,
   loadToBe, median, parseRubric, RUBRIC, scoreGraded, validateJudgeOutput, type Criterion, type Graded, type JudgeClient, type JudgeMessage, type ToBe,
 } from "../src/lib/eval-judge";
 
@@ -492,5 +494,74 @@ describe("judge independence", () => {
       expect(auto.stderr).toContain("DEEPINFRA_API_KEY is not set");
       rmSync(dir, { recursive: true, force: true });
     });
+  });
+});
+
+describe("judge transport retry and run control", () => {
+  const streamError = (error: Error): JudgeClient => ({ messages: { stream: () => ({ finalMessage: () => Promise.reject(error) }) } });
+  it("retries a connection cut mid-stream ('terminated') with 2/6/18 s backoff, then succeeds", async () => {
+    vi.useFakeTimers(); vi.spyOn(Math, "random").mockReturnValue(0.5);
+    try {
+      const times: number[] = [];
+      const client: JudgeClient = { messages: { stream: () => { times.push(Date.now());
+        return { finalMessage: () => times.length <= 3 ? Promise.reject(new TypeError("terminated")) : Promise.resolve(msg([call(goodOutput)])) }; } } };
+      const retries: number[] = [];
+      const pending = judgeOnce(client, tiny, brief, tobe, { onRetry: retry => retries.push(retry) });
+      await vi.advanceTimersByTimeAsync(2000 + 6000 + 18000);
+      expect((await pending).score.total).toBe(83.33);
+      expect(times.slice(1).map((t, i) => t - times[i]!)).toEqual([2000, 6000, 18000]);
+      expect(retries).toEqual([1, 2, 3]);
+    } finally { vi.useRealTimers(); vi.restoreAllMocks(); }
+  });
+  it("gives up after three retries and does not retry a permanent error", async () => {
+    vi.useFakeTimers(); vi.spyOn(Math, "random").mockReturnValue(0.5);
+    try {
+      let calls = 0;
+      const client: JudgeClient = { messages: { stream: () => { calls++; return { finalMessage: () => Promise.reject(new TypeError("terminated")) }; } } };
+      const pending = judgeOnce(client, tiny, brief, tobe).catch((e: unknown) => e);
+      await vi.advanceTimersByTimeAsync(26000);
+      expect(await pending).toMatchObject({ message: "terminated" });
+      expect(calls).toBe(4);
+      await expect(judgeOnce(streamError(new Error("bad schema")), tiny, brief, tobe)).rejects.toThrow("bad schema");
+    } finally { vi.useRealTimers(); vi.restoreAllMocks(); }
+  });
+  it("starts no retry past the judge deadline", async () => {
+    let calls = 0;
+    const client: JudgeClient = { messages: { stream: () => { calls++; return { finalMessage: () => Promise.reject(new TypeError("terminated")) }; } } };
+    await expect(judgeOnce(client, tiny, brief, tobe, { deadlineAt: Date.now() + 1000 })).rejects.toThrow("terminated");
+    expect(calls).toBe(1);
+  });
+  it("a real SDK client over a stub fetch whose body is cut mid-stream is retried and recovers", async () => {
+    vi.useFakeTimers(); vi.spyOn(Math, "random").mockReturnValue(0.5);
+    try {
+      let calls = 0;
+      const cut = () => new Response(new ReadableStream({ start(c) { c.enqueue(new TextEncoder().encode("event: message_start\n")); c.error(new TypeError("terminated")); } }), { status: 200, headers: { "content-type": "text/event-stream" } });
+      const good = () => sseResponse(messageEvents({ content: [{ type: "tool_use", id: "t1", name: JUDGE_TOOL, input: goodOutput }], stop_reason: "tool_use", usage: { input_tokens: 10, output_tokens: 5 } }));
+      const fetchStub = vi.fn<typeof globalThis.fetch>(async () => (++calls === 1 ? cut() : good()));
+      const client = createProviderClient("openrouter", "k", 60_000, fetchStub) as unknown as JudgeClient;
+      const pending = judgeOnce(client, tiny, brief, tobe);
+      await vi.advanceTimersByTimeAsync(2000);
+      expect((await pending).attempts).toBe(1);
+      expect(calls).toBe(2);
+    } finally { vi.useRealTimers(); vi.restoreAllMocks(); }
+  });
+  it("the judge call timeout defaults to at least 15 minutes", () => { expect(DEFAULT_JUDGE_CALL_TIMEOUT_MS).toBeGreaterThanOrEqual(900_000); });
+  it("runLimited never exceeds the concurrency and settles every task, failures included", async () => {
+    let active = 0, peak = 0;
+    const results = await runLimited(5, 2, async i => { active++; peak = Math.max(peak, active); await new Promise(r => setTimeout(r, 5)); active--; if (i === 3) throw new Error("x"); return i; });
+    expect(peak).toBe(2);
+    expect(results.map(r => r.status)).toEqual(["fulfilled", "fulfilled", "fulfilled", "rejected", "fulfilled"]);
+  });
+  it("defaults to one judgement at a time on OpenRouter and three on DeepInfra", () => {
+    expect([defaultConcurrency("openrouter"), defaultConcurrency("deepinfra")]).toEqual([1, 3]);
+  });
+  it("1 of 3 judgements is NOT A MEASUREMENT at --min-runs 2, 2 of 3 is", () => {
+    const st = (...ok: boolean[]) => ok.map((o, run) => ({ run, ok: o, detail: o ? "total 90" : "terminated" }));
+    const one = assessJudgements(st(true, false, false), DEFAULT_MIN_RUNS);
+    expect(one.valid).toBe(false);
+    expect(one.banner).toMatch(/NOT A MEASUREMENT: only 1 of 3/);
+    expect(one.lines).toEqual(["  run 1: ok total 90", "  run 2: FAILED terminated", "  run 3: FAILED terminated"]);
+    expect(assessJudgements(st(true, true, false), DEFAULT_MIN_RUNS)).toMatchObject({ valid: true, banner: null });
+    expect(assessJudgements(st(true), 1).valid).toBe(true);
   });
 });
