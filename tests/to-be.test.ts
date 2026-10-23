@@ -208,16 +208,28 @@ describe("trusted SAP references in generation", () => {
     expect(h.sent).toHaveLength(4); // outline + 3 steps
     expect(result.payload.evaluation.errors).toEqual([]);
   });
-  it("rejects a STANDARD claim whose only citation is not a standard capability, after bounded repair", async () => {
-    const extension = structuredClone(catalog); extension.references[0]!.fitType = "EXTENSION";
+  const withFit = async (fitType: string, run: (dir: string) => Promise<void>) => {
+    const changed = structuredClone(catalog); changed.references[0]!.fitType = fitType;
     const other = await mkdtemp(join(tmpdir(), "to-be-sap-ext-"));
     try {
       await mkdir(join(other, "s4hana-2023"), { recursive: true });
-      await writeFile(join(other, "s4hana-2023", "reference-catalog.json"), JSON.stringify(extension));
+      await writeFile(join(other, "s4hana-2023", "reference-catalog.json"), JSON.stringify(changed));
+      await run(other);
+    } finally { await rm(other, { recursive: true, force: true }); }
+  };
+  it("rejects a STANDARD claim whose only citation has a fit type the server cannot rank, after bounded repair", async () => {
+    await withFit("MANUAL", async other => {
       const h = harness(() => response(designCiting("STANDARD")), () => 1000, other);
       await expect(h.generate(withRelease())).rejects.toMatchObject({ code: "AI_INVALID_OUTPUT", metrics: { attempts: 3 } });
       expect(h.sent[1]!.messages[0]!.content).toContain("SAP_FIT_MISMATCH");
-    } finally { await rm(other, { recursive: true, force: true }); }
+    });
+  });
+  it("raises a STANDARD claim over an EXTENSION citation to EXTENSION instead of failing it", async () => {
+    await withFit("EXTENSION", async other => {
+      const h = harness(() => response(designCiting("STANDARD")), () => 1000, other);
+      const result = await h.generate(withRelease());
+      expect(JSON.stringify(result.payload)).toContain('"kind":"EXTENSION"');
+    });
   });
   it("keeps the model-claimed reference untrusted when no catalog exists", async () => {
     const h = harness(() => response(designCiting("STANDARD")), () => 1000, join(dir, "missing"));

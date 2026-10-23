@@ -4,7 +4,7 @@ import { DetailedDesignSchema, IMPLEMENTATION_KINDS, draftIssues, evaluateDesign
   type DesignContext, type DetailedDesign } from "./design-quality";
 import { REGISTER_GROUPS, REGISTER_GROUP_NAMES, RegisterGroupSchemas, groupOf, type RegisterGroup, type RegisterPayloads } from "./design-registers";
 import type { ValidationIssue } from "./problem-analysis";
-import { repairOutlineShape, restoreFromPrevious } from "./outline-repair";
+import { repairOutlineLinks, repairOutlineShape, restoreFromPrevious } from "./outline-repair";
 import { noCatalogNote } from "../sap-releases";
 import { normalizeToolInput } from "./tool-input-normalizer";
 import { toBeContext, validateToBeOutput, type ToBeInput, type ToBeOutput } from "./to-be";
@@ -94,11 +94,12 @@ export function validateOutline(input: ToBeInput, references: DesignContext["ref
   const normalized = normalizeToolInput(OutlineSchema, raw, "outline");
   const restored = previous ? restoreFromPrevious(previous, normalized.value) : { value: normalized.value, warnings: [] };
   const repaired = repairOutlineShape(input.discovery, new Set(references.map(reference => reference.id)), restored.value);
-  const parsed = OutlineSchema.safeParse(repaired.value);
-  if (!parsed.success) return { success: false, errors: rePath(draftIssues(parsed.error.issues), "draft", "outline"), shaped: repaired.value };
+  const linked = repairOutlineLinks({ product: input.targetProduct, release: input.discovery.targetRelease ?? "UNKNOWN" }, references, repaired.value);
+  const parsed = OutlineSchema.safeParse(linked.value);
+  if (!parsed.success) return { success: false, errors: rePath(draftIssues(parsed.error.issues), "draft", "outline"), shaped: linked.value };
   const evaluation = evaluateDesign(toBeContext(input, references), skeleton(parsed.data));
-  if (!evaluation.structurallyValid) return { success: false, errors: rePath(evaluation.errors, "draft", "outline").slice(0, MAX_ERRORS), shaped: repaired.value };
-  return { success: true, outline: parsed.data, warnings: [...normalized.warnings, ...restored.warnings, ...repaired.warnings], shaped: repaired.value };
+  if (!evaluation.structurallyValid) return { success: false, errors: rePath(evaluation.errors, "draft", "outline").slice(0, MAX_ERRORS), shaped: linked.value };
+  return { success: true, outline: parsed.data, warnings: [...normalized.warnings, ...restored.warnings, ...repaired.warnings, ...linked.warnings], shaped: linked.value };
 }
 
 /** Join the outline and the step bodies into a DetailedDesign. Parallel step calls cannot coordinate ids, so a business-rule or

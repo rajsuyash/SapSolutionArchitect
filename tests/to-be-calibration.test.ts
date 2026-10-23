@@ -122,7 +122,7 @@ describe("a realistic imperfect outline", async () => {
     if (again.success) expect(codes(again.warnings)).not.toContain("REPAIRED_COVERAGE_STEPS");
   });
 
-  it("fails closed on a claim that rests on an invented reference or on a reference that cannot support it", () => {
+  it("fails closed on a claim that rests on an invented reference, and raises a kind a verified reference outranks", () => {
     const only = slipped();
     only.steps.find(s => s.id === "O2C-PRD-040")!.implementation = { kind: "STANDARD", referenceIds: ["REF-INVENTED"] };
     const invented = validateOutline(catalogInput, catalog, only);
@@ -131,8 +131,11 @@ describe("a realistic imperfect outline", async () => {
     const mismatch = slipped();
     mismatch.steps.find(s => s.id === "O2C-DLV-060")!.implementation = { kind: "STANDARD", referenceIds: [standard.id, extension.id] };
     const result = validateOutline(catalogInput, catalog, mismatch);
-    expect(result.success).toBe(false);
-    if (!result.success) expect(codes(result.errors)).toEqual(["SAP_FIT_MISMATCH"]);
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.outline.steps.find(s => s.id === "O2C-DLV-060")!.implementation.kind).toBe("EXTENSION");
+      expect(result.warnings).toContainEqual({ code: "REPAIRED_FIT_KIND", path: expect.stringMatching(/^outline\.steps\.\d+\.implementation$/) });
+    }
   });
 
   it("does not invent: what it cannot derive still fails and goes to the model", () => {

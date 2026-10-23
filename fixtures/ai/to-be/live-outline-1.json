@@ -1,0 +1,380 @@
+{
+ "attempt": 1,
+ "payload": {
+  "schemaVersion": 1,
+  "processName": "Engineer to order: estimate and quote, project set-up, engineering release, manufacturing preparation, procurement, production, quality, project costing, milestone billing and project close",
+  "steps": [
+   {
+    "id": "EX-1",
+    "sequence": 1,
+    "title": "Estimate and quote the engineered machine",
+    "purpose": "Quote material, labour and test hours for an engineered machine in SAP instead of an Excel template, so the estimate and quoted margin survive the contract.",
+    "asIsStepIds": [
+     "st_990ff6ef-7d63-4519-8143-6f501d7fb000"
+    ],
+    "requirementIds": [],
+    "implementation": {
+     "kind": "NEEDS_VALIDATION",
+     "referenceIds": []
+    }
+   },
+   {
+    "id": "EX-2",
+    "sequence": 2,
+    "title": "Create the project, WBS budget and milestone billing plan at contract signature",
+    "purpose": "Replace the spreadsheet budget and folder with a project number, WBS work-package budget and agreed milestone billing plan in SAP at contract signature.",
+    "asIsStepIds": [
+     "st_25f045a1-2912-4884-9cb3-2878ba1dd501"
+    ],
+    "requirementIds": [],
+    "implementation": {
+     "kind": "NEEDS_VALIDATION",
+     "referenceIds": []
+    }
+   },
+   {
+    "id": "EX-3",
+    "sequence": 3,
+    "title": "Integrate the Aurora PLM engineering bill of materials and releases into SAP",
+    "purpose": "Take the released engineering parts list and its revisions from retained Aurora PLM into SAP instead of re-keying an Excel export, and give the Chief Engineer's release decision an in-system record.",
+    "asIsStepIds": [
+     "st_b126e734-3a03-447f-8dcc-7b9a20e159a6"
+    ],
+    "requirementIds": [
+     "rq_174cde99-4161-4114-bbb4-9c4c60004a90"
+    ],
+    "implementation": {
+     "kind": "NEEDS_VALIDATION",
+     "referenceIds": []
+    }
+   },
+   {
+    "id": "EX-4",
+    "sequence": 4,
+    "title": "Control engineering changes after release and push them to open documents",
+    "purpose": "Replace the emailed change to planning with a controlled, signed-off change that updates the bill of materials and the open production orders the shop and buyers work from.",
+    "asIsStepIds": [
+     "st_b126e734-3a03-447f-8dcc-7b9a20e159a6"
+    ],
+    "requirementIds": [
+     "rq_2d139382-51fe-4b16-8849-ad9789140c04"
+    ],
+    "implementation": {
+     "kind": "NEEDS_VALIDATION",
+     "referenceIds": []
+    }
+   },
+   {
+    "id": "EX-5",
+    "sequence": 5,
+    "title": "Build the manufacturing bill of materials and routings in SAP",
+    "purpose": "Create the manufacturing structure with make-or-buy decisions and routings with operations, work centres and standard hours in SAP rather than Excel and printed sheets.",
+    "asIsStepIds": [
+     "st_ede38a9a-47ce-4ed8-b58e-9479b6af9fea"
+    ],
+    "requirementIds": [
+     "rq_81596dde-940a-404b-878d-5a7889e2cc8a"
+    ],
+    "implementation": {
+     "kind": "NEEDS_VALIDATION",
+     "referenceIds": []
+    }
+   },
+   {
+    "id": "EX-6",
+    "sequence": 6,
+    "title": "Run project-level material requirements planning against project stock",
+    "purpose": "Net requirements automatically per project, respecting stock already reserved for other projects, and turn the result into purchase requisitions instead of a hand-made Excel buy list.",
+    "asIsStepIds": [
+     "st_a54dcf58-d335-4982-849e-7f063c4158e4"
+    ],
+    "requirementIds": [
+     "rq_eb0f7be7-3b4a-4349-83d5-8c00c934287a",
+     "rq_05207ce7-aa65-4e78-95b8-18c71113bb73"
+    ],
+    "implementation": {
+     "kind": "NEEDS_VALIDATION",
+     "referenceIds": []
+    }
+   },
+   {
+    "id": "EX-7",
+    "sequence": 7,
+    "title": "Procure castings, drives and bought-in parts with in-system approval and dates",
+    "purpose": "Convert requisitions to purchase orders in SAP, hold them until the Operations Director approves purchases above \u00a320,000, and keep confirmed supplier dates in the same system as the schedule.",
+    "asIsStepIds": [
+     "st_63bc8808-bd35-4682-848a-e7d46836d3bd"
+    ],
+    "requirementIds": [
+     "rq_fd84e522-b8f1-48b7-83dd-eaca2a4a1052",
+     "rq_72861776-409a-4ac0-8a10-b9927ab9c486"
+    ],
+    "implementation": {
+     "kind": "NEEDS_VALIDATION",
+     "referenceIds": []
+    }
+   },
+   {
+    "id": "EX-8",
+    "sequence": 8,
+    "title": "Schedule and run production with capacity and hours in SAP",
+    "purpose": "Schedule operations against work-centre capacity and record clock-on/clock-off in SAP, replacing the Excel schedule, printed job cards and the job-tracking tool.",
+    "asIsStepIds": [
+     "st_59985b4a-54a4-47c2-870d-fd35a2db6972"
+    ],
+    "requirementIds": [
+     "rq_e028d631-2c9d-426e-8730-6678cb54af80"
+    ],
+    "implementation": {
+     "kind": "NEEDS_VALIDATION",
+     "referenceIds": []
+    }
+   },
+   {
+    "id": "EX-9",
+    "sequence": 9,
+    "title": "Inspect in-process and final, and issue certificates and non-conformance records",
+    "purpose": "Record inspection results and non-conformances in SAP and issue the customer inspection certificate from the system, linked to the project so rework and scrap reach project cost.",
+    "asIsStepIds": [
+     "st_f6f324f4-8818-4ae7-8149-8f855f42bb33"
+    ],
+    "requirementIds": [
+     "rq_097d9c20-958c-45f9-9bf2-518fc80494af"
+    ],
+    "implementation": {
+     "kind": "NEEDS_VALIDATION",
+     "referenceIds": []
+    }
+   },
+   {
+    "id": "EX-10",
+    "sequence": 10,
+    "title": "Collect actual project costs and report margin and work in progress during the project",
+    "purpose": "Collect supplier invoices and timesheet hours on the project in SAP and report actual-versus-budget cost, margin and work in progress while the machine is still being built, instead of an after-delivery comparison.",
+    "asIsStepIds": [
+     "st_c4b1018d-2c8d-42d7-b018-1445d92b3333"
+    ],
+    "requirementIds": [
+     "rq_d2a44d0b-5f34-4bf1-b5e4-adbb26aac6c8",
+     "rq_bf4c0daf-8dfd-461c-bc2a-984a0fe6591c"
+    ],
+    "implementation": {
+     "kind": "NEEDS_VALIDATION",
+     "referenceIds": []
+    }
+   },
+   {
+    "id": "EX-11",
+    "sequence": 11,
+    "title": "Record factory acceptance and delivery, and raise the staged milestone invoices",
+    "purpose": "Trigger the 30/40/30 staged invoice from the billing plan when factory acceptance or delivery is confirmed in SAP, including agreed scope extras, with goods issue and transport booked for the delivery.",
+    "asIsStepIds": [
+     "st_aaa39dd9-2e32-4599-b7bd-52c9f1759025"
+    ],
+    "requirementIds": [
+     "rq_e3923ada-d370-4c3f-a4ba-07107cce5462",
+     "rq_52edf8a2-842a-4675-8fcc-8a5235532f81"
+    ],
+    "implementation": {
+     "kind": "NEEDS_VALIDATION",
+     "referenceIds": []
+    }
+   },
+   {
+    "id": "EX-12",
+    "sequence": 12,
+    "title": "Close the project and review cost variances and lessons learned",
+    "purpose": "Settle the project in SAP, compare final cost with budget, publish a cost variance review and feed actual results back into the estimating basis.",
+    "asIsStepIds": [
+     "st_9aff051d-82ed-4db7-a818-3f713889474c"
+    ],
+    "requirementIds": [],
+    "implementation": {
+     "kind": "NEEDS_VALIDATION",
+     "referenceIds": []
+    }
+   }
+  ],
+  "eliminatedAsIsSteps": [],
+  "coverage": [
+   {
+    "requirementId": "rq_174cde99-4161-4114-bbb4-9c4c60004a90",
+    "disposition": "CONDITIONAL",
+    "stepIds": [
+     "EX-3"
+    ],
+    "decisionId": null,
+    "rationale": "The design keeps Aurora PLM as the engineering system and defines the hand-off boundary: released engineering bill of materials and releases are taken into SAP and engineering changes are routed through SAP (EX-3, EX-4), with no re-keying. The interface mechanism itself is not specified because no supplied reference evidences an Aurora PLM integration, so the technical design remains open (OQ-1).",
+    "questionIds": [
+     "OQ-1"
+    ]
+   },
+   {
+    "requirementId": "rq_2d139382-51fe-4b16-8849-ad9789140c04",
+    "disposition": "IMPLEMENTED",
+    "stepIds": [
+     "EX-4"
+    ],
+    "decisionId": null,
+    "rationale": "An engineering change after release is recorded and signed off in SAP rather than emailed, and its effect is pushed to the bill of materials and the open production orders so the shop works from the current revision; the shop-floor reach and cost effect of the change are held on OQ-2 and OQ-6."
+   },
+   {
+    "requirementId": "rq_81596dde-940a-404b-878d-5a7889e2cc8a",
+    "disposition": "IMPLEMENTED",
+    "stepIds": [
+     "EX-5"
+    ],
+    "decisionId": null,
+    "rationale": "The manufacturing structure with make-or-buy decisions and the routings with operations, work centres and standard hours are maintained in SAP instead of Excel and printed sheets, and completeness against the released engineering structure is checked before release, which addresses parts missing from the export."
+   },
+   {
+    "requirementId": "rq_eb0f7be7-3b4a-4349-83d5-8c00c934287a",
+    "disposition": "IMPLEMENTED",
+    "stepIds": [
+     "EX-6"
+    ],
+    "decisionId": null,
+    "rationale": "Requirements are netted automatically per project in SAP and stock reserved for other projects is respected, so stock meant for one project is no longer consumed by another; the project-stock and reservation policy depends on OQ-2."
+   },
+   {
+    "requirementId": "rq_05207ce7-aa65-4e78-95b8-18c71113bb73",
+    "disposition": "IMPLEMENTED",
+    "stepIds": [
+     "EX-6"
+    ],
+    "decisionId": null,
+    "rationale": "Automatic per-project requirements planning and project-reserved stock replace the hand-netted buy list, which is the mechanism by which shortage-driven production stops fall by half; the measurable baseline and counting method are held on OQ-3."
+   },
+   {
+    "requirementId": "rq_fd84e522-b8f1-48b7-83dd-eaca2a4a1052",
+    "disposition": "IMPLEMENTED",
+    "stepIds": [
+     "EX-7"
+    ],
+    "decisionId": null,
+    "rationale": "Confirmed supplier dates are held on the purchase order in SAP and flow into the production schedule, replacing the buyer's private spreadsheet and the phone chase that left the schedule unchanged."
+   },
+   {
+    "requirementId": "rq_72861776-409a-4ac0-8a10-b9927ab9c486",
+    "disposition": "IMPLEMENTED",
+    "stepIds": [
+     "EX-7"
+    ],
+    "decisionId": null,
+    "rationale": "Purchase orders are held blocked until the Operations Director approves those above \u00a320,000, recorded in the approval history; the delegation and deputy arrangement for cover are held on OQ-4."
+   },
+   {
+    "requirementId": "rq_e028d631-2c9d-426e-8730-6678cb54af80",
+    "disposition": "IMPLEMENTED",
+    "stepIds": [
+     "EX-8"
+    ],
+    "decisionId": null,
+    "rationale": "Operations are scheduled and capacity loaded against work centres in SAP and hours are recorded against operations, so an urgent job is reflected in the schedule instead of being slotted in outside it."
+   },
+   {
+    "requirementId": "rq_097d9c20-958c-45f9-9bf2-518fc80494af",
+    "disposition": "IMPLEMENTED",
+    "stepIds": [
+     "EX-9"
+    ],
+    "decisionId": null,
+    "rationale": "Inspection results, usage decisions and non-conformance records are kept in SAP and the customer certificate is issued from the system, linked to the project so rework and scrap reach project cost; the certificate layout and any required certificate type are held on OQ-6."
+   },
+   {
+    "requirementId": "rq_d2a44d0b-5f34-4bf1-b5e4-adbb26aac6c8",
+    "disposition": "IMPLEMENTED",
+    "stepIds": [
+     "EX-10"
+    ],
+    "decisionId": null,
+    "rationale": "Supplier invoices and timesheet hours are collected on the project in SAP and actual-versus-budget cost, margin and work in progress are reported during the project, removing the hand allocation and the quarterly estimate."
+   },
+   {
+    "requirementId": "rq_bf4c0daf-8dfd-461c-bc2a-984a0fe6591c",
+    "disposition": "IMPLEMENTED",
+    "stepIds": [
+     "EX-10"
+    ],
+    "decisionId": null,
+    "rationale": "Project-based cost and margin reporting in SAP makes the variance against budget visible while the project runs; the work-in-progress and revenue-recognition policy that underpins the figure is held on OQ-5."
+   },
+   {
+    "requirementId": "rq_e3923ada-d370-4c3f-a4ba-07107cce5462",
+    "disposition": "IMPLEMENTED",
+    "stepIds": [
+     "EX-11"
+    ],
+    "decisionId": null,
+    "rationale": "The agreed milestone billing plan drives the staged invoice from the billing due list when factory acceptance or delivery is confirmed, and scope extras agreed with the customer are added to the project and billed rather than missed."
+   },
+   {
+    "requirementId": "rq_52edf8a2-842a-4675-8fcc-8a5235532f81",
+    "disposition": "IMPLEMENTED",
+    "stepIds": [
+     "EX-11"
+    ],
+    "decisionId": null,
+    "rationale": "One schedule and date basis in SAP, with confirmed supplier dates feeding production and the delivery date carried from the sales order, is the design by which on-time delivery rises from 71% to at least 92%; the baseline and counting method are held on OQ-3."
+   }
+  ],
+  "conflictDecisions": [],
+  "openQuestions": [
+   {
+    "id": "OQ-1",
+    "question": "How is retained Aurora PLM integrated with SAP for the engineering bill of materials and engineering changes (interface direction, object scope and change-trigger), given the preference for standard SAP over custom development? The requirement that Aurora PLM stays and is integrated is settled; only the interface mechanism is open.",
+    "owner": "Chief Engineer with the SAP integration consultant",
+    "affectedStepIds": [
+     "EX-3",
+     "EX-4"
+    ]
+   },
+   {
+    "id": "OQ-2",
+    "question": "How is stock reserved for a project in SAP: sales order stock per project, project/WBS stock, or manual reservations, and how does a finished machine move from sales order stock to own stock for delivery? No supplied reference covers this decision.",
+    "owner": "Operations Director with the SAP production planning consultant",
+    "affectedStepIds": [
+     "EX-6",
+     "EX-8",
+     "EX-11"
+    ]
+   },
+   {
+    "id": "OQ-3",
+    "question": "What are the baselines and counting definitions for the 92% on-time delivery target and the halving of material shortages (which date counts as the promised date, and what counts as a shortage stop)? The targets themselves are fixed; only measurement is open.",
+    "owner": "Operations Director with the Finance Controller",
+    "affectedStepIds": [
+     "EX-6",
+     "EX-8",
+     "EX-11"
+    ]
+   },
+   {
+    "id": "OQ-4",
+    "question": "What delegation applies to the Operations Director's purchase approval above \u00a320,000: who may approve in their absence, and is any amount split or bundling rule needed to stop orders being split below the threshold?",
+    "owner": "Operations Director",
+    "affectedStepIds": [
+     "EX-7"
+    ]
+   },
+   {
+    "id": "OQ-5",
+    "question": "Which work-in-progress and revenue-recognition policy applies to these contracts (contract asset versus contract liability and the percentage applied), so that margin is correctly visible during the project? No policy is supplied.",
+    "owner": "Finance Controller",
+    "affectedStepIds": [
+     "EX-10",
+     "EX-12"
+    ]
+   },
+   {
+    "id": "OQ-6",
+    "question": "What content, certificate type and signatory do customers require on the inspection certificate (for example an EN 10204 3.1 type document, and whether the Chief Engineer's or quality manager's signature is needed), and is the 0% of value retained against warranty recorded on the project? The requirement to issue certificates from the system is settled; only the document content and the warranty retention are open.",
+    "owner": "Quality manager with the Finance Controller",
+    "affectedStepIds": [
+     "EX-9",
+     "EX-12"
+    ]
+   }
+  ]
+ }
+}

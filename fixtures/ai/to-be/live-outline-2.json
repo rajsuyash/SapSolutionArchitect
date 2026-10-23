@@ -1,0 +1,494 @@
+{
+ "attempt": 2,
+ "payload": {
+  "schemaVersion": 1,
+  "processName": "Engineer-to-order: contract to delivered, billed and closed machine (Sheffield and Bristol)",
+  "steps": [
+   {
+    "id": "TO-BE-1",
+    "sequence": 1,
+    "title": "Set up project structure, work packages and project stock",
+    "purpose": "Create the project number and WBS work packages that every later step costs, plans and bills against, covering the Sheffield and Bristol plants.",
+    "asIsStepIds": [
+     "st_25f045a1-2912-4884-9cb3-2878ba1dd501"
+    ],
+    "requirementIds": [],
+    "enablesStepIds": [
+     "TO-BE-2",
+     "TO-BE-4",
+     "TO-BE-5",
+     "TO-BE-10",
+     "TO-BE-11"
+    ],
+    "implementation": {
+     "kind": "CONFIGURATION",
+     "referenceIds": [
+      "S4-2023-ATP-ALLOCATION-RESERVATION"
+     ]
+    }
+   },
+   {
+    "id": "TO-BE-2",
+    "sequence": 2,
+    "title": "Estimate and quote the machine from the PLM design",
+    "purpose": "Replace the Excel estimate with a costing-based quotation that carries the assumed margin and delivery date forward to the contract.",
+    "asIsStepIds": [
+     "st_990ff6ef-7d63-4519-8143-6f501d7fb000"
+    ],
+    "requirementIds": [],
+    "enablesStepIds": [
+     "TO-BE-3",
+     "TO-BE-11"
+    ],
+    "implementation": {
+     "kind": "CONFIGURATION",
+     "referenceIds": [
+      "S4-2023-SD-QUOTE",
+      "S4-2023-SD-PRICING"
+     ]
+    }
+   },
+   {
+    "id": "TO-BE-3",
+    "sequence": 3,
+    "title": "Create the sales order and milestone billing plan from the quotation",
+    "purpose": "Turn the accepted quotation into a sales order whose milestone billing plan drives down payment, factory acceptance and delivery billing.",
+    "asIsStepIds": [
+     "st_990ff6ef-7d63-4519-8143-6f501d7fb000",
+     "st_25f045a1-2912-4884-9cb3-2878ba1dd501"
+    ],
+    "requirementIds": [],
+    "enablesStepIds": [
+     "TO-BE-6",
+     "TO-BE-11"
+    ],
+    "implementation": {
+     "kind": "CONFIGURATION",
+     "referenceIds": [
+      "S4-2023-SD-QUOTE-TO-ORDER",
+      "S4-2023-SD-COPY-CONTROL",
+      "S4-2023-SD-BILLPLAN-DATES-FINAL"
+     ]
+    }
+   },
+   {
+    "id": "TO-BE-4",
+    "sequence": 4,
+    "title": "Integrate the Aurora PLM engineering BOM and manage engineering changes",
+    "purpose": "Receive the released engineering BOM from Aurora PLM and control post-release changes so only the current revision reaches the shop.",
+    "asIsStepIds": [
+     "st_b126e734-3a03-447f-8dcc-7b9a20e159a6"
+    ],
+    "requirementIds": [
+     "rq_174cde99-4161-4114-bbb4-9c4c60004a90",
+     "rq_2d139382-51fe-4b16-8849-ad9789140c04"
+    ],
+    "implementation": {
+     "kind": "INTEGRATION",
+     "referenceIds": [
+      "S4-2023-INT-BTP-SIDE-BY-SIDE",
+      "S4-2023-INT-EVENT-ENABLEMENT",
+      "S4-2023-SD-BOM-ASSEMBLY",
+      "S4-2023-EXT-KEYUSER"
+     ]
+    }
+   },
+   {
+    "id": "TO-BE-5",
+    "sequence": 5,
+    "title": "Build the manufacturing BOM and routings with make-or-buy decisions",
+    "purpose": "Derive the manufacturing structure, routings and make-or-buy decisions in SAP instead of Excel and printed sheets, complete against the engineering BOM.",
+    "asIsStepIds": [
+     "st_ede38a9a-47ce-4ed8-b58e-9479b6af9fea"
+    ],
+    "requirementIds": [
+     "rq_81596dde-940a-404b-878d-5a7889e2cc8a"
+    ],
+    "implementation": {
+     "kind": "CONFIGURATION",
+     "referenceIds": [
+      "S4-2023-SD-BOM-ASSEMBLY",
+      "S4-2023-EXT-KEYUSER"
+     ]
+    }
+   },
+   {
+    "id": "TO-BE-6",
+    "sequence": 6,
+    "title": "Run MRP per project against project-reserved stock",
+    "purpose": "Net project requirements automatically against stock reserved for that project and release the resulting purchase requisitions, replacing manual Excel netting.",
+    "asIsStepIds": [
+     "st_a54dcf58-d335-4982-849e-7f063c4158e4"
+    ],
+    "requirementIds": [
+     "rq_eb0f7be7-3b4a-4349-83d5-8c00c934287a",
+     "rq_05207ce7-aa65-4e78-95b8-18c71113bb73"
+    ],
+    "implementation": {
+     "kind": "CONFIGURATION",
+     "referenceIds": [
+      "S4-2023-inv-stock-types",
+      "S4-2023-SD-SALES-ORDER-STOCK-TRANSFER",
+      "S4-2023-PROC-PR-PO",
+      "S4-2023-ATP-ALLOCATION-RESERVATION"
+     ]
+    }
+   },
+   {
+    "id": "TO-BE-7",
+    "sequence": 7,
+    "title": "Buy long-lead castings and bought-in parts with in-system approval",
+    "purpose": "Convert requisitions into purchase orders for castings, drives and bought-in parts, route purchases above the approval threshold to the Operations Director and hold supplier dates in SAP.",
+    "asIsStepIds": [
+     "st_63bc8808-bd35-4682-848a-e7d46836d3bd"
+    ],
+    "requirementIds": [
+     "rq_fd84e522-b8f1-48b7-83dd-eaca2a4a1052",
+     "rq_72861776-409a-4ac0-8a10-b9927ab9c486"
+    ],
+    "implementation": {
+     "kind": "CONFIGURATION",
+     "referenceIds": [
+      "S4-2023-PROC-PR-PO",
+      "S4-2023-WF-FLEXIBLE",
+      "S4-2023-WF-MYINBOX"
+     ]
+    }
+   },
+   {
+    "id": "TO-BE-8",
+    "sequence": 8,
+    "title": "Schedule and run production with capacity and order confirmation",
+    "purpose": "Schedule operations against work-centre capacity and record confirmations so the schedule, capacity load and hours are current without a separate Excel schedule or job-tracking tool.",
+    "asIsStepIds": [
+     "st_59985b4a-54a4-47c2-870d-fd35a2db6972"
+    ],
+    "requirementIds": [
+     "rq_e028d631-2c9d-426e-8730-6678cb54af80"
+    ],
+    "implementation": {
+     "kind": "NEEDS_VALIDATION",
+     "referenceIds": []
+    }
+   },
+   {
+    "id": "TO-BE-9",
+    "sequence": 9,
+    "title": "Inspect, record non-conformance and issue the inspection certificate from the system",
+    "purpose": "Record inspection results and non-conformances against the project and machine, and issue the customer inspection certificate from SAP.",
+    "asIsStepIds": [
+     "st_f6f324f4-8818-4ae7-8149-8f855f42bb33"
+    ],
+    "requirementIds": [
+     "rq_097d9c20-958c-45f9-9bf2-518fc80494af"
+    ],
+    "implementation": {
+     "kind": "CONFIGURATION",
+     "referenceIds": [
+      "S4-2023-INV-STOCK-TYPES",
+      "S4-2023-OUT-OUTPUT-MGMT"
+     ]
+    }
+   },
+   {
+    "id": "TO-BE-10",
+    "sequence": 10,
+    "title": "Collect project costs, work in progress and settlement with visible margin",
+    "purpose": "Post project actuals against WBS work packages, determine work in progress and settlement, and expose cost variance and margin during the project rather than only at close.",
+    "asIsStepIds": [
+     "st_c4b1018d-2c8d-42d7-b018-1445d92b3333"
+    ],
+    "requirementIds": [
+     "rq_d2a44d0b-5f34-4bf1-b5e4-adbb26aac6c8",
+     "rq_bf4c0daf-8dfd-461c-bc2a-984a0fe6591c"
+    ],
+    "implementation": {
+     "kind": "CONFIGURATION",
+     "referenceIds": [
+      "S4-2023-PM-ORDER-SETTLEMENT",
+      "S4-2023-SD-RESOURCE-BILLING",
+      "S4-2023-ANALYTICS-CDS"
+     ]
+    }
+   },
+   {
+    "id": "TO-BE-11",
+    "sequence": 11,
+    "title": "Deliver the machine and bill each contract milestone",
+    "purpose": "Ship the machine to the customer and let the milestone billing plan raise the staged invoices and cover scope extras, instead of manual invoices from the contract.",
+    "asIsStepIds": [
+     "st_aaa39dd9-2e32-4599-b7bd-52c9f1759025"
+    ],
+    "requirementIds": [
+     "rq_e3923ada-d370-4c3f-a4ba-07107cce5462",
+     "rq_52edf8a2-842a-4675-8fcc-8a5235532f81"
+    ],
+    "implementation": {
+     "kind": "CONFIGURATION",
+     "referenceIds": [
+      "S4-2023-SD-BILLPLAN-ITEM-CONTROL",
+      "S4-2023-SD-BILLING",
+      "S4-2023-LOG-POD-OUTBOUND",
+      "S4-2023-OUT-OUTPUT-MGMT"
+     ]
+    }
+   },
+   {
+    "id": "TO-BE-12",
+    "sequence": 12,
+    "title": "Close the project and review the cost variance",
+    "purpose": "Close the project and review the achieved cost variance against budget from SAP project data so estimating assumptions can be corrected.",
+    "asIsStepIds": [
+     "st_9aff051d-82ed-4db7-a818-3f713889474c"
+    ],
+    "requirementIds": [],
+    "enablesStepIds": [
+     "TO-BE-2"
+    ],
+    "implementation": {
+     "kind": "STANDARD",
+     "referenceIds": [
+      "S4-2023-PM-ORDER-SETTLEMENT",
+      "S4-2023-ANALYTICS-CDS"
+     ]
+    }
+   }
+  ],
+  "eliminatedAsIsSteps": [
+   {
+    "asIsStepId": "st_990ff6ef-7d63-4519-8143-6f501d7fb000",
+    "reason": "The Excel estimating template is replaced by a costing-based quotation fed from the design; the sales engineer's estimating activity survives inside TO-BE-2 and TO-BE-3, so the As-Is step is not dropped but is not itself traced."
+   },
+   {
+    "asIsStepId": "st_25f045a1-2912-4884-9cb3-2878ba1dd501",
+    "reason": "The shared project folder and budget spreadsheet are replaced by the project, WBS work packages and milestone billing plan set up in TO-BE-1 and TO-BE-3; the As-Is step is not itself traced."
+   },
+   {
+    "asIsStepId": "st_b126e734-3a03-447f-8dcc-7b9a20e159a6",
+    "reason": "The Excel parts-list export is replaced by the Aurora PLM to SAP BOM interface in TO-BE-4; the As-Is step is not itself traced."
+   },
+   {
+    "asIsStepId": "st_ede38a9a-47ce-4ed8-b58e-9479b6af9fea",
+    "reason": "Hand-built Excel manufacturing structures and printed routings are replaced by SAP manufacturing BOMs and routings in TO-BE-5."
+   },
+   {
+    "asIsStepId": "st_a54dcf58-d335-4982-849e-7f063c4158e4",
+    "reason": "Manual Excel netting and the supplier lead-time sheet are replaced by automatic MRP against project-reserved stock in TO-BE-6."
+   },
+   {
+    "asIsStepId": "st_63bc8808-bd35-4682-848a-e7d46836d3bd",
+    "reason": "Email enquiries, the accounting package and the buyer's delivery-date spreadsheet are replaced by purchase requisitions, purchase orders and the approval workflow in TO-BE-7."
+   },
+   {
+    "asIsStepId": "st_59985b4a-54a4-47c2-870d-fd35a2db6972",
+    "reason": "The Excel schedule, printed job cards and job-tracking tool are retired; scheduling, confirmations and capacity load move into SAP in TO-BE-8."
+   },
+   {
+    "asIsStepId": "st_f6f324f4-8818-4ae7-8149-8f855f42bb33",
+    "reason": "Paper inspection sheets and Word certificates are replaced by in-system inspection results, non-conformance records and generated certificates in TO-BE-9."
+   },
+   {
+    "asIsStepId": "st_c4b1018d-2c8d-42d7-b018-1445d92b3333",
+    "reason": "Hand allocation of invoices and timesheets and quarterly WIP estimates are replaced by project actual postings, WIP and settlement in TO-BE-10."
+   },
+   {
+    "asIsStepId": "st_aaa39dd9-2e32-4599-b7bd-52c9f1759025",
+    "reason": "Manual staged invoices from the contract and the paper acceptance form are replaced by the milestone billing plan, goods issue and proof of delivery in TO-BE-11."
+   },
+   {
+    "asIsStepId": "st_9aff051d-82ed-4db7-a818-3f713889474c",
+    "reason": "The Excel variance comparison and lessons-learned note are replaced by project settlement and the project cost and margin report in TO-BE-12."
+   }
+  ],
+  "coverage": [
+   {
+    "requirementId": "rq_174cde99-4161-4114-bbb4-9c4c60004a90",
+    "disposition": "IMPLEMENTED",
+    "stepIds": [
+     "TO-BE-4"
+    ],
+    "decisionId": null,
+    "rationale": "TO-BE-4 keeps Aurora PLM as the engineering design system and integrates it with SAP so released BOMs and engineering changes flow to the manufacturing structure and open production documents instead of being exported to Excel."
+   },
+   {
+    "requirementId": "rq_2d139382-51fe-4b16-8849-ad9789140c04",
+    "disposition": "IMPLEMENTED",
+    "stepIds": [
+     "TO-BE-4"
+    ],
+    "decisionId": null,
+    "rationale": "TO-BE-4 gives every post-release engineering change a controlled release at the Chief Engineer approval point and pushes the current revision into the manufacturing BOM and open production orders, so an emailed change no longer leaves the old parts list in use."
+   },
+   {
+    "requirementId": "rq_81596dde-940a-404b-878d-5a7889e2cc8a",
+    "disposition": "IMPLEMENTED",
+    "stepIds": [
+     "TO-BE-5"
+    ],
+    "decisionId": null,
+    "rationale": "TO-BE-5 builds the manufacturing BOM and routings in SAP from the released engineering structure, with make-or-buy decisions and a completeness check against the engineering BOM, replacing the Excel structure and printed routing sheets."
+   },
+   {
+    "requirementId": "rq_eb0f7be7-3b4a-4349-83d5-8c00c934287a",
+    "disposition": "IMPLEMENTED",
+    "stepIds": [
+     "TO-BE-6"
+    ],
+    "decisionId": null,
+    "rationale": "TO-BE-6 nets project requirements in MRP against project-reserved stock, so stock held for one project is no longer consumed by another and projects stop for missing parts."
+   },
+   {
+    "requirementId": "rq_05207ce7-aa65-4e78-95b8-18c71113bb73",
+    "disposition": "IMPLEMENTED",
+    "stepIds": [
+     "TO-BE-6"
+    ],
+    "decisionId": null,
+    "rationale": "TO-BE-6 replaces manual Excel netting with automatic project-level requirements planning that releases requisitions before the shortage reaches the shop; the exact shortage-reduction arithmetic is held on OQ-4."
+   },
+   {
+    "requirementId": "rq_fd84e522-b8f1-48b7-83dd-eaca2a4a1052",
+    "disposition": "IMPLEMENTED",
+    "stepIds": [
+     "TO-BE-7"
+    ],
+    "decisionId": null,
+    "rationale": "TO-BE-7 records supplier delivery dates on the purchase order in SAP and uses the resulting schedule deviation to update the production schedule, instead of holding dates in the buyer's own spreadsheet."
+   },
+   {
+    "requirementId": "rq_72861776-409a-4ac0-8a10-b9927ab9c486",
+    "disposition": "IMPLEMENTED",
+    "stepIds": [
+     "TO-BE-7"
+    ],
+    "decisionId": null,
+    "rationale": "TO-BE-7 routes purchase orders over the approval threshold to the Operations Director as an in-system workflow task with a documented decision, replacing the paper approval."
+   },
+   {
+    "requirementId": "rq_e028d631-2c9d-426e-8730-6678cb54af80",
+    "disposition": "CONDITIONAL",
+    "stepIds": [
+     "TO-BE-8"
+    ],
+    "decisionId": null,
+    "rationale": "TO-BE-8 designs scheduling and order confirmation against work-centre capacity in SAP, but no supplied reference evidences the capacity-evaluation and confirmation objects, so the behaviour is only partly designed and depends on a consultant identifying the standard SAP mechanism; the scheduling policy itself is held on OQ-6."
+   },
+   {
+    "requirementId": "rq_097d9c20-958c-45f9-9bf2-518fc80494af",
+    "disposition": "IMPLEMENTED",
+    "stepIds": [
+     "TO-BE-9"
+    ],
+    "decisionId": null,
+    "rationale": "TO-BE-9 records inspection results and non-conformance decisions in SAP against the project and machine and issues the customer certificate from the system with the output determination, replacing paper sheets and Word certificates, and carries the scrap or rework cost to the project; the QM analytics mechanism is held on OQ-7."
+   },
+   {
+    "requirementId": "rq_d2a44d0b-5f34-4bf1-b5e4-adbb26aac6c8",
+    "disposition": "IMPLEMENTED",
+    "stepIds": [
+     "TO-BE-10"
+    ],
+    "decisionId": null,
+    "rationale": "TO-BE-10 posts supplier invoices, timesheets and production costs directly to project work packages, determines work in progress and settlement, and reports cost and margin while the project runs instead of allocating costs by hand and estimating WIP quarterly."
+   },
+   {
+    "requirementId": "rq_bf4c0daf-8dfd-461c-bc2a-984a0fe6591c",
+    "disposition": "IMPLEMENTED",
+    "stepIds": [
+     "TO-BE-10"
+    ],
+    "decisionId": null,
+    "rationale": "TO-BE-10 makes budget, actual, variance and margin visible for each work package during the project so the under-5% variance can be steered rather than discovered at close; the variance measurement method is held on OQ-5."
+   },
+   {
+    "requirementId": "rq_e3923ada-d370-4c3f-a4ba-07107cce5462",
+    "disposition": "IMPLEMENTED",
+    "stepIds": [
+     "TO-BE-11"
+    ],
+    "decisionId": null,
+    "rationale": "TO-BE-11 drives staged billing from the sales order milestone billing plan through the billing due list, with per-date billing status and block, so milestones are billed on time; scope extras are covered because additional work is agreed and billed on the same project."
+   },
+   {
+    "requirementId": "rq_52edf8a2-842a-4675-8fcc-8a5235532f81",
+    "disposition": "IMPLEMENTED",
+    "stepIds": [
+     "TO-BE-11"
+    ],
+    "decisionId": null,
+    "rationale": "TO-BE-11 ships the machine on the agreed date through goods issue and proof of delivery against the current production schedule, which supports the on-time delivery target; the on-time measurement definition is held on OQ-3."
+   }
+  ],
+  "conflictDecisions": [],
+  "openQuestions": [
+   {
+    "id": "OQ-1",
+    "question": "Which SAP scope items, and whether they are part of the licensed baseline, implement project-based costing with work in progress and settlement and the project cost and margin report? No supplied reference lists a project system or product cost controlling scope item, so the design relies on SAP project settlement and embedded analytics, and the exact scope item and licence must be confirmed before build.",
+    "owner": "SAP project systems and controlling consultant",
+    "affectedStepIds": [
+     "TO-BE-1",
+     "TO-BE-10",
+     "TO-BE-12"
+    ]
+   },
+   {
+    "id": "OQ-2",
+    "question": "What is the agreed mechanism and message contract for the Aurora PLM to SAP integration of engineering BOMs and engineering changes, and does settling it require SAP Business Technology Platform or an event product that is licensed separately? The side-by-side and event references are licence-dependent, so entitlement must be confirmed before the interface is built.",
+    "owner": "Integration architect",
+    "affectedStepIds": [
+     "TO-BE-4"
+    ]
+   },
+   {
+    "id": "OQ-3",
+    "question": "How is on-time delivery measured from SAP for the 92% target: against the original promised date on the sales order, or against the latest agreed date, and is the milestone the goods issue date or the customer receipt date?",
+    "owner": "Operations Director",
+    "affectedStepIds": [
+     "TO-BE-3",
+     "TO-BE-11"
+    ]
+   },
+   {
+    "id": "OQ-4",
+    "question": "What is the baseline for the requirement to cut material shortages that stop production by half, and how will the reduction be measured from SAP MRP exception and project-stock data?",
+    "owner": "Operations Director",
+    "affectedStepIds": [
+     "TO-BE-6"
+    ]
+   },
+   {
+    "id": "OQ-5",
+    "question": "Is cost variance measured against the original contract budget, the current revised budget or the forecast at completion, and on which cost elements, given the under-5% target?",
+    "owner": "Finance Controller",
+    "affectedStepIds": [
+     "TO-BE-10",
+     "TO-BE-12"
+    ]
+   },
+   {
+    "id": "OQ-6",
+    "question": "Which standard SAP mechanisms for finite capacity scheduling and capacity levelling, and which order confirmation procedure on the shop floor, will implement the scheduler and confirmation design in S/4HANA 2023 Private Cloud?",
+    "owner": "SAP production planning consultant",
+    "affectedStepIds": [
+     "TO-BE-8"
+    ]
+   },
+   {
+    "id": "OQ-7",
+    "question": "Which SAP objects and embedded analytics provide inspection-characteristic recording, non-conformance and defect records, and the project cost effect of scrap and rework, since no quality management reference was supplied?",
+    "owner": "SAP quality management consultant",
+    "affectedStepIds": [
+     "TO-BE-9"
+    ]
+   },
+   {
+    "id": "OQ-8",
+    "question": "Does the licence already include embedded SAP Transportation Management or only basic shipping, and will freight cost be settled through the shipment or freight settlement documents to the sales order so transport cost reaches project margin?",
+    "owner": "Finance Controller",
+    "affectedStepIds": [
+     "TO-BE-11"
+    ]
+   }
+  ]
+ }
+}

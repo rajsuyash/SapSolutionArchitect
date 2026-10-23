@@ -593,10 +593,12 @@ describe("enabling steps through the pipeline", () => {
     expect(JSON.parse(h.stepCalls.find(call => call.id === "TB-1")!.body.messages[0]!.content)).not.toHaveProperty("enables");
   });
 
-  it("still fails closed when an empty-requirement outline step enables nothing", async () => {
+  it("links an empty-requirement outline step that enables nothing to the next requirement-bearing step", async () => {
     const bad = outlineWithSetup(); delete (bad.steps[0] as { enablesStepIds?: string[] }).enablesStepIds;
-    const h = harness({ outline: () => bad, overrides: { AI_TO_BE_OUTLINE_REPAIRS: "0" } });
-    await expect(h.run()).rejects.toMatchObject({ code: "AI_INVALID_OUTPUT" });
+    const h = harness({ outline: () => bad, step: id => id === "TB-0" ? setupDetail() : split.details[id], overrides: { AI_TO_BE_OUTLINE_REPAIRS: "0" } });
+    const result = await h.run();
+    expect(result.payload.design.steps[0]).toMatchObject({ id: "TB-0", requirementIds: [], enablesStepIds: ["TB-1"] });
+    expect(result.metrics.warnings).toContainEqual({ code: "REPAIRED_ENABLING_LINK", path: "outline.steps.0" });
   });
 });
 

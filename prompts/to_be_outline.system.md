@@ -115,7 +115,10 @@ constraints and timeline. It is design input, not background:
   an open decision or question. The rationale must say which of these applies.
   It traces to steps exactly like IMPLEMENTED, has decisionId null, and must list
   at least one linked open decision (coverage decisionIds, from the register) or
-  open question (questionIds, from your openQuestions). CONDITIONAL keeps the item
+  open question (questionIds, from your openQuestions). A CONDITIONAL item with
+  both lists empty is rejected (CONDITIONAL_UNLINKED): either add the open question
+  to openQuestions and list its id in questionIds, or change the disposition.
+  CONDITIONAL keeps the item
   visible as a review blocker; do not use it for designed behaviour that merely
   awaits a policy value, and do not hide a partial design behind IMPLEMENTED and a
   hedging rationale.

@@ -120,3 +120,56 @@ export function restoreFromPrevious(previous: { value: unknown; issues: readonly
   });
   return warnings.length ? { value: { ...raw, steps }, warnings } : { value: raw, warnings };
 }
+
+type Reference = { id: string; fitType: string; status: string; targetProduct: string; targetRelease: string };
+const DEMAND: Record<string, number> = { STANDARD: 0, CONFIGURATION: 1, EXTENSION: 2, INTEGRATION: 2 };
+
+/** Two repairs that need the SAP catalog or the step order and have one deterministic answer, applied after repairOutlineShape.
+ * - REPAIRED_FIT_KIND: a STANDARD or CONFIGURATION step whose every cited reference is a verified catalog entry for the target
+ *   release is raised to the most demanding cited fit type (STANDARD < CONFIGURATION < EXTENSION | INTEGRATION). Only ever raised, so
+ *   effort is never understated. Citing both EXTENSION and INTEGRATION, or MANUAL / LICENSE_DEPENDENT, is a judgment and is left alone.
+ * - REPAIRED_ENABLING_LINK: a step without requirements of its own enables the next requirement-bearing step in sequence (the previous
+ *   one when none follows); an enabled step that is itself, or has no requirements, is replaced by the next requirement-bearing step
+ *   at or after it. Needs at least one requirement-bearing step; an unknown step id is left to fail validation.
+ * Ids only, no model text. CONDITIONAL coverage without a decision or question is deliberately not repaired: it needs judgment. */
+export function repairOutlineLinks(target: { product: string; release: string }, references: readonly Reference[], raw: unknown):
+  { value: unknown; warnings: ValidationIssue[] } {
+  const warnings: ValidationIssue[] = [];
+  if (!isObj(raw) || !Array.isArray(raw.steps) || !raw.steps.every(isObj)) return { value: raw, warnings };
+  const list: Obj[] = raw.steps;
+  const catalog = new Map(references.map(reference => [reference.id, reference]));
+  const bears = (step: Obj) => (strings(step.requirementIds)?.length ?? 0) > 0;
+  const ids = list.map(step => step.id);
+  const bearing = list.flatMap((step, i) => bears(step) ? [i] : []);
+  const nearest = (from: number) => bearing.find(i => i >= from) ?? bearing.filter(i => i < from).at(-1);
+
+  const steps = list.map((step, i): Obj => {
+    const path = `outline.steps.${i}`;
+    let out = step;
+    const implementation = isObj(step.implementation) ? step.implementation : undefined;
+    const cited = strings(implementation?.referenceIds)?.map(ref => catalog.get(ref));
+    if (implementation && (implementation.kind === "STANDARD" || implementation.kind === "CONFIGURATION") && cited?.length &&
+        cited.every((ref): ref is Reference => !!ref && ref.status === "VERIFIED" && ref.targetProduct === target.product && ref.targetRelease === target.release)) {
+      const types = new Set(cited.map(ref => ref.fitType));
+      const known = [...types].every(type => type in DEMAND);
+      const top = Math.max(...[...types].map(type => DEMAND[type] ?? -1));
+      const named = [...types].filter(type => DEMAND[type] === top);
+      if (known && named.length === 1 && top > DEMAND[implementation.kind]!) {
+        warnings.push({ code: "REPAIRED_FIT_KIND", path: `${path}.implementation` });
+        out = { ...out, implementation: { ...implementation, kind: named[0] } };
+      }
+    }
+    if (bears(step) || !bearing.length) return out;
+    const listed = Array.isArray(step.enablesStepIds) ? strings(step.enablesStepIds) : step.enablesStepIds === undefined ? [] : undefined;
+    if (!listed) return out;
+    const fix = (ref: string) => {
+      const at = ids.indexOf(ref);
+      return at < 0 || (at !== i && bears(list[at]!)) ? ref : ids[nearest(Math.max(at, i)) ?? at] as string;
+    };
+    const targets = listed.length ? [...new Set(listed.map(fix))] : [ids[nearest(i + 1)!] as string];
+    if (targets.length === listed.length && targets.every((ref, j) => ref === listed[j])) return out;
+    warnings.push({ code: "REPAIRED_ENABLING_LINK", path });
+    return { ...out, enablesStepIds: targets };
+  });
+  return warnings.length ? { value: { ...raw, steps }, warnings } : { value: raw, warnings };
+}
