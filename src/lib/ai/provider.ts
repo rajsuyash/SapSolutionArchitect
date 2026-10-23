@@ -1,14 +1,17 @@
 import Anthropic from "@anthropic-ai/sdk";
 
-export type Provider = "stub" | "anthropic" | "deepinfra";
+export type Provider = "stub" | "anthropic" | "deepinfra" | "openrouter";
 export type FailureCategory = "credit" | "auth" | "rate_limit" | "overloaded" | "invalid_request" | "timeout" | "unknown";
 
 // Never inherited from env: a stray ANTHROPIC_BASE_URL must not redirect prompts.
-const BASE_URLS = { anthropic: "https://api.anthropic.com", deepinfra: "https://api.deepinfra.com/anthropic" } as const;
+// The SDK appends /v1/messages to the base URL, so OpenRouter's is its origin + /api (-> https://openrouter.ai/api/v1/messages).
+const BASE_URLS = { anthropic: "https://api.anthropic.com", deepinfra: "https://api.deepinfra.com/anthropic", openrouter: "https://openrouter.ai/api" } as const;
 
-/** Both providers speak the Anthropic Messages protocol, so one SDK serves both. */
-export function createProviderClient(provider: "anthropic" | "deepinfra", apiKey: string, timeout: number, fetch?: typeof globalThis.fetch) {
-  return new Anthropic({ apiKey, authToken: null, baseURL: BASE_URLS[provider], maxRetries: 0, timeout,
+/** Every provider speaks the Anthropic Messages protocol, so one SDK serves all. OpenRouter authenticates with
+ * `Authorization: Bearer <key>` (SDK authToken); the others use `x-api-key`. */
+export function createProviderClient(provider: "anthropic" | "deepinfra" | "openrouter", apiKey: string, timeout: number, fetch?: typeof globalThis.fetch) {
+  const auth = provider === "openrouter" ? { apiKey: null, authToken: apiKey } : { apiKey, authToken: null };
+  return new Anthropic({ ...auth, baseURL: BASE_URLS[provider], maxRetries: 0, timeout,
     logLevel: "off", openTelemetry: false, fetch });
 }
 

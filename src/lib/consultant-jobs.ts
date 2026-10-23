@@ -32,7 +32,7 @@ const request = z.discriminatedUnion("kind", [
 ]);
 // Not strict: StageMetrics also carries eval-only detail (attemptIssues, stopReasons, warnings) that must not fail a job; unknown keys are dropped, not stored.
 const substageMetrics = z.strictObject({ calls: z.number().int().nonnegative(), inputTokens: z.number().int().nonnegative(), outputTokens: z.number().int().nonnegative() });
-const metricsSchema = z.object({ stage: z.enum(["interview_turn", "extraction_turn", "to_be"]), provider: z.enum(["stub", "anthropic", "deepinfra"]),
+const metricsSchema = z.object({ stage: z.enum(["interview_turn", "extraction_turn", "to_be"]), provider: z.enum(["stub", "anthropic", "deepinfra", "openrouter"]),
   model: z.string().max(160), inputTokens: z.number().int().nonnegative(), outputTokens: z.number().int().nonnegative(),
   latencyMs: z.number().nonnegative(), attempts: z.number().int().nonnegative(), thinkingDisabled: z.boolean().optional(),
   substages: z.strictObject({ to_be_outline: substageMetrics.optional(), to_be_step: substageMetrics.optional(), to_be_registers: substageMetrics.optional() }).optional(),

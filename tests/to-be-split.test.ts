@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { parseEnv } from "node:util";
 import { describe, expect, it, vi } from "vitest";
 import { parseEnvironment } from "../src/lib/env";
@@ -91,6 +91,74 @@ describe("forced tool choice per provider", () => {
   it("keeps auto on Anthropic for the outline and step tools", async () => {
     const h = harness(); await h.run();
     for (const body of [...h.outlineCalls, ...h.stepCalls.map(call => call.body), ...h.registerCalls.map(call => call.body)]) expect(choiceOf(body)).toEqual({ type: "auto", disable_parallel_tool_use: true });
+  });
+});
+
+describe("OpenRouter provider", () => {
+  const openrouter = { AI_PROVIDER: "openrouter", OPENROUTER_API_KEY: "synthetic-or-key" };
+  const MODEL = "deepseek/deepseek-v4.1-flash-1017";
+  async function spied(overrides: Record<string, string> = {}) {
+    const requests: { url: string; headers: Headers; body: RequestBody }[] = [];
+    const h = harness();
+    const spy = vi.fn<typeof globalThis.fetch>(async (url, init) => { requests.push({ url: String(url), headers: new Headers(init?.headers), body: JSON.parse(String(init?.body)) }); return h.fetch(url, init); });
+    const result = await createStageRunner(settings({ ...openrouter, ...overrides }), { fetch: spy })("to_be", fixture());
+    return { requests, result };
+  }
+  it("defaults the model to deepseek-v4.1-flash-1017 for every stage with its price, and requires OPENROUTER_API_KEY", () => {
+    const env = settings(openrouter);
+    expect(env).toMatchObject({ AI_MODEL: MODEL, AI_MODEL_PRICES: { [MODEL]: [0.15, 0.6] } });
+    expect(env.AI_REASONING_EFFORT).toBeUndefined(); // the runner then uses "max"
+    expect(env.AI_MODEL_DESIGN).toBeUndefined(); // falls back to AI_MODEL
+    expect(settings({ ...openrouter, AI_MODEL: "x/y" }).AI_MODEL).toBe("x/y");
+    expect(settings({ ...openrouter, AI_MODEL_PRICES: JSON.stringify({ [MODEL]: [1, 2] }) }).AI_MODEL_PRICES[MODEL]).toEqual([1, 2]);
+    expect(() => settings({ AI_PROVIDER: "openrouter" })).toThrow("OPENROUTER_API_KEY");
+    expect(() => settings({ AI_PROVIDER: "openrouter", OPENROUTER_API_KEY: " " })).toThrow("OPENROUTER_API_KEY");
+    expect(() => settings({ ...openrouter, AI_REASONING_EFFORT: "extreme" })).toThrow("AI_REASONING_EFFORT");
+    expect(settings({ ...openrouter, AI_REASONING_EFFORT: " " }).AI_REASONING_EFFORT).toBeUndefined();
+    expect(settings().AI_MODEL).toBe("claude-sonnet-5-5"); // other providers keep their default
+  });
+  it("posts to openrouter.ai/api/v1/messages with a Bearer token, forced tools and the max effort, and never calls count_tokens", async () => {
+    const { requests, result } = await spied();
+    expect(requests.length).toBe(1 + STEP_IDS.length + REGISTER_GROUP_NAMES.length); // calls only: no count request
+    for (const request of requests) {
+      expect(request.url).toBe("https://openrouter.ai/api/v1/messages");
+      expect(request.headers.get("authorization")).toBe("Bearer synthetic-or-key");
+      expect(request.headers.has("x-api-key")).toBe(false);
+      expect(request.body.model).toBe(MODEL);
+      expect(request.body.tool_choice).toEqual({ type: "tool", name: request.body.tools[0]!.name, disable_parallel_tool_use: true });
+      expect(request.body.output_config).toEqual({ effort: "max" });
+      expect(request.body.thinking).toBeUndefined();
+    }
+    expect(result.metrics).toMatchObject({ provider: "openrouter", model: MODEL, thinkingDisabled: false });
+  });
+  it("sends exactly these keys for the to_be_outline call", async () => {
+    const outline = (await spied()).requests[0]!.body;
+    expect(Object.keys(outline).sort()).toEqual(["max_tokens", "messages", "model", "output_config", "stream", "system", "tool_choice", "tools"]);
+    expect({ ...outline, system: "<system prompt>", messages: "<1 user message>", tools: outline.tools.map(tool => tool.name) }).toEqual({
+      model: MODEL, max_tokens: 16000, stream: true, system: "<system prompt>", messages: "<1 user message>", tools: ["submit_to_be_outline"],
+      tool_choice: { type: "tool", name: "submit_to_be_outline", disable_parallel_tool_use: true }, output_config: { effort: "max" } });
+    if (process.env.PRINT_OPENROUTER_BODY) writeFileSync(process.env.PRINT_OPENROUTER_BODY, JSON.stringify({ ...outline, system: `<${String(outline.system).length} chars>`,
+      messages: `<${JSON.stringify(outline.messages).length} chars>`, tools: outline.tools.map(tool => ({ name: tool.name, input_schema: "<JSON schema>" })) }, null, 2));
+  });
+  it("applies AI_REASONING_EFFORT and AI_NO_THINKING_STAGES per request kind", async () => {
+    const medium = (await spied({ AI_REASONING_EFFORT: "medium" })).requests;
+    expect(medium.every(request => JSON.stringify(request.body.output_config) === JSON.stringify({ effort: "medium" }))).toBe(true);
+    const none = await spied({ AI_REASONING_EFFORT: "none" });
+    expect(none.requests.every(request => JSON.stringify(request.body.thinking) === JSON.stringify({ type: "disabled" }) && request.body.output_config === undefined)).toBe(true);
+    expect(none.result.metrics.thinkingDisabled).toBe(true);
+    const mixed = (await spied({ AI_REASONING_EFFORT: "high", AI_NO_THINKING_STAGES: "to_be_step" })).requests;
+    for (const request of mixed) {
+      const isStep = request.body.tools[0]!.name === "submit_to_be_step";
+      expect(request.body.thinking).toEqual(isStep ? { type: "disabled" } : undefined);
+      expect(request.body.output_config).toEqual(isStep ? undefined : { effort: "high" });
+    }
+  });
+  it("guards AI_MAX_INPUT_TOKENS with a local chars/3.5 estimate instead of a remote count", async () => {
+    const requests: string[] = [];
+    const h = harness();
+    const spy = vi.fn<typeof globalThis.fetch>(async (url, init) => { requests.push(String(url)); return h.fetch(url, init); });
+    await expect(createStageRunner(settings({ ...openrouter, AI_MAX_INPUT_TOKENS: "1000" }), { fetch: spy })("to_be", fixture())).rejects.toMatchObject({ code: "AI_INPUT_TOO_LARGE" });
+    expect(requests).toEqual([]); // refused before any request, count or call
   });
 });
 

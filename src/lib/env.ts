@@ -1,6 +1,10 @@
 import { z } from "zod";
 
 const required = z.string().trim().min(1);
+export const REASONING_EFFORTS = ["none", "low", "medium", "high", "max"] as const;
+/** Model every stage runs on when AI_PROVIDER=openrouter and AI_MODEL is unset (list price USD per MTok: 0.15 in, 0.60 out). */
+const OPENROUTER_DEFAULT_PRICES: [number, number] = [0.15, 0.6];
+export const OPENROUTER_DEFAULT_MODEL = "deepseek/deepseek-v4.1-flash-1017";
 const httpUrl = z.url({ protocol: /^https?$/ });
 // A blank variable means "use the default", not zero.
 const price = (fallback: number) => z.preprocess((value) => (typeof value === "string" && !value.trim() ? undefined : value),
@@ -28,10 +32,11 @@ const schema = z.object({
   DATABASE_URL: z.url({ protocol: /^postgres(ql)?$/ }),
   APP_URL: httpUrl,
   AUTH_SECRET: z.string().min(32),
-  AI_PROVIDER: z.enum(["anthropic", "deepinfra", "stub"]),
+  AI_PROVIDER: z.enum(["anthropic", "deepinfra", "openrouter", "stub"]),
   ANTHROPIC_API_KEY: z.string().optional(),
   DEEPINFRA_API_KEY: z.string().optional(),
-  // Model for every stage except design, for any provider: anthropic -> claude-sonnet-5-5, deepinfra -> XiaomiMiMo/MiMo-V2.6-Flash.
+  OPENROUTER_API_KEY: z.string().optional(),
+  // Model for every stage except design, for any provider: anthropic -> claude-sonnet-5-5, deepinfra -> XiaomiMiMo/MiMo-V2.6-Flash, openrouter -> deepseek/deepseek-v4.1-flash-1017 (applied below when unset).
   AI_MODEL: required.default("claude-sonnet-5-5"),
   // Optional stronger/slower model for the long To-Be design stage only; unset means AI_MODEL runs every stage.
   AI_MODEL_DESIGN: z.preprocess(blankToUndefined, required.optional()),
@@ -52,8 +57,11 @@ const schema = z.object({
   AI_TO_BE_OUTLINE_MAX_TOKENS: whole(16000, 1000, 64000),
   AI_TO_BE_STEP_MAX_TOKENS: whole(8000, 1000, 64000),
   AI_TO_BE_REGISTERS_MAX_TOKENS: whole(8000, 1000, 64000),
-  // Stages run with model reasoning off (DeepInfra only; `thinking: {type: "disabled"}`). Empty = every stage keeps default reasoning.
+  // Stages run with model reasoning off (DeepInfra and OpenRouter; `thinking: {type: "disabled"}`). Empty = every stage keeps default reasoning.
   AI_NO_THINKING_STAGES: stageList,
+  // OpenRouter only: reasoning effort sent as `output_config: {effort}` (OpenRouter maps it to its unified reasoning.effort); "none" sends
+  // thinking disabled. Unset = "max" (OpenRouter accepts max, xhigh, high, medium, low, minimal, none). Ignored by the other providers.
+  AI_REASONING_EFFORT: z.preprocess(blankToUndefined, z.enum(REASONING_EFFORTS).optional()),
   AI_FAULT_INJECTION: z.string().regex(
     /^(problem_analysis|as_is|gap|to_be|change_doc|blueprint_narrative):(timeout|invalid|error)(:once)?$/,
   ).optional(),
@@ -80,6 +88,7 @@ const schema = z.object({
   const invalid = (name: string) => context.addIssue({ code: "custom", path: [name], message: "Invalid configuration" });
   if (config.AI_PROVIDER === "anthropic" && !config.ANTHROPIC_API_KEY?.trim()) invalid("ANTHROPIC_API_KEY");
   if (config.AI_PROVIDER === "deepinfra" && !config.DEEPINFRA_API_KEY?.trim()) invalid("DEEPINFRA_API_KEY");
+  if (config.AI_PROVIDER === "openrouter" && !config.OPENROUTER_API_KEY?.trim()) invalid("OPENROUTER_API_KEY");
   // Claude rejects thinking: {type: "disabled"} with a 400, so the setting is refused rather than silently ignored.
   if (config.AI_PROVIDER === "anthropic" && config.AI_NO_THINKING_STAGES.length) invalid("AI_NO_THINKING_STAGES");
   // A single call can never outlive the stage that contains it.
@@ -103,14 +112,18 @@ export type Environment = Readonly<z.infer<typeof schema>>;
 /** Server-only configuration. Call once from each process's startup entry point. */
 export function parseEnvironment(input: Record<string, string | undefined> = process.env): Environment {
   // PRD §4: test hooks must have no effect in production, including invalid fault strings.
-  const effective = input.NODE_ENV === "production"
+  const effective: Record<string, string | undefined> = input.NODE_ENV === "production"
     ? { ...input, AI_PROVIDER: input.AI_PROVIDER === "stub" ? "anthropic" : input.AI_PROVIDER, AI_FAULT_INJECTION: undefined }
     : { ...input, AI_FAULT_INJECTION: input.AI_FAULT_INJECTION || undefined };
-  const result = schema.safeParse(effective);
+  const withModel = effective.AI_PROVIDER === "openrouter" && !effective.AI_MODEL?.trim()
+    ? { ...effective, AI_MODEL: OPENROUTER_DEFAULT_MODEL } : effective;
+  const result = schema.safeParse(withModel);
   if (!result.success) {
     // Zod messages and input values can contain secrets. Report variable names only.
     const names = [...new Set(result.error.issues.map((issue) => issue.path.join(".")))];
     throw new Error(`Invalid environment variables: ${names.join(", ")}`);
   }
-  return Object.freeze(result.data);
+  // Price the default OpenRouter model out of the box (an explicit AI_MODEL_PRICES entry wins).
+  const prices = result.data.AI_PROVIDER === "openrouter" ? { [OPENROUTER_DEFAULT_MODEL]: OPENROUTER_DEFAULT_PRICES, ...result.data.AI_MODEL_PRICES } : result.data.AI_MODEL_PRICES;
+  return Object.freeze({ ...result.data, AI_MODEL_PRICES: prices });
 }

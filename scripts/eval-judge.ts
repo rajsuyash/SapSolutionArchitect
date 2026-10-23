@@ -4,9 +4,9 @@
 //   node --import tsx scripts/eval-judge.ts --case fixtures/eval/pump-o2c.json (--run <eval run.json> | --tobe <design.json>) [--runs 3]
 //   node --import tsx scripts/eval-judge.ts --calibrate [--case fixtures/eval/pump-o2c.json] [--runs 3]
 //
-// Needs DEEPINFRA_API_KEY in the environment (this script never reads .env files). --calibrate judges the hand-written
+// Needs the provider's key in the environment (DEEPINFRA_API_KEY, or OPENROUTER_API_KEY with --provider openrouter, which also needs --model; cost is still priced at JUDGE_PRICE_PER_MTOK) (this script never reads .env files). --calibrate judges the hand-written
 // STRONG control (fixtures/eval/controls/pump-o2c.strong.json) and a WEAK plan mechanically derived from it, and says whether the
-// judge separates them. Flags: --model <id> --runs N --max-cost <usd, default 1.00> --spread-flag <0.5>.
+// judge separates them. Flags: --provider <deepinfra|openrouter> (default deepinfra) --model <id> --runs N --max-cost <usd, default 1.00> --spread-flag <0.5>.
 // Output: test-results/eval/judge-<timestamp>.json and .md (gitignored).
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import {
@@ -33,9 +33,13 @@ async function main() {
   const runs = Number(flag("runs") ?? DEFAULT_RUNS), maxCost = Number(flag("max-cost") ?? "1.00"), spreadFlag = Number(flag("spread-flag") ?? DEFAULT_SPREAD_FLAG);
   const model = flag("model") ?? JUDGE_MODEL;
   if (!Number.isInteger(runs) || runs < 1 || !(maxCost > 0)) throw new Error("--runs must be a positive integer and --max-cost a positive number");
-  const apiKey = process.env.DEEPINFRA_API_KEY?.trim();
-  if (!apiKey) throw new Error("DEEPINFRA_API_KEY is not set");
-  const client = createProviderClient("deepinfra", apiKey, 660_000);
+  const judgeProvider = flag("provider") ?? "deepinfra";
+  if (judgeProvider !== "deepinfra" && judgeProvider !== "openrouter") throw new Error("--provider must be deepinfra or openrouter");
+  if (judgeProvider === "openrouter" && !flag("model")) throw new Error("--provider openrouter needs --model (the default judge model id is DeepInfra's)");
+  const keyName = judgeProvider === "openrouter" ? "OPENROUTER_API_KEY" : "DEEPINFRA_API_KEY";
+  const apiKey = process.env[keyName]?.trim();
+  if (!apiKey) throw new Error(`${keyName} is not set`);
+  const client = createProviderClient(judgeProvider, apiKey, 660_000);
   const rawCase = readJson(flag("case") ?? "fixtures/eval/pump-o2c.json") as { project: { targetProduct: Parameters<typeof loadSapReferences>[0]; targetRelease?: string | null } };
   const references = await loadSapReferences(rawCase.project.targetProduct, rawCase.project.targetRelease ?? null);
   const brief = buildCaseBrief(rawCase, references.length);

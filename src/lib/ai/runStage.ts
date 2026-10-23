@@ -33,7 +33,7 @@ export type StageMetrics = { stage: Stage; provider: Provider; model: string; in
   /** Interview stages only: provider responses accepted from a JSON text block because the model skipped the tool call.
    * Counted so a run that leans on the fallback is visible; a clean native tool call is the expected case. */
   textFallbacks?: number;
-  /** True when this stage's requests carried `thinking: {type: "disabled"}` (AI_NO_THINKING_STAGES, DeepInfra only). */
+  /** True when this stage's requests carried `thinking: {type: "disabled"}` (AI_NO_THINKING_STAGES, or AI_REASONING_EFFORT=none; DeepInfra and OpenRouter only). */
   thinkingDisabled?: boolean;
   /** To-Be only: provider calls and tokens per request kind (the outline call and the per-step calls, repairs included). */
   substages?: Partial<Record<Substage, { calls: number; inputTokens: number; outputTokens: number }>>;
@@ -48,9 +48,13 @@ export class AIStageError extends Error {
     super(code); this.name = "AIStageError";
   }
 }
-type Config = Pick<Environment, "NODE_ENV" | "AI_PROVIDER" | "ANTHROPIC_API_KEY" | "DEEPINFRA_API_KEY" | "AI_MODEL" | "AI_MODEL_DESIGN" | "AI_MAX_INPUT_TOKENS" | "AI_MAX_CONCURRENCY" | "AI_CHAT_CONCURRENCY" | "AI_FAULT_INJECTION"
+type Config = Pick<Environment, "NODE_ENV" | "AI_PROVIDER" | "ANTHROPIC_API_KEY" | "DEEPINFRA_API_KEY" | "OPENROUTER_API_KEY" | "AI_REASONING_EFFORT" | "AI_MODEL" | "AI_MODEL_DESIGN" | "AI_MAX_INPUT_TOKENS" | "AI_MAX_CONCURRENCY" | "AI_CHAT_CONCURRENCY" | "AI_FAULT_INJECTION"
   | "AI_NO_THINKING_STAGES" | "AI_STAGE_BUDGET_SECONDS" | "AI_CALL_TIMEOUT_SECONDS" | "AI_DESIGN_CALL_TIMEOUT_SECONDS" | "AI_DESIGN_PARALLELISM" | "AI_TO_BE_OUTLINE_MAX_TOKENS" | "AI_TO_BE_STEP_MAX_TOKENS" | "AI_TO_BE_REGISTERS_MAX_TOKENS">;
 const SDK_TIMEOUT_MARGIN_MS = 5000;
+/** OpenRouter has no count_tokens endpoint: input size is estimated locally. 3.5 chars/token is deliberately below the ~4 of English prose
+ * (JSON, SAP codes and non-English text tokenize worse), so the AI_MAX_INPUT_TOKENS guard errs towards refusing. Not a measured count. */
+const CHARS_PER_TOKEN = 3.5;
+const estimateTokens = (text: string) => Math.ceil(text.length / CHARS_PER_TOKEN);
 /** An interview turn carries up to 42 quoted proposals; 8000 truncated some turns into an empty tool payload. */
 const INTERVIEW_MAX_TOKENS = 16000;
 /** The long design stages: the only place that decides which stages use the design timeout and AI_MODEL_DESIGN. */
@@ -120,8 +124,9 @@ export function createStageRunner(config: Config, options: Options = {}) {
   const callTimeout = config.AI_CALL_TIMEOUT_SECONDS * 1000;
   const designCallTimeout = config.AI_DESIGN_CALL_TIMEOUT_SECONDS * 1000;
   const stageBudget = config.AI_STAGE_BUDGET_SECONDS * 1000;
-  const apiKey = provider === "anthropic" ? config.ANTHROPIC_API_KEY : provider === "deepinfra" ? config.DEEPINFRA_API_KEY : undefined;
-  if (provider !== "stub" && !apiKey?.trim()) throw new Error(`Missing ${provider === "anthropic" ? "ANTHROPIC_API_KEY" : "DEEPINFRA_API_KEY"}`);
+  const keyName = ({ anthropic: "ANTHROPIC_API_KEY", deepinfra: "DEEPINFRA_API_KEY", openrouter: "OPENROUTER_API_KEY", stub: null } as const)[provider];
+  const apiKey = keyName ? config[keyName] : undefined;
+  if (keyName && !apiKey?.trim()) throw new Error(`Missing ${keyName}`);
   const fault = config.NODE_ENV === "production" ? undefined : config.AI_FAULT_INJECTION;
   let faultUsed = false;
   // SDK retries and logs are disabled: this boundary owns the bounded policy and
@@ -135,14 +140,18 @@ export function createStageRunner(config: Config, options: Options = {}) {
   // AbortSignal in call() bounds the whole stream. Keep the SDK value above both per-call limits.
   const sdkTimeout = Math.max(callTimeout, designCallTimeout) + SDK_TIMEOUT_MARGIN_MS;
   const client = provider === "stub" ? undefined : createProviderClient(provider, apiKey!, sdkTimeout, options.fetch);
-  const noThinking = new Set<string>(provider === "deepinfra" ? config.AI_NO_THINKING_STAGES ?? [] : []);
+  const noThinking = new Set<string>(provider === "deepinfra" || provider === "openrouter" ? config.AI_NO_THINKING_STAGES ?? [] : []);
+  // OpenRouter only: effort for stages that think. "none" = reasoning off everywhere. The Messages endpoint documents output_config.effort
+  // and thinking:{type:"disabled"} as its reasoning controls (mapped to reasoning.effort / reasoning.enabled=false); no `thinking` is sent otherwise.
+  const effort = provider === "openrouter" ? config.AI_REASONING_EFFORT ?? "max" : "none";
+  const reasoningOff = provider === "openrouter" && effort === "none";
   // Two independent lanes of model-call slots: chat turns (interview_turn) and batch stages (to_be, problem_analysis).
   // A long batch stage can hold every batch slot and a chat turn still runs.
   const chatLane = createLane(config.AI_CHAT_CONCURRENCY), batchLane = createLane(config.AI_MAX_CONCURRENCY);
   // Claude Sonnet 5.5 rejects a forced tool choice (HTTP 400), so Anthropic keeps "auto". DeepInfra's MiMo answers in
   // prose under "auto" (0/4 tool calls measured 2026-10-22) and calls the tool every time when it is forced.
   // This applies to every tool the runner sends, the To-Be outline and step tools included.
-  const toolChoiceFor = (name: string): Anthropic.ToolChoice => provider === "deepinfra"
+  const toolChoiceFor = (name: string): Anthropic.ToolChoice => provider === "deepinfra" || provider === "openrouter"
     ? { type: "tool", name, disable_parallel_tool_use: true } : { type: "auto", disable_parallel_tool_use: true };
 
   return async function runStage<S extends Stage>(stage: S, rawInput: unknown, externalSignal?: AbortSignal): Promise<{ payload: Payloads[S]; metrics: StageMetrics }> {
@@ -152,7 +161,7 @@ export function createStageRunner(config: Config, options: Options = {}) {
     const model = isDesign ? config.AI_MODEL_DESIGN ?? config.AI_MODEL : config.AI_MODEL;
     const metrics: StageMetrics = { stage, provider, model, inputTokens: 0, outputTokens: 0,
       latencyMs: 0, attempts: 0, validationErrors: [], attemptIssues: [], stopReasons: [], textFallbacks: 0,
-      thinkingDisabled: noThinking.has(stage) || (stage === "to_be" && TO_BE_SUBSTAGES.every(substage => noThinking.has(substage))) };
+      thinkingDisabled: reasoningOff || noThinking.has(stage) || (stage === "to_be" && TO_BE_SUBSTAGES.every(substage => noThinking.has(substage))) };
     const fail = (code: Code) => new AIStageError(code, metrics);
     const deadline = new AbortController();
     const timer = setTimeout(() => deadline.abort(fail("AI_TIMEOUT")), stageBudget);
@@ -222,6 +231,7 @@ export function createStageRunner(config: Config, options: Options = {}) {
       let inputTruncated = false;
       const count = async (source: string) => {
         if (!client) return Buffer.byteLength(source, "utf8"); // Conservative byte cap in offline tests; not reported as measured tokens.
+        if (provider === "openrouter") return estimateTokens(source);
         const result = await transport((signal) => client.messages.countTokens({ model,
           messages: [{ role: "user", content: source }] }, { signal }));
         if (!Number.isSafeInteger(result.input_tokens) || result.input_tokens < 0) throw fail("AI_PROVIDER_ERROR");
@@ -248,17 +258,16 @@ export function createStageRunner(config: Config, options: Options = {}) {
         const tools = [a.tool];
         const toolChoice = toolChoiceFor(a.tool.name);
         if (a.guard) {
-          const counted = await transport(signal => client!.messages.countTokens({
-            model, system: a.system, messages, tools, tool_choice: toolChoice,
-          }, { signal }));
-          if (!Number.isSafeInteger(counted.input_tokens) || counted.input_tokens < 0) throw fail("AI_PROVIDER_ERROR");
-          if (counted.input_tokens > config.AI_MAX_INPUT_TOKENS) throw fail("AI_INPUT_TOO_LARGE");
+          const inputTokens = provider === "openrouter" ? estimateTokens(JSON.stringify({ system: a.system, messages, tools, tool_choice: toolChoice }))
+            : (await transport(signal => client!.messages.countTokens({ model, system: a.system, messages, tools, tool_choice: toolChoice }, { signal }))).input_tokens;
+          if (!Number.isSafeInteger(inputTokens) || inputTokens < 0) throw fail("AI_PROVIDER_ERROR");
+          if (inputTokens > config.AI_MAX_INPUT_TOKENS) throw fail("AI_INPUT_TOO_LARGE");
         }
         const timeoutMs = isDesign ? designCallTimeout : callTimeout;
         const message = await transport((signal) => {
           metrics.attempts++;
           return client!.messages.stream({ model, max_tokens: a.maxTokens, system: a.system,
-            messages, tools, ...(a.thinkingOff ? { thinking: { type: "disabled" as const } } : {}),
+            messages, tools, ...(a.thinkingOff ? { thinking: { type: "disabled" as const } } : provider === "openrouter" ? { output_config: { effort: effort as "low" | "medium" | "high" | "max" } } : {}),
             // Sonnet 5.5 rejects forced tool selection. The prompt requests the
             // tool; validation still requires exactly one complete tool payload.
             tool_choice: toolChoice }, { signal, timeout: timeoutMs }).finalMessage();
@@ -324,7 +333,7 @@ export function createStageRunner(config: Config, options: Options = {}) {
             const key = substage === "to_be_registers" ? `to_be_registers:${group}` : substage;
             const kind = kinds[key as keyof typeof kinds];
             const output = await generate({ system: kind.system, user: JSON.stringify(request), tool: tools[key]!, maxTokens: kind.maxTokens,
-              guard: true, thinkingOff: noThinking.has(substage) || noThinking.has("to_be"), substage });
+              guard: true, thinkingOff: reasoningOff || noThinking.has(substage) || noThinking.has("to_be"), substage });
             signal.throwIfAborted();
             return output;
           },

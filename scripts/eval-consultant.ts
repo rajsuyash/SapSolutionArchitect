@@ -1,7 +1,7 @@
 // Phase-0 evaluation harness for the discovery interviewer and To-Be generator.
 //
 //   node --import tsx --env-file-if-exists=.env scripts/eval-consultant.ts --replay <transcript.json> [--case fixtures/eval/pump-o2c.json]
-//   node --import tsx --env-file-if-exists=.env scripts/eval-consultant.ts --live --provider <anthropic|deepinfra> --model <id> [--runs N] [--max-turns 25] [--no-force-complete] [--no-tobe]
+//   node --import tsx --env-file-if-exists=.env scripts/eval-consultant.ts --live --provider <anthropic|deepinfra|openrouter> --model <id> [--runs N] [--max-turns 25] [--no-force-complete] [--no-tobe]
 //
 // --live --provider stub --model stub [--fake-model] is the offline dry run: plain stub stops at the first model call
 // (runStage has no stub interviewer); --fake-model swaps in a scripted model to exercise the whole driver at zero cost.
@@ -41,7 +41,7 @@ const OUTPUT_TOKEN_CAP = 400_000;
 const DEFAULT_MAX_TURNS = 25;
 const MAX_CONSECUTIVE_FAILURES = 3;
 const DEFAULT_CASE = "fixtures/eval/pump-o2c.json";
-const PROVIDERS = ["anthropic", "deepinfra", "stub"] as const;
+const PROVIDERS = ["anthropic", "deepinfra", "openrouter", "stub"] as const;
 
 function flag(name: string): string | undefined {
   const index = process.argv.indexOf(`--${name}`);
@@ -395,15 +395,15 @@ async function main() {
     process.exitCode = score.pass ? 0 : 1;
     return;
   }
-  if (!has("live")) throw new Error("Use --replay <transcript.json> or --live --provider <anthropic|deepinfra> --model <id>");
+  if (!has("live")) throw new Error("Use --replay <transcript.json> or --live --provider <anthropic|deepinfra|openrouter> --model <id>");
   const provider = flag("provider"), model = flag("model");
-  if (!provider || !(PROVIDERS as readonly string[]).includes(provider) || !model) throw new Error("--live needs --provider <anthropic|deepinfra> and --model <id>");
+  if (!provider || !(PROVIDERS as readonly string[]).includes(provider) || !model) throw new Error("--live needs --provider <anthropic|deepinfra|openrouter> and --model <id>");
   const runs = Number(flag("runs") ?? 1), maxTurns = Number(flag("max-turns") ?? DEFAULT_MAX_TURNS);
   if (!Number.isInteger(runs) || runs < 1 || !Number.isInteger(maxTurns) || maxTurns < 1) throw new Error("--runs and --max-turns must be positive integers");
   fillEnvDefaults();
   process.env.AI_PROVIDER = provider; process.env.AI_MODEL = model;
   if (has("fake-model") && provider !== "stub") throw new Error("--fake-model only runs with --provider stub");
-  const keyName = { anthropic: "ANTHROPIC_API_KEY", deepinfra: "DEEPINFRA_API_KEY", stub: null }[provider as (typeof PROVIDERS)[number]];
+  const keyName = { anthropic: "ANTHROPIC_API_KEY", deepinfra: "DEEPINFRA_API_KEY", openrouter: "OPENROUTER_API_KEY", stub: null }[provider as (typeof PROVIDERS)[number]];
   if (keyName && !process.env[keyName]?.trim()) throw new Error(`${keyName} is not set`);
 
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");

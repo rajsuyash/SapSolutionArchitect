@@ -6,7 +6,7 @@ import { rentalRegisterGroups } from "../../fixtures/ai/to-be/rental-registers";
 import type { RegisterGroup } from "../../src/lib/ai/design-registers";
 
 export type RequestBody = { model: string; system: string; messages: { content: string }[];
-  tools: { name: string; input_schema: unknown }[]; tool_choice: unknown; thinking?: unknown };
+  tools: { name: string; input_schema: unknown }[]; tool_choice: unknown; thinking?: unknown; output_config?: unknown };
 
 export function splitDesign(design: DetailedDesign) {
   const outline = {

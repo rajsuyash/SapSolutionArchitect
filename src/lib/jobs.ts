@@ -13,7 +13,7 @@ export const ANALYSIS_QUEUE = "analysis.problem";
 const uuid = z.uuid();
 const notFound = (entity: "JOB" | "PROJECT") => new AuthError(`${entity}_NOT_FOUND`, 404, `${entity === "JOB" ? "Job" : "Project"} not found`);
 const invalidState = () => new AuthError("INVALID_STATE", 409, "This operation is not available in the current state");
-const metricSchema = z.object({ stage: z.literal("problem_analysis"), provider: z.enum(["stub", "anthropic", "deepinfra"]),
+const metricSchema = z.object({ stage: z.literal("problem_analysis"), provider: z.enum(["stub", "anthropic", "deepinfra", "openrouter"]),
   model: z.string().max(160), inputTokens: z.number().int().nonnegative(), outputTokens: z.number().int().nonnegative(),
   latencyMs: z.number().nonnegative(), attempts: z.number().int().nonnegative(),
   validationErrors: z.array(z.object({ path: z.string().max(200), code: z.string().max(80), detail: z.string().max(200).optional() })).max(1000) });
