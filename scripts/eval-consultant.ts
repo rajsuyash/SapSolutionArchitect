@@ -26,6 +26,7 @@ import { parseEnv, promisify } from "node:util";
 import { Client, Pool } from "pg";
 import { AIStageError, createStageRunner, runStage, type StageMetrics } from "../src/lib/ai/runStage";
 import { parseEnvironment } from "../src/lib/env";
+import { reviewBlockers, type ReviewOutcome } from "../src/lib/ai/to-be-review";
 import { loadToBeReferences, parseToBeInput, validateToBeOutput } from "../src/lib/ai/to-be";
 import { createAuthService, transaction } from "../src/lib/auth";
 import { createProjectRepository } from "../src/lib/tenant";
@@ -334,7 +335,8 @@ async function generateToBe(pool: Pool, snapshotId: string, stage: typeof runSta
   };
   try {
     const generated = await stage("to_be", input);
-    const validation = validateToBeOutput(input, (generated.payload as { design?: unknown }).design, references);
+    const validation = validateToBeOutput(input, (generated.payload as { design?: unknown }).design, references,
+      reviewBlockers((generated.payload as { reviewFindings?: ReviewOutcome[] }).reviewFindings));
     // The sections the report builds without a model (document control, As-Is narratives, RICEFW list) travel with the design, so the judge reads the whole document.
     const derived = validation.success ? deriveSections({ design: validation.data.design, asIsSteps: input.discovery.asIsSteps, meta: {
       sourceRevision: row.version_no, variantCode: row.variant_code, variantName: input.discovery.variantName, snapshotId, generatedAt: new Date().toISOString(),
@@ -342,7 +344,7 @@ async function generateToBe(pool: Pool, snapshotId: string, stage: typeof runSta
       sources: input.discovery.sources.map(({ id, title, revision, text }) => ({ id, title, revision, digest: createHash("sha256").update(text, "utf8").digest("hex") })) } }) : undefined;
     // Heuristic findings the application reports (REVIEW_FINDINGS) travel with the derived sections, so the judge sees the system is honest about gaps.
     const reviewFindings = validation.success ? validation.data.evaluation.blockers.filter(item => item.code in REVIEW_FINDINGS)
-      .map(item => ({ code: item.code, path: item.path, explanation: REVIEW_FINDINGS[item.code] })) : [];
+      .map(item => ({ code: item.code, path: item.path, explanation: REVIEW_FINDINGS[item.code], ...(item.detail && { detail: item.detail }) })) : [];
     if (derived) Object.assign(derived, { reviewFindings });
     return finish(generated.metrics, { structurallyValid: validation.success, errorCode: validation.success ? null : "VALIDATION_FAILED",
       design: validation.success ? validation.data.design as unknown as NonNullable<Transcript["toBe"]>["design"] : null, ...(derived && { derived: derived as unknown as Record<string, unknown> }) });

@@ -14,7 +14,7 @@ export type ReportData = {
     sources: { id: string; title: string; locator: string; revision: string; digest?: string }[] };
   /** The frozen discovery revision the design was generated from (document control). */
   snapshotId?: string | null;
-  design: DetailedDesign; blockers: { code: string; path: string }[];
+  design: DetailedDesign; blockers: { code: string; path: string; detail?: string }[];
   unresolvedInputQuestions: { id: string; question: string; owner: string }[];
   /** Only references the design cites, resolved from the curated catalog at read time. */
   references: TrustedReference[];
@@ -24,7 +24,7 @@ export type ReportData = {
 
 const StoredSchema = z.object({
   design: DetailedDesignSchema,
-  evaluation: z.object({ blockers: z.array(z.object({ code: z.string().max(80), path: z.string().max(200) })).max(1000) }),
+  evaluation: z.object({ blockers: z.array(z.object({ code: z.string().max(80), path: z.string().max(200), detail: z.string().max(500).optional() })).max(1000) }),
   unresolvedInputQuestions: z.array(z.object({ id: z.string(), question: z.string(), owner: z.string() })).max(100),
   sourceRevision: z.number().int(), snapshotId: z.string(),
 });
@@ -50,6 +50,14 @@ const MECHANISM_LABELS: Record<string, string> = { BUSINESS_RULE: "Business rule
 const SOD_LABELS: Record<string, string> = { CONFLICT_IDENTIFIED: "Conflict identified", NO_CONFLICT_ASSESSED: "Assessed: no conflict" };
 const contextLabel = (fieldId: string) => WORKSPACE_FIELDS.find(field => field.id === fieldId)?.label ?? "Company context";
 const KIND_LABELS: Record<string, string> = { PAIN_POINT: "Pain point", TO_BE_REQUIREMENT: "Future requirement", CONTROL: "Control" };
+/** Findings of the model's own read-through of the finished design (to_be_review): what it saw that does not fit together and could not be repaired. The finding text itself travels with the blocker as its detail. */
+export const REVIEW_PASS_FINDINGS: Record<string, string> = {
+  REVIEW_CONTRADICTION: "A reviewer pass found two parts of the design that contradict each other. See the note.",
+  REVIEW_MISSING_LINK: "A reviewer pass found a link between two parts of the design that is missing. See the note.",
+  REVIEW_UNRESOLVED_CODE: "A reviewer pass found a code used in a step that no register defines. See the note.",
+  REVIEW_COVERAGE_GAP: "A reviewer pass found something the design should cover and does not. See the note.",
+  REVIEW_INTERNAL_TERM: "A reviewer pass found a working term of the generation process in client text. See the note.",
+};
 /** Category of the findings that come from completeness and consistency checks. The design is valid and delivered; a person confirms or fixes each one. */
 export const REVIEW_FINDINGS_CATEGORY = "Review findings";
 /** Plain-English explanation of each heuristic finding (design-registers-v3.ts `block`). The model is not asked to repair these. */
@@ -64,6 +72,12 @@ export const REVIEW_FINDINGS: Record<string, string> = {
   REPORT_PAIN_POINT_UNCOVERED: "A pain point from discovery is not addressed by any report or KPI.",
   SOD_CONFLICT_STEPS: "A segregation-of-duties assessment records a conflict but names fewer than two steps, so it is unclear which steps clash.",
   E2E_STEP_UNCOVERED: "A To-Be step is not walked by any end-to-end test scenario.",
+  UNRESOLVED_CODE: "A step uses an SAP code (movement type, document type, condition type, reason code or organisation code) that the configuration catalogue and organisation structure do not define.",
+  ORG_CODE_NOT_IN_CONTEXT: "An organisational unit is marked as having a confirmed code, but that code does not appear in the company-context answers.",
+  INTERFACE_STEP_UNCOVERED: "An integration step is not listed by any interface, so its system boundary has no interface entry.",
+  PERIOD_END_MISSING: "No period-end activity is listed, so it is unclear what the scope adds to the period close.",
+  INTERNAL_TERM: "Text meant for the client uses a working term of the generation process (for example \"outline\" or \"register call\"). Reword it in business language.",
+  ...REVIEW_PASS_FINDINGS,
 };
 const BLOCKERS: Record<string, { category: string; label: string }> = {
   ...Object.fromEntries(Object.entries(REVIEW_FINDINGS).map(([code, label]) => [code, { category: REVIEW_FINDINGS_CATEGORY, label }])),
@@ -91,7 +105,7 @@ export const formatTimestamp = (iso: string | null) => iso && !Number.isNaN(Date
 
 export type RefView = { id: string; found: boolean; capability: string; fit: string; objects: string[]; limitations: string[]; urls: string[] };
 export type ImplementationView = { kind: string; kindLabel: string; detail: string; refs: RefView[] };
-export type BlockerView = { code: string; path: string; category: string; label: string; subject: string; anchor: string | null };
+export type BlockerView = { code: string; path: string; category: string; label: string; subject: string; anchor: string | null; detail: string };
 export type StepStatus = { code: "BLOCKED" | "REVIEW"; label: string; blockers: BlockerView[] };
 type Design = DetailedDesign["steps"][number];
 export type StepView = { anchor: string; heading: string; step: Design; asIsNames: string[]; implementation: ImplementationView; status: StepStatus;
@@ -120,12 +134,13 @@ export type SolutionView = {
   decisions: { id: string; topic: string; options: string; recommendation: string; rationale: string; affects: string; owner: string; status: string; basis: string }[];
   fitGap: { requirementId: string; requirement: string; statement: string; classification: string; ricefwType: string; justification: string; sap: string; steps: string; stepTitles: string[];
     mitigation: string; owner: string; status: string }[];
-  orgStructure: { id: string; unitType: string; proposal: string; source: string; openPoint: string; parent: string }[];
+  orgStructure: { id: string; unitType: string; proposal: string; source: string; openPoint: string; parent: string; code: string; owner: string }[];
   masterData: { id: string; object: string; owner: string; keyFields: string; migrationSource: string; steps: string; creationChannel: string; governance: string }[];
-  interfaces: { id: string; system: string; direction: string; trigger: string; payload: string; apiCandidate: string; errorOwner: string; steps: string; scope: string; failureHandling: string }[];
+  interfaces: { id: string; system: string; direction: string; trigger: string; payload: string; apiCandidate: string; errorOwner: string; steps: string; scope: string; failureHandling: string; systemOfRecord: string }[];
   kpis: { id: string; name: string; baseline: string; target: string; measuredFrom: string; steps: string; owner: string; producedBy: string }[];
   dataMigration: { id: string; sequence: number; object: string; source: string; approach: string; risk: string }[];
   cutover: { id: string; sequence: number; activity: string; owner: string; risk: string }[];
+  periodEnd: { id: string; sequence: number; activity: string; owner: string; steps: string }[];
   /** One entry per register row that traces to requirements, for the traceability export. */
   traces: { kind: string; label: string; summary: string; requirementIds: string[]; stepTitles: string[] }[];
 };
@@ -156,7 +171,7 @@ export function buildReport(data: ReportData) {
     return { subject: path.startsWith("input.targetRelease") ? "Project" : "Design", anchor: null };
   };
   const blockers: BlockerView[] = data.blockers.map(blocker => ({
-    code: blocker.code, path: blocker.path, ...(BLOCKERS[blocker.code] ?? { category: "Other", label: "Review is needed before this can progress." }), ...subjectOf(blocker.path) }));
+    code: blocker.code, path: blocker.path, detail: blocker.detail ?? "", ...(BLOCKERS[blocker.code] ?? { category: "Other", label: "Review is needed before this can progress." }), ...subjectOf(blocker.path) }));
   const byCategory = [...Map.groupBy(blockers, item => item.category)].map(([category, items]) => ({ category, items }));
 
   const refView = (id: string): RefView => {
@@ -257,12 +272,12 @@ export function buildReport(data: ReportData) {
         mitigation: row.mitigationType ? MITIGATION_LABELS[row.mitigationType] ?? row.mitigationType : "-", owner: row.owner ?? "-", status: row.status ? "Open" : "-" })),
       orgStructure: (design.orgStructure ?? []).map(row => ({ id: row.id, unitType: row.unitType, proposal: row.proposal,
         source: [contextRefs(row.contextFieldIds), requirementRefs(row.requirementIds), stepList(row.stepIds).join("; ")].filter(Boolean).join("; ") || "-",
-        openPoint: row.openPoint ?? "-", parent: row.parentId ? (design.orgStructure ?? []).find(item => item.id === row.parentId)?.unitType ?? row.parentId : "-" })),
+        openPoint: row.openPoint ?? "-", code: row.codeStatus === "CODE_CONFIRMED" ? row.code ?? "-" : row.codeStatus === "BUSINESS_TO_PROVIDE" ? "Business to provide" : "-", owner: row.owner ?? "-", parent: row.parentId ? (design.orgStructure ?? []).find(item => item.id === row.parentId)?.unitType ?? row.parentId : "-" })),
       masterData: (design.masterDataPrerequisites ?? []).map(row => ({ id: row.id, object: row.object, owner: row.owner, keyFields: row.keyFields.join(", "),
         migrationSource: row.migrationSource, steps: stepList(row.stepIds).join("; ") || "-", creationChannel: row.creationChannel ?? "-", governance: row.governance ?? "-" })),
       interfaces: (design.interfaces ?? []).map(row => ({ id: row.id, system: row.counterpartSystem, direction: DIRECTION_LABELS[row.direction] ?? row.direction,
         trigger: row.triggerFrequency, payload: row.payload, apiCandidate: sap(row), errorOwner: row.errorOwner, steps: stepList(row.stepIds).join("; ") || "-",
-        scope: row.outOfScopeReason ? `Out of scope: ${row.outOfScopeReason}` : "In scope",
+        scope: row.outOfScopeReason ? `Out of scope: ${row.outOfScopeReason}` : "In scope", systemOfRecord: row.systemOfRecord ?? "-",
         failureHandling: row.failureHandling ? `Seen: ${row.failureHandling.detection}\nAlerted: ${row.failureHandling.alerting}\nRerun: ${row.failureHandling.rerun}\nNo double posting: ${row.failureHandling.idempotency}` : "-" })),
       kpis: (design.kpis ?? []).map(row => ({ id: row.id, name: row.name, baseline: row.baseline, target: row.target,
         measuredFrom: `${row.measuredFrom} (${sap(row)})`, steps: stepList(row.stepIds).join("; ") || "-", owner: row.owner ?? "-",
@@ -271,6 +286,8 @@ export function buildReport(data: ReportData) {
         .map(row => ({ id: row.id, sequence: row.sequence, object: row.object, source: row.source, approach: row.approach, risk: row.risk })),
       cutover: [...(design.cutover ?? [])].sort((a, b) => a.sequence - b.sequence)
         .map(row => ({ id: row.id, sequence: row.sequence, activity: row.activity, owner: row.owner, risk: row.risk })),
+      periodEnd: [...(design.periodEndActivities ?? [])].sort((a, b) => a.sequence - b.sequence)
+        .map(row => ({ id: row.id, sequence: row.sequence, activity: row.activity, owner: row.owner, steps: stepList(row.stepIds).join("; ") || "-" })),
       traces: [],
     };
     const trace = (kind: string, label: string, summary: string, requirementIds: string[], stepIds: string[]) =>
@@ -283,6 +300,7 @@ export function buildReport(data: ReportData) {
       ...(design.kpis ?? []).flatMap(row => trace("KPI", row.id, `${row.name}: baseline ${row.baseline}, target ${row.target}`, row.requirementIds, row.stepIds)),
       ...(design.dataMigration ?? []).flatMap(row => trace("Data migration", row.id, `${row.object}: ${row.approach}`, row.requirementIds, row.stepIds)),
       ...(design.cutover ?? []).flatMap(row => trace("Cutover", row.id, row.activity, row.requirementIds, row.stepIds)),
+      ...(design.periodEndActivities ?? []).flatMap(row => trace("Period-end activity", row.id, row.activity, row.requirementIds, row.stepIds)),
       ...(design.objectives ?? []).flatMap(row => trace("Objective", row.id, row.statement, row.requirementIds, row.stepIds)),
       ...(design.scopeStatements ?? []).flatMap(row => trace(row.kind === "IN_SCOPE" ? "In scope" : "Out of scope", row.id, row.statement, row.requirementIds, row.stepIds)),
       ...(design.documentStatusModels ?? []).flatMap(row => trace("Document status model", row.id, `${row.documentType}: ${row.statuses.join(", ")}`, row.requirementIds, row.transitions.map(item => item.stepId))),

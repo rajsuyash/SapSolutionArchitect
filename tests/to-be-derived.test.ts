@@ -68,7 +68,7 @@ describe("consolidated RICEFW list (checklist 19)", () => {
     const design: DetailedDesign = { ...rentalDraftV3, fitGap: rentalDraftV3.fitGap!.map(row => row.requirementId === "R-1" ? { ...row, stepIds: [] } : row) };
     const list = ricefwList({ design });
     expect(list.find(item => item.requirementId === "R-1")!.linkedSteps.map(step => step.id)).toEqual(["TB-1"]);
-    expect(list.some(item => ["R-4", "R-6"].includes(item.requirementId))).toBe(false);
+    expect(list.some(item => ["R-4", "R-6"].includes(item.requirementId ?? ""))).toBe(false);
     const withIntegration: DetailedDesign = { ...rentalDraftV3, fitGap: rentalDraftV3.fitGap!.map(row => row.requirementId === "R-4" ? { ...row, classification: "STANDARD_INTEGRATION", ricefwType: null } : row) };
     expect(ricefwList({ design: withIntegration }).map(item => item.requirementId)).toContain("R-4");
   });
@@ -83,5 +83,31 @@ describe("actor to role matrix", () => {
     expect(sections.actorRoles).toEqual([{ stepId: "TB-1", actor: "Rental coordinator", roleIds: ["ROLE-1"] },
       { stepId: "TB-2", actor: "Rental stores clerk", roleIds: ["ROLE-2"] }, { stepId: "TB-3", actor: "Billing clerk", roleIds: ["ROLE-3"] }]);
     expect(actorRoles({ design: rentalDraftV2 }).every(row => row.roleIds.length === 0)).toBe(true);
+  });
+});
+
+describe("RICEFW list beyond the fit-gap rows", () => {
+  const withKinds = (change: (design: DetailedDesign) => void) => { const design = structuredClone(rentalDraftV3); change(design); return design; };
+  it("adds every step realised as an extension or integration that no fit-gap item already links, once, with its own source", () => {
+    // TB-2 is already linked by fit-gap items, so realising it as an integration adds no second row.
+    const linked = withKinds(d => { d.steps[1]!.implementation = { kind: "INTEGRATION", detail: "Receive the return confirmation from the customer portal.", referenceIds: [] }; });
+    expect(ricefwList({ design: linked }).some(item => item.source === "STEP")).toBe(false);
+    const orphan = withKinds(d => { d.steps[1]!.implementation = { kind: "EXTENSION", detail: "Key-user logic.", referenceIds: [] }; d.fitGap = d.fitGap!.filter(row => !["R-3", "R-4"].includes(row.requirementId)); d.steps[1]!.requirementIds = []; d.steps[1]!.enablesStepIds = ["TB-3"]; });
+    const added = ricefwList({ design: orphan }).filter(item => item.source === "STEP");
+    expect(added).toHaveLength(1);
+    expect(added[0]).toMatchObject({ type: "ENHANCEMENT", classification: "STEP_EXTENSION", requirementId: null, linkedSteps: [{ id: "TB-2", title: orphan.steps[1]!.title }], needsValidation: true });
+    expect(ricefwList({ design: orphan }).map(item => item.id)).toEqual(ricefwList({ design: orphan }).map((_, i) => `RICEFW-${i + 1}`));
+  });
+  it("adds a report or KPI realised with custom analytics, and leaves a standard one out", () => {
+    const design = withKinds(d => {
+      d.reports![0]!.realization = "A custom analytical query over hire items filtered by status.";
+      d.reports!.push({ ...d.reports![0]!, id: "REP-2", name: "Hire items list", realization: "The standard hire item list app." });
+    });
+    const list = ricefwList({ design });
+    const analytics = list.filter(item => item.source === "ANALYTICS");
+    expect(analytics).toHaveLength(1);
+    expect(analytics[0]).toMatchObject({ type: "REPORT", classification: "CUSTOM_ANALYTICS" });
+    expect(analytics[0]!.rationale).toContain("Open hire items by return date");
+    expect(ricefwList({ design: rentalDraftV3 }).some(item => item.source === "ANALYTICS")).toBe(false);
   });
 });

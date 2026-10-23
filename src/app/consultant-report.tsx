@@ -51,7 +51,7 @@ function Step({ view, labels }: { view: StepView; labels: Record<string, string>
     <dl className={styles.facts}>
       <dt>Replaces</dt><dd>{view.asIsNames.join(", ") || "-"}</dd><dt>Actor</dt><dd>{step.actor}</dd><dt>Starts when</dt><dd>{step.trigger}</dd>
       <dt>Documents in</dt><dd>{step.inputDocuments.join(", ")}</dd><dt>Documents out</dt><dd>{step.outputDocuments.join(", ")}</dd>
-      <dt>Inventory effect</dt><dd>{step.effects.inventory}</dd><dt>Financial effect</dt><dd>{step.effects.financial}</dd><dt>Ownership effect</dt><dd>{step.effects.ownership}</dd>
+      <dt>Inventory effect</dt><dd>{step.effects.inventory}</dd><dt>Financial effect</dt><dd>{step.effects.financial}</dd><dt>Ownership effect</dt><dd>{step.effects.ownership}</dd>{step.effects.accountingEntry && <><dt>Accounting entry</dt><dd>{step.effects.accountingEntry}</dd></>}
       <dt>Added value</dt><dd>{step.addedValue}</dd></dl>
     {view.status.blockers.length > 0 && <div className={styles.blockedNote} role="note"><strong>Blocked:</strong> {view.status.blockers.map(item => item.label).join(" ")}</div>}
     <h4>SAP realization</h4><Implementation implementation={view.implementation} />
@@ -103,7 +103,7 @@ export function ConsultantReport({ model, downloads }: { model: ReportModel; dow
       <h2 id="blockers-h">Blockers by category</h2>
       {model.blockersByCategory.map(group => <div key={group.category}><h3>{group.category} ({group.items.length})</h3>
         <ul className={styles.tight}>{group.items.map((item, index) => <li key={index}>
-          {item.anchor ? <a href={`#${item.anchor}`}>{item.subject}</a> : item.subject}: {item.label} <span className={styles.code}>{item.code} at {item.path}</span></li>)}</ul></div>)}
+          {item.anchor ? <a href={`#${item.anchor}`}>{item.subject}</a> : item.subject}: {item.label}{item.detail ? ` ${item.detail}` : ""} <span className={styles.code}>{item.code} at {item.path}</span></li>)}</ul></div>)}
     </section>}
 
     <section id="summary" aria-labelledby="summary-h" className={styles.section}>

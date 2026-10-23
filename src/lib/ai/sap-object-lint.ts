@@ -9,8 +9,8 @@ type Catalog = readonly { id: string; capability?: string; objects?: readonly st
 // Module-family prefixes keep bare codes such as VA01 or ME21N from matching ordinary words, ticket ids and release names.
 const TCODE_PREFIX = "VA|VL|VF|VK|VT|VG|VS|VD|ME|MB|MI|MM|MR|MD|MC|FB|FS|FK|FD|FV|KO|KS|KB|KE|IW|IE|IL|IQ|IP|OV|OB|OM|SM|SE|SU|XD|XK|BP|LT|LS|QA|QM|CJ|CN|CO|CK|AS|AB|AF";
 const NOT_AN_OBJECT = new Set(["SAP", "ERP", "API", "EDI", "CRM", "BTP", "ALL", "THE", "AND", "FOR", "NOT", "OFF", "FPS", "GL", "AR", "AP", "PO", "SO"]);
-const SEP = String.raw`\s*(?:,|/|&|and|or|-)\s*`;
-const list = (token: string) => String.raw`(${token}(?:${SEP}${token})*)`;
+export const SEP = String.raw`\s*(?:,|/|&|and|or|-)\s*`;
+export const list = (token: string) => String.raw`(${token}(?:${SEP}${token})*)`;
 
 const PATTERNS: { kind: SapObjectKind; regex: RegExp; group?: number; split?: boolean; accept?: (token: string) => boolean }[] = [
   { kind: "FIORI_APP", regex: /(?<![A-Za-z0-9])F\d{3,4}[A-Z]?(?![A-Za-z0-9])/g },
@@ -26,7 +26,7 @@ const PATTERNS: { kind: SapObjectKind; regex: RegExp; group?: number; split?: bo
   { kind: "BADI", group: 1, regex: /\bBAdIs?\s+([A-Z][A-Z0-9]*_[A-Z0-9_]+)/g },
 ];
 
-const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+export const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 /** Everything the catalog says, lower-cased, with numeric ranges ("651-657") expanded so a movement type inside one is found. */
 function haystack(references: Catalog): string {
@@ -38,9 +38,9 @@ function haystack(references: Catalog): string {
   return `${raw}\n${ranges.join(" ")}`.toLowerCase();
 }
 
-const idKey = (key: string) => key === "id" || key.endsWith("Id") || key.endsWith("Ids");
+export const idKey = (key: string) => key === "id" || key.endsWith("Id") || key.endsWith("Ids");
 
-function* strings(value: unknown, path: string): Generator<[string, string]> {
+export function* strings(value: unknown, path: string): Generator<[string, string]> {
   if (typeof value === "string") yield [path, value];
   else if (Array.isArray(value)) for (const [i, item] of value.entries()) yield* strings(item, `${path}.${i}`);
   else if (value && typeof value === "object") {

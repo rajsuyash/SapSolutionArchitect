@@ -9,7 +9,8 @@ const bullets = (items: string[]) => items.length ? items.map(item => `- ${item.
 const slug = (value: string) => value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 60) || "report";
 
 const FIT_CLASS_NAMES: Record<string, string> = { CLASSIC_RICEFW: "Classic custom development", SIDE_BY_SIDE_BTP: "Side-by-side (BTP)",
-  KEY_USER_EXTENSION: "Key-user extension", STANDARD_INTEGRATION: "Standard integration" };
+  KEY_USER_EXTENSION: "Key-user extension", STANDARD_INTEGRATION: "Standard integration",
+  STEP_EXTENSION: "Extension step (from the step's realization)", STEP_INTEGRATION: "Integration step (from the step's realization)", CUSTOM_ANALYTICS: "Custom analytics (report or KPI)" };
 
 export function reportFilename(model: ReportModel, extension: "md" | "csv"): string {
   return `to-be-${slug(model.header.project)}-${slug(model.data.variant.code)}-r${model.header.sourceRevision}${extension === "csv" ? "-traceability" : ""}.${extension}`;
@@ -44,12 +45,12 @@ export function renderMarkdown(source: ReportModel): string {
   "**Sources (frozen revision)**", table(["Source", "Title", "Revision", "SHA-256 digest"], control.sourceRevision.sources.map(source => row(source.id, source.title, source.revision, source.digest))),
   "**Reviewers**", table(["Role", "Assigned to"], control.reviewerRoles.map(item => row(item.role, item.assignee))),
   "**Sign-off.** Nothing here is approved; each line is completed by a person.", table(["Role", "Name", "Date", "Status"], control.signOff.map(item => row(item.role, item.name, item.date, item.status))));
-  const finding = (item: (typeof model.blockers)[number]) => `${item.subject}: ${item.label} (code ${item.code}, at ${item.path})`;
+  const finding = (item: (typeof model.blockers)[number]) => `${item.subject}: ${item.label}${item.detail ? ` ${item.detail}` : ""} (code ${item.code}, at ${item.path})`;
   const findings = model.blockersByCategory.find(group => group.category === REVIEW_FINDINGS_CATEGORY);
   const blocking = model.blockersByCategory.filter(group => group !== findings);
   if (blocking.length) {
     add("## Blockers");
-    for (const group of blocking) add(`### ${group.category}`, bullets(group.items.map(item => `${item.subject}: ${item.label} (code ${item.code})`)));
+    for (const group of blocking) add(`### ${group.category}`, bullets(group.items.map(item => `${item.subject}: ${item.label}${item.detail ? ` ${item.detail}` : ""} (code ${item.code})`)));
   }
   if (findings) add("## Review findings", "The design is complete and valid. These checks compare one part of it with another and could not confirm a match; a consultant confirms or corrects each one.", bullets(findings.items.map(finding)));
   add("## Executive summary",
@@ -102,7 +103,7 @@ export function renderMarkdown(source: ReportModel): string {
     add("**Business rules**", table(["Id", "Condition", "Response"], step.businessRules.map(rule => row(rule.id, rule.condition, rule.response))));
     add("**Exceptions**", step.exceptions.length ? table(["Condition", "Response", "Owner"], step.exceptions.map(exception => row(exception.condition, exception.response, exception.owner)))
       : `Not applicable: ${step.exceptionsNotApplicableReason ?? "no reason recorded"}`);
-    add(`**Effects:** inventory — ${step.effects.inventory}; financial — ${step.effects.financial}; ownership — ${step.effects.ownership}.`);
+    add(`**Effects:** inventory — ${step.effects.inventory}; financial — ${step.effects.financial}; ownership — ${step.effects.ownership}.${step.effects.accountingEntry ? ` **Accounting entry:** ${step.effects.accountingEntry}` : ""}`);
     add(`**SAP realization (${view.implementation.kindLabel}):** ${view.implementation.detail}`);
     if (view.implementation.refs.length) add(bullets(view.implementation.refs.map(ref => `${ref.capability} [${ref.id}], ${ref.fit}${ref.objects.length ? `, objects: ${ref.objects.join(", ")}` : ""}${ref.urls.length ? `, evidence: ${ref.urls.join(" ")}` : ""}`)));
     add(`**Added value:** ${step.addedValue}`);
@@ -124,15 +125,15 @@ export function renderMarkdown(source: ReportModel): string {
     section("Fit-gap (clean core)", ["Requirement", "Statement", "Classification", "RICEFW type", "Justification", "SAP basis", "To-Be steps", "Mitigation", "Owner", "Status"],
       solution.fitGap.map(item => [item.requirement, item.statement, item.classification, item.ricefwType, item.justification, item.sap, item.steps || "-", item.mitigation, item.owner, item.status]));
     section("RICEFW list", ["Id", "Type", "Class", "Requirement", "Linked steps", "Rationale", "SAP basis", "Owner", "Status"],
-      model.derived.ricefwList.map(item => [item.id, item.type, FIT_CLASS_NAMES[item.classification] ?? item.classification, model.requirementLabels[item.requirementId] ?? "Unknown requirement",
+      model.derived.ricefwList.map(item => [item.id, item.type, FIT_CLASS_NAMES[item.classification] ?? item.classification, (item.requirementId && model.requirementLabels[item.requirementId]) || "-",
         item.linkedSteps.map(step => `${step.id}: ${step.title}`).join("; ") || "-", item.rationale,
         [...item.referenceIds, ...(item.needsValidation ? [`needs validation: ${item.validationReason ?? "no reason recorded"}`] : [])].join("; ") || "-", item.owner ?? "-", item.status ?? "-"]));
-    section("Organisation structure", ["Id", "Unit type", "Parent", "Proposal", "Source", "Open point"],
-      solution.orgStructure.map(item => [item.id, item.unitType, item.parent, item.proposal, item.source, item.openPoint]));
+    section("Organisation structure", ["Id", "Unit type", "Code", "Owner", "Parent", "Proposal", "Source", "Open point"],
+      solution.orgStructure.map(item => [item.id, item.unitType, item.code, item.owner, item.parent, item.proposal, item.source, item.openPoint]));
     section("Master-data prerequisites", ["Id", "Object", "Owner", "Key fields and settings", "Creation channel", "Governance", "Migration source", "Used by"],
       solution.masterData.map(item => [item.id, item.object, item.owner, item.keyFields, item.creationChannel, item.governance, item.migrationSource, item.steps]));
-    section("Interfaces", ["Id", "System", "Direction", "Trigger and frequency", "Payload", "API candidate", "Error owner", "Failed messages", "Used by", "Scope"],
-      solution.interfaces.map(item => [item.id, item.system, item.direction, item.trigger, item.payload, item.apiCandidate, item.errorOwner, item.failureHandling, item.steps, item.scope]));
+    section("Interfaces", ["Id", "System", "System of record", "Direction", "Trigger and frequency", "Payload", "API candidate", "Error owner", "Failed messages", "Used by", "Scope"],
+      solution.interfaces.map(item => [item.id, item.system, item.systemOfRecord, item.direction, item.trigger, item.payload, item.apiCandidate, item.errorOwner, item.failureHandling, item.steps, item.scope]));
     section("KPIs", ["Id", "KPI", "Baseline", "Target", "Measured from", "Owner", "Produced by", "Used by"],
       solution.kpis.map(item => [item.id, item.name, item.baseline, item.target, item.measuredFrom, item.owner, item.producedBy, item.steps]));
     if (solution.version3) {
@@ -155,6 +156,8 @@ export function renderMarkdown(source: ReportModel): string {
       solution.dataMigration.map(item => [item.sequence, item.id, item.object, item.source, item.approach, item.risk]));
     section("Cutover", ["Sequence", "Id", "Activity", "Owner", "Risk"],
       solution.cutover.map(item => [item.sequence, item.id, item.activity, item.owner, item.risk]));
+    if (solution.version3) section("Period-end activities", ["Sequence", "Id", "Activity", "Owner", "Steps"],
+      solution.periodEnd.map(item => [item.sequence, item.id, item.activity, item.owner, item.steps]));
   }
   add("## Registers", "### Open decisions and questions", registerTable(model.registers.questions), "### Source conflicts", registerTable(model.registers.conflicts),
     "### SAP validation points", registerTable(model.registers.sapPoints));

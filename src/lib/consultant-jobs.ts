@@ -14,6 +14,7 @@ import { loadSapReferences, type SapReferenceOptions } from "./ai/sap-references
 import { DEFAULT_STAGE_BUDGET_SECONDS, jobTiming } from "./ai/timeouts";
 import { parseStoredToBe, type ReportData } from "./consultant-report";
 import type { createStageRunner } from "./ai/runStage";
+import { reviewBlockers, type ReviewOutcome } from "./ai/to-be-review";
 
 /** Interview turns (about 40 s) and To-Be runs (up to 20 min) use separate queues, so a long run never waits behind or
  * in front of a chat turn. Problem analysis has its own queue (see jobs.ts) and counts as batch work. */
@@ -35,7 +36,7 @@ const substageMetrics = z.strictObject({ calls: z.number().int().nonnegative(), 
 const metricsSchema = z.object({ stage: z.enum(["interview_turn", "extraction_turn", "to_be"]), provider: z.enum(["stub", "anthropic", "deepinfra", "openrouter"]),
   model: z.string().max(160), inputTokens: z.number().int().nonnegative(), outputTokens: z.number().int().nonnegative(),
   latencyMs: z.number().nonnegative(), attempts: z.number().int().nonnegative(), thinkingDisabled: z.boolean().optional(),
-  substages: z.strictObject({ to_be_outline: substageMetrics.optional(), to_be_step: substageMetrics.optional(), to_be_registers: substageMetrics.optional() }).optional(),
+  substages: z.strictObject({ to_be_outline: substageMetrics.optional(), to_be_step: substageMetrics.optional(), to_be_registers: substageMetrics.optional(), to_be_review: substageMetrics.optional() }).optional(),
   validationErrors: z.array(z.strictObject({ path: z.string().max(200), code: z.string().max(80), detail: z.string().max(200).optional() })).max(1000) });
 type StoredJob = { id: string; org_id: string; project_id: string; variant_code: string; kind: "INTERVIEW" | "TO_BE";
   input_revision: number; message_id: string | null; snapshot_id: string | null; requested_by: string;
@@ -233,7 +234,7 @@ export function createConsultantJobs(pool: Pool, auth: AuthService, queue: PgBos
             if (workspace.state.revision !== job.input_revision) throw stale();
             if (!workspace.canConfirm || workspace.confirmedSnapshotId !== job.snapshot_id) throw stale();
             const validation = validateToBeOutput(input.input, (generated.payload as { design?: unknown }).design,
-              await loadToBeReferences(input.input, catalog));
+              await loadToBeReferences(input.input, catalog), reviewBlockers((generated.payload as { reviewFindings?: ReviewOutcome[] }).reviewFindings));
             if (!validation.success) throw new Error("Invalid design output");
             result = { ...validation.data, sourceRevision: job.input_revision, snapshotId: job.snapshot_id,
               status: validation.data.evaluation.blockers.length ? "BLOCKED" : "HUMAN_REVIEW_REQUIRED" };

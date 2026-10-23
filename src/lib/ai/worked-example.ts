@@ -56,7 +56,7 @@ function stepExample(example: WorkedExample): string {
     "What its request said (excerpt):", json({ step, requirements: requirementsOf(example, step.requirementIds) }), "",
     "The detail it produced:", json(detail), "",
     "Notice: named actors and systems; input and output documents; business rules as condition and observable response; exceptions with an owner; " +
-    "master data with an owner; inventory, financial and ownership effects stated separately; an implementation detail that quotes the cited reference and ends with validation points; " +
+    "master data with an owner; inventory, financial and ownership effects stated separately, and the accounting entry in account categories (or None with the reason); step ids that place the step by scenario (KEG-1-1, KEG-2-1); an implementation detail that quotes the cited reference and ends with validation points; " +
     "tests as given, when, then with concrete quantities that cite the step's requirements."].join("\n");
 }
 

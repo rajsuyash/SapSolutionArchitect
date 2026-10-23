@@ -8,6 +8,7 @@ import { createProviderClient, logProviderFailure, logStageTimeout, type Provide
 import { loadToBeReferences, parseToBeInput, type ToBeOutput } from "./to-be";
 import { REGISTER_GROUP_NAMES, RegisterGroupSchemas } from "./design-registers";
 import { OutlinePatchSchema, OutlineSchema, StepDetailSchema, TRUNCATED, runDesign, type Substage } from "./to-be-pipeline";
+import { ReviewSchema } from "./to-be-review";
 import { interviewModelView } from "./interview-sentences";
 import { parseWorkedExample, renderWorkedExamples, withWorkedExample } from "./worked-example";
 
@@ -49,7 +50,7 @@ export class AIStageError extends Error {
   }
 }
 type Config = Pick<Environment, "NODE_ENV" | "AI_PROVIDER" | "ANTHROPIC_API_KEY" | "DEEPINFRA_API_KEY" | "OPENROUTER_API_KEY" | "AI_REASONING_EFFORT" | "AI_MODEL" | "AI_MODEL_DESIGN" | "AI_MAX_INPUT_TOKENS" | "AI_MAX_CONCURRENCY" | "AI_CHAT_CONCURRENCY" | "AI_FAULT_INJECTION"
-  | "AI_NO_THINKING_STAGES" | "AI_STAGE_BUDGET_SECONDS" | "AI_CALL_TIMEOUT_SECONDS" | "AI_DESIGN_CALL_TIMEOUT_SECONDS" | "AI_DESIGN_PARALLELISM" | "AI_TO_BE_OUTLINE_REPAIRS" | "AI_TO_BE_PART_REPAIRS" | "AI_TO_BE_OUTLINE_MAX_TOKENS" | "AI_TO_BE_STEP_MAX_TOKENS" | "AI_TO_BE_REGISTERS_MAX_TOKENS">;
+  | "AI_NO_THINKING_STAGES" | "AI_STAGE_BUDGET_SECONDS" | "AI_CALL_TIMEOUT_SECONDS" | "AI_DESIGN_CALL_TIMEOUT_SECONDS" | "AI_DESIGN_PARALLELISM" | "AI_TO_BE_OUTLINE_REPAIRS" | "AI_TO_BE_PART_REPAIRS" | "AI_TO_BE_OUTLINE_MAX_TOKENS" | "AI_TO_BE_STEP_MAX_TOKENS" | "AI_TO_BE_REGISTERS_MAX_TOKENS"> & Partial<Pick<Environment, "AI_TO_BE_REVIEW">>;
 const SDK_TIMEOUT_MARGIN_MS = 5000;
 /** OpenRouter has no count_tokens endpoint: input size is estimated locally. 3.5 chars/token is deliberately below the ~4 of English prose
  * (JSON, SAP codes and non-English text tokenize worse), so the AI_MAX_INPUT_TOKENS guard errs towards refusing. Not a measured count. */
@@ -126,6 +127,7 @@ export function createStageRunner(config: Config, options: Options = {}) {
   if (!Number.isSafeInteger(config.AI_MAX_CONCURRENCY) || config.AI_MAX_CONCURRENCY < 1 ||
     !Number.isSafeInteger(config.AI_CHAT_CONCURRENCY) || config.AI_CHAT_CONCURRENCY < 1 ||
     !Number.isSafeInteger(config.AI_MAX_INPUT_TOKENS) || config.AI_MAX_INPUT_TOKENS < 1) throw new Error("Invalid AI limits");
+  const reviewOn = config.AI_TO_BE_REVIEW !== "off";
   const provider: Provider = config.NODE_ENV === "production" && config.AI_PROVIDER === "stub" ? "anthropic" : config.AI_PROVIDER;
   // Slow models (MiMo: ~20-40 tokens/s) need larger values; the operator sets them, never the provider name.
   const callTimeout = config.AI_CALL_TIMEOUT_SECONDS * 1000;
@@ -173,7 +175,7 @@ export function createStageRunner(config: Config, options: Options = {}) {
     const model = isDesign ? config.AI_MODEL_DESIGN ?? config.AI_MODEL : config.AI_MODEL;
     const metrics: StageMetrics = { stage, provider, model, inputTokens: 0, outputTokens: 0,
       latencyMs: 0, attempts: 0, validationErrors: [], attemptIssues: [], stopReasons: [], textFallbacks: 0,
-      thinkingDisabled: reasoningOff || noThinking.has(stage) || (stage === "to_be" && TO_BE_SUBSTAGES.every(substage => noThinking.has(substage))) };
+      thinkingDisabled: reasoningOff || noThinking.has(stage) || (stage === "to_be" && TO_BE_SUBSTAGES.filter(substage => reviewOn || substage !== "to_be_review").every(substage => noThinking.has(substage))) };
     const fail = (code: Code) => new AIStageError(code, metrics);
     const deadline = new AbortController();
     const timer = setTimeout(() => deadline.abort(fail("AI_TIMEOUT")), stageBudget);
@@ -314,10 +316,11 @@ export function createStageRunner(config: Config, options: Options = {}) {
         // The stage holds ONE AI_MAX_CONCURRENCY permit (acquired above) for the whole design; the outline call and the
         // step fan-out run under it and never acquire again, so AI_MAX_CONCURRENCY=1 cannot deadlock. Fan-out width is
         // AI_DESIGN_PARALLELISM, so provider requests in flight can reach AI_MAX_CONCURRENCY x AI_DESIGN_PARALLELISM.
-        const [outlineTemplate, stepTemplate, registersTemplate, exampleRaw] = await call(() => Promise.all([
+        const [outlineTemplate, stepTemplate, registersTemplate, reviewSystem, exampleRaw] = await call(() => Promise.all([
           readFile(new URL("../../../prompts/to_be_outline.system.md", import.meta.url), "utf8"),
           readFile(new URL("../../../prompts/to_be_step.system.md", import.meta.url), "utf8"),
           readFile(new URL("../../../prompts/to_be_registers.system.md", import.meta.url), "utf8"),
+          readFile(new URL("../../../prompts/to_be_review.system.md", import.meta.url), "utf8"),
           readFile(new URL("../../../fixtures/ai/to-be/worked-example.json", import.meta.url), "utf8"),
         ]));
         // The worked examples come from the validated fixture, so a prompt can never show something the validators reject.
@@ -331,6 +334,8 @@ export function createStageRunner(config: Config, options: Options = {}) {
           // The patch repairs a few flagged outline items; it shares the outline's system prompt (the rules it must keep) and its limits.
           to_be_outline_patch: { system: outlineSystem, schema: OutlinePatchSchema, name: "submit_to_be_outline_patch", maxTokens: config.AI_TO_BE_OUTLINE_MAX_TOKENS },
           to_be_step: { system: stepSystem, schema: StepDetailSchema, name: "submit_to_be_step", maxTokens: config.AI_TO_BE_STEP_MAX_TOKENS },
+          // The consistency read-through lists findings (a few hundred tokens each), so the register ceiling is ample.
+          to_be_review: { system: reviewSystem, schema: ReviewSchema, name: "submit_to_be_review", maxTokens: config.AI_TO_BE_REGISTERS_MAX_TOKENS },
           ...Object.fromEntries(REGISTER_GROUP_NAMES.map(group => [`to_be_registers:${group}`,
             { system: registersSystem, schema: RegisterGroupSchemas[group], name: `submit_to_be_registers_${group}`, maxTokens: config.AI_TO_BE_REGISTERS_MAX_TOKENS }])),
         } as const;
@@ -348,6 +353,7 @@ export function createStageRunner(config: Config, options: Options = {}) {
           maxOutlineRepairs: config.AI_TO_BE_OUTLINE_REPAIRS,
           maxPartRepairs: config.AI_TO_BE_PART_REPAIRS,
           remainingBudget: () => Math.max(0, 1 - (Date.now() - started) / stageBudget),
+          review: reviewOn,
           invalid: () => fail("AI_INVALID_OUTPUT"),
           record: (issues) => { metrics.validationErrors.push(...issues); metrics.attemptIssues!.push(issues); },
           warn: (issues) => { metrics.warnings = [...(metrics.warnings ?? []), ...issues]; },
@@ -356,7 +362,7 @@ export function createStageRunner(config: Config, options: Options = {}) {
             // A patch call is an outline call: it is counted under the to_be_outline substage.
             const key = substage === "to_be_registers" ? `to_be_registers:${group}` : group === "patch" ? "to_be_outline_patch" : substage;
             const kind = kinds[key as keyof typeof kinds];
-            const rawKeyOf = substage === "to_be_registers" ? String(group) : substage === "to_be_step" ? (request as { step: { id: string } }).step.id : group === "patch" ? "outline-patch" : "outline";
+            const rawKeyOf = substage === "to_be_registers" ? String(group) : substage === "to_be_step" ? (request as { step: { id: string } }).step.id : substage === "to_be_review" ? "review" : group === "patch" ? "outline-patch" : "outline";
             const output = await generate({ system: kind.system, user: JSON.stringify(request), tool: tools[key]!, maxTokens: kind.maxTokens,
               // A thinking retry (one last call for a step that kept failing) sends the request without thinking-disabled; an operator's AI_REASONING_EFFORT=none still wins.
               guard: true, thinkingOff: reasoningOff || (!askOptions?.thinking && (noThinking.has(substage) || noThinking.has("to_be") || expansionThinkingOff(substage))),

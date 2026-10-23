@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { FIRST_PHASE, basis, id, ids, text, trace } from "./design-primitives";
 import { norm, overlaps, type RegisterContext, type Report, type Row } from "./design-register-types";
+import { extractSapCodes, mentionsCode, textFields } from "./design-text-lint";
 
 /** The registers and row fields a schemaVersion 3 design adds to version 2: scope and objectives, document status models and a
  * configuration catalogue, a role catalogue with segregation-of-duties and control mappings, a reports list and end-to-end tests,
@@ -21,9 +22,16 @@ export const OBJECTIVE_FIELDS = ["desired_outcome", "kpi_targets", "constraints"
 
 // --- fields added to version 2 register rows: required in a model answer, optional when reading a stored design -------------------
 
-export const orgExtension = { parentId: id.nullable() };
+export const ORG_CODE_STATUSES = ["CODE_CONFIRMED", "BUSINESS_TO_PROVIDE"] as const;
+/** An organisational unit either has a code the business gave (codeStatus CODE_CONFIRMED, `code` set) or its code is for the business to provide
+ * (BUSINESS_TO_PROVIDE, `code` null) and then `owner` is the role that supplies it. A unit without a code is never just an open point. */
+export const orgExtension = { parentId: id.nullable(), codeStatus: z.enum(ORG_CODE_STATUSES), code: text.nullable(), owner: text };
 export const masterDataExtension = { creationChannel: text, governance: text };
-export const interfaceExtension = { failureHandling: z.strictObject({ detection: text, alerting: text, rerun: text, idempotency: text }).nullable() };
+export const interfaceExtension = {
+  failureHandling: z.strictObject({ detection: text, alerting: text, rerun: text, idempotency: text }).nullable(),
+  /** Which system holds the authoritative copy of the record the interface carries (checklist 20). */
+  systemOfRecord: text,
+};
 export const kpiExtension = { owner: text, producingStepId: id };
 export const fitGapExtension = { mitigationType: z.enum(MITIGATION_TYPES), owner: text, status: z.literal("OPEN") };
 
@@ -51,8 +59,11 @@ export const ControlMappingSchema = z.strictObject({
 export const ReportRowSchema = z.strictObject({ id, name: text, purpose: text, realization: text, ...basis, ...trace });
 export const EndToEndTestSchema = z.strictObject({ id, valueStream: text, given: text, when: text, then: text, stepIds: ids.min(2), requirementIds: ids.min(1) });
 
+/** Period-end activities the scope touches, in the order they run (checklist 34). */
+export const PeriodEndActivitySchema = z.strictObject({ id, activity: text, sequence: z.number().int().positive(), owner: text, ...trace });
+
 export const NEW_REGISTER_KEYS = ["objectives", "scopeStatements", "documentStatusModels", "configurationCatalogue", "roles", "sodAssessments",
-  "controlMappings", "reports", "endToEndTests"] as const;
+  "controlMappings", "reports", "endToEndTests", "periodEndActivities"] as const;
 
 // --- mechanical checks ----------------------------------------------------------------------------------------------------------
 
@@ -86,13 +97,24 @@ export function checkVersion3(kit: V3Kit): void {
     else if (step.phase !== FIRST_PHASE && !step.interimProcess) error("STEP_INTERIM_MISSING", path);
   });
 
+  // An integration step is a system boundary: an interface row has to list it (checklist 20).
+  const interfaceSteps = new Set(rows("interfaces").flatMap(row => row.stepIds ?? []));
+  steps.forEach((step, i) => { if (step.stepType === "INTEGRATION" && !interfaceSteps.has(step.id)) block("INTERFACE_STEP_UNCOVERED", `draft.steps.${i}`); });
+
   // Extended version 2 registers.
   const org = rows("orgStructure");
-  missing("orgStructure", ["parentId"]);
+  missing("orgStructure", ["parentId", "codeStatus", "code", "owner"]);
   const orgIds = new Set(org.map(row => row.id as string));
   org.forEach((row, i) => {
     const parent = row.parentId as string | null | undefined;
     if (parent && (parent === row.id || !orgIds.has(parent))) error("ORG_PARENT_UNKNOWN", `draft.orgStructure.${i}`);
+  });
+  const contextText = ctx.companyContext.map(item => item.value).join("\n");
+  org.forEach((row, i) => {
+    const path = `draft.orgStructure.${i}`, code = row.code as string | null | undefined;
+    // CODE_CONFIRMED needs a code and BUSINESS_TO_PROVIDE must not carry one, so a unit without a code is always an owned request to the business.
+    if ((row.codeStatus === "CODE_CONFIRMED" && !code) || (row.codeStatus === "BUSINESS_TO_PROVIDE" && code)) error("ORG_CODE_INCONSISTENT", path);
+    if (row.codeStatus === "CODE_CONFIRMED" && code && !mentionsCode(contextText, code)) block("ORG_CODE_NOT_IN_CONTEXT", path);
   });
   const parents = new Map(org.map(row => [row.id as string, (row.parentId as string | null | undefined) ?? null]));
   org.forEach((row, i) => {
@@ -101,7 +123,7 @@ export function checkVersion3(kit: V3Kit): void {
     if (at) error("ORG_PARENT_CYCLE", `draft.orgStructure.${i}`);
   });
   missing("masterDataPrerequisites", ["creationChannel", "governance"]);
-  missing("interfaces", ["failureHandling"]);
+  missing("interfaces", ["failureHandling", "systemOfRecord"]);
   rows("interfaces").forEach((row, i) => { if (row.failureHandling === null && !row.outOfScopeReason) error("INTERFACE_FAILURE_HANDLING_MISSING", `draft.interfaces.${i}`); });
   missing("kpis", ["owner", "producingStepId"]);
   rows("kpis").forEach((row, i) => known3("UNKNOWN_STEP", `draft.kpis.${i}`, row.producingStepId ? [row.producingStepId as string] : [], ctx.stepIds));
@@ -192,6 +214,18 @@ export function checkVersion3(kit: V3Kit): void {
   });
   const mapped = new Set(mappings.map(row => row.requirementId));
   if ([...ctx.requirements].some(([requirementId, requirement]) => requirement.kind === "CONTROL" && !mapped.has(requirementId))) block("CONTROL_UNMAPPED", "draft.controlMappings");
+
+  // Every code a step uses is defined in the configuration catalogue or the organisation structure (checklist 3).
+  const defined = [...catalogue, ...org].flatMap(row => textFields(row)).join("\n");
+  steps.forEach((step, i) => {
+    const unresolved = [...new Map((step.texts ?? []).flatMap(extractSapCodes).filter(code => !mentionsCode(defined, code.token)).map(code => [`${code.kind}:${code.token}`, code])).values()];
+    if (unresolved.length) block("UNRESOLVED_CODE", `draft.steps.${i}`, unresolved.slice(0, 8).map(code => `${code.kind.toLowerCase().replace("_", " ")} ${code.token}`).join(", "));
+  });
+
+  // Period-end activities (checklist 34).
+  const periodEnd = rows("periodEndActivities");
+  if (!periodEnd.length) block("PERIOD_END_MISSING", "draft.periodEndActivities");
+  periodEnd.forEach((row, i) => traced("periodEndActivities", row, i));
 
   // Reports and end-to-end tests (checklists 22, 33).
   const reports = rows("reports");

@@ -300,6 +300,18 @@ Further mechanical rules (each is also checked, none is optional):
 - Ids you create (steps, open questions) are 1 to 64 characters of letters, digits,
   underscore or hyphen, and unique across all steps and open questions. No list of
   ids may repeat an id. Every text value is non-empty.
+- Step ids are hierarchical by process area and scenario so a reader can place a step
+  from its id: AREA-S-N, where AREA is a short upper-case code for the process area or
+  value stream (two to five letters, taken from the process, for example the first
+  letters of its name), S the scenario number inside it and N the step number inside
+  the scenario, all separated by hyphens (for example "KEG-1-1", "KEG-1-2", "KEG-2-1":
+  scenario 1 has two steps, scenario 2 starts again at 1). Use one AREA for the whole
+  design unless the design really spans separate process areas, number scenarios in the
+  order they run, and keep the ids short. No dots: the id alphabet above stays. Open
+  question ids are AREA-OQ-n. The worked example below shows the pattern.
+- Text values that a client will read (titles, purposes, rationales, questions) never
+  use the vocabulary of this process: not "outline", "register call", "step call",
+  "frozen" or the tool and field names. Write them in business language.
 - Every step lists at least one requirementId, or is an enabling step with an empty
   requirementIds and a non-empty enablesStepIds (never both empty, never a step that
   enables itself or another enabling step), and `sequence` is exactly 1..n in the

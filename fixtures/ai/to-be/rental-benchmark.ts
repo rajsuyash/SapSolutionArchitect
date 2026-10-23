@@ -56,7 +56,8 @@ export const rentalDraft: DetailedDesign = {
       exceptions: [{ condition: "The selected asset is already allocated during overlapping dates", response: "Reject allocation and retain the unsaved item for correction.", owner: "Rental coordinator" }],
       exceptionsNotApplicableReason: null,
       masterData: [{ object: "Rental asset", fields: ["unique asset identifier", "availability status", "owning party"], owner: "Rental master-data steward" }],
-      effects: { inventory: "Reserve availability; do not treat reservation as physical dispatch.", financial: "No invoice is produced at this step.", ownership: "Hire allocation does not transfer ownership." },
+      effects: { inventory: "Reserve availability; do not treat reservation as physical dispatch.", financial: "No invoice is produced at this step.", ownership: "Hire allocation does not transfer ownership.",
+        accountingEntry: "None: reserving hire items posts nothing to accounting." },
       implementation,
       addedValue: "Each asset can be dispatched, extended, returned and billed independently without manual quantity splitting.",
       acceptanceTests: [
@@ -89,7 +90,8 @@ export const rentalDraft: DetailedDesign = {
       exceptionsNotApplicableReason: null,
       masterData: [{ object: "Asset return condition", fields: ["condition code", "inspection required"], owner: "Rental stores lead" }],
       effects: { inventory: "Record physical return separately from availability for re-hire; inspection may still be pending.",
-        financial: "Reconcile the final charge using the approved proration decision; that decision is currently open.", ownership: "Preserve the asset's recorded owning party." },
+        financial: "Reconcile the final charge using the approved proration decision; that decision is currently open.", ownership: "Preserve the asset's recorded owning party.",
+        accountingEntry: "None at the return itself; the final hire charge is posted by the billing step once the proration decision is closed." },
       implementation,
       addedValue: "A partial return does not prematurely close the entire order or continue billing a returned asset.",
       acceptanceTests: [
@@ -120,7 +122,8 @@ export const rentalDraft: DetailedDesign = {
       exceptionsNotApplicableReason: null,
       masterData: [{ object: "Charge classification", fields: ["recurring hire", "one-time installation", "rate period"], owner: "Billing master-data steward" }],
       effects: { inventory: "Billing proposal creation does not move stock.", financial: "Posting and tax/account determination remain subject to the separate approved finance design.",
-        ownership: "Billing does not change asset ownership." },
+        ownership: "Billing does not change asset ownership.",
+        accountingEntry: "Pending the approved finance design: the receivable and hire-revenue account categories are not yet decided, so no account is named here." },
       implementation,
       addedValue: "Monthly rental billing retains asset-level traceability and prevents repeat billing of installation.",
       acceptanceTests: [

@@ -68,7 +68,7 @@
       {
         "fieldId": "target_org_units",
         "label": "Target SAP organisational units",
-        "value": "One plant for the brewery"
+        "value": "One plant for the brewery (plant code 1000)"
       },
       {
         "fieldId": "retained_systems",
@@ -92,7 +92,7 @@
     "processName": "Keg loan: dispatch, pick-up and rental settlement",
     "steps": [
       {
-        "id": "EX-1",
+        "id": "KEG-1-1",
         "sequence": 1,
         "title": "Ship kegs with the order into the pub's returnable stock",
         "purpose": "Hold every dispatched keg against the pub that has it, still owned by the brewery.",
@@ -110,7 +110,7 @@
         }
       },
       {
-        "id": "EX-2",
+        "id": "KEG-2-1",
         "sequence": 2,
         "title": "Record the pick-up and settle rental after the free period",
         "purpose": "Return collected kegs to plant stock and charge monthly rental on kegs kept beyond the free period.",
@@ -142,8 +142,8 @@
         "requirementId": "R-1",
         "disposition": "IMPLEMENTED",
         "stepIds": [
-          "EX-1",
-          "EX-2"
+          "KEG-1-1",
+          "KEG-2-1"
         ],
         "decisionId": null,
         "rationale": "Dispatch posts kegs to the pub's balance and the pick-up posts them back, so a keg is never untraced between the two."
@@ -152,19 +152,19 @@
         "requirementId": "R-2",
         "disposition": "IMPLEMENTED",
         "stepIds": [
-          "EX-2"
+          "KEG-2-1"
         ],
         "decisionId": null,
-        "rationale": "Rental is settled monthly after the free period; the day the 60 days start from is held on EX-OQ-1.",
+        "rationale": "Rental is settled monthly after the free period; the day the 60 days start from is held on KEG-OQ-1.",
         "questionIds": [
-          "EX-OQ-1"
+          "KEG-OQ-1"
         ]
       },
       {
         "requirementId": "R-3",
         "disposition": "IMPLEMENTED",
         "stepIds": [
-          "EX-2"
+          "KEG-2-1"
         ],
         "decisionId": null,
         "rationale": "A waiver request waits in an approval workflow; the fee changes only after the head of logistics approves it."
@@ -173,17 +173,17 @@
     "conflictDecisions": [],
     "openQuestions": [
       {
-        "id": "EX-OQ-1",
+        "id": "KEG-OQ-1",
         "question": "Do the 60 days start at goods issue or at delivery to the pub?",
         "owner": "Sales operations manager",
         "affectedStepIds": [
-          "EX-2"
+          "KEG-2-1"
         ]
       }
     ]
   },
   "details": {
-    "EX-1": {
+    "KEG-1-1": {
       "actor": "Dispatch clerk",
       "trigger": "A confirmed sales order containing beer and keg lines is released for delivery.",
       "stepType": "IN_SYSTEM_MANUAL",
@@ -233,12 +233,12 @@
       ],
       "businessRules": [
         {
-          "id": "EX-1-BR-1",
+          "id": "KEG-1-1-BR-1",
           "condition": "A keg line is on the delivery",
           "response": "Post it to the pub's returnable stock; it is not invoiced and ownership does not pass."
         },
         {
-          "id": "EX-1-BR-2",
+          "id": "KEG-1-1-BR-2",
           "condition": "Ordered kegs exceed unrestricted stock",
           "response": "Deliver what is available and leave the rest open on the order; never post negative stock."
         }
@@ -278,7 +278,8 @@
       "effects": {
         "inventory": "Kegs move from plant stock to the pub's returnable stock, held per pub at plant level.",
         "financial": "No revenue and no invoice for kegs; they stay in company valuation. Only beer lines are billed.",
-        "ownership": "The brewery keeps ownership; only custody passes to the pub until collection."
+        "ownership": "The brewery keeps ownership; only custody passes to the pub until collection.",
+        "accountingEntry": "None: moving kegs into a pub's returnable stock is a custody transfer inside company valuation, so no accounting document is posted for the kegs; the beer lines post as usual."
       },
       "implementation": {
         "detail": "Ship kegs by ordinary sales order into special stock indicator V (customer returnable packaging stock), as in S4-2023-INV-CUSTOMER-RETURNABLE-PACKAGING; the shipment is not billed. Validation points: serial-level tracking of a single keg is not evidenced, so tracking is by pub, quantity and batch; the stock landing is taken from the special stock definition and must be checked in the fit-to-standard workshop."
@@ -286,7 +287,7 @@
       "addedValue": "Every keg quantity sits against a named pub from the moment of dispatch, which replaces the Friday recount with a stock balance per pub.",
       "acceptanceTests": [
         {
-          "id": "EX-1-T-1",
+          "id": "KEG-1-1-T-1",
           "kind": "NORMAL",
           "given": "An order for 20 beer kegs to pub P with 20 keg lines, and 25 kegs in unrestricted stock",
           "when": "The clerk posts goods issue for the delivery",
@@ -296,7 +297,7 @@
           ]
         },
         {
-          "id": "EX-1-T-2",
+          "id": "KEG-1-1-T-2",
           "kind": "EXCEPTION",
           "given": "The driver loaded 18 of the 20 listed kegs",
           "when": "The clerk sets the delivery to 18 and posts goods issue",
@@ -307,7 +308,7 @@
         }
       ]
     },
-    "EX-2": {
+    "KEG-2-1": {
       "actor": "Dispatch clerk",
       "trigger": "A driver returns from a collection run with empty kegs from one or more pubs.",
       "stepType": "IN_SYSTEM_MANUAL",
@@ -347,17 +348,17 @@
       ],
       "businessRules": [
         {
-          "id": "EX-2-BR-1",
+          "id": "KEG-2-1-BR-1",
           "condition": "A keg has been with a pub beyond the free period",
-          "response": "Calculate the monthly fee as a percentage of keg value; the start of the period is held on EX-OQ-1."
+          "response": "Calculate the monthly fee as a percentage of keg value; the start of the period is held on KEG-OQ-1."
         },
         {
-          "id": "EX-2-BR-2",
+          "id": "KEG-2-1-BR-2",
           "condition": "Collected quantity is above the pub's balance",
           "response": "Post only the balance and raise the difference to the dispatch supervisor."
         },
         {
-          "id": "EX-2-BR-3",
+          "id": "KEG-2-1-BR-3",
           "condition": "A billing clerk asks to waive a fee",
           "response": "Route the waiver to the head of logistics; the fee does not change until it is approved."
         }
@@ -383,15 +384,16 @@
       "effects": {
         "inventory": "Collected kegs move from the pub's stock back to plant stock.",
         "financial": "Rental fees are billed per pub; kegs stay in company valuation.",
-        "ownership": "No change: the brewery owns the kegs throughout."
+        "ownership": "No change: the brewery owns the kegs throughout.",
+        "accountingEntry": "Rental fee billing posts a receivable against the pub (debit customer account) and fee revenue (credit rental revenue account category); the collection transfer itself posts nothing."
       },
       "implementation": {
-        "detail": "Use returnable packaging settlement with a rental-free time, as in S4-2023-SD-RP-RENTAL-FEES. Validation points: the fee is a percentage of keg value, not a flat monthly rate; the final settlement can generate a credit memo once 100% of value is paid, which must be switched off; whether the 60 days start at goods issue or delivery is open (EX-OQ-1)."
+        "detail": "Use returnable packaging settlement with a rental-free time, as in S4-2023-SD-RP-RENTAL-FEES. Validation points: the fee is a percentage of keg value, not a flat monthly rate; the final settlement can generate a credit memo once 100% of value is paid, which must be switched off; whether the 60 days start at goods issue or delivery is open (KEG-OQ-1)."
       },
       "addedValue": "Fees come from posted dispatch and pick-up dates instead of a month-end spreadsheet, so a pub is charged only for kegs it still holds.",
       "acceptanceTests": [
         {
-          "id": "EX-2-T-1",
+          "id": "KEG-2-1-T-1",
           "kind": "NORMAL",
           "given": "Pub P holds 20 kegs and returns 12 after the free period",
           "when": "The clerk posts the pick-up and runs the monthly settlement",
@@ -402,17 +404,17 @@
           ]
         },
         {
-          "id": "EX-2-T-2",
+          "id": "KEG-2-1-T-2",
           "kind": "EXCEPTION",
           "given": "The free-period start date is not yet decided",
           "when": "The settlement runs",
-          "then": "The fee requests stay under billing block until EX-OQ-1 is answered.",
+          "then": "The fee requests stay under billing block until KEG-OQ-1 is answered.",
           "requirementIds": [
             "R-2"
           ]
         },
         {
-          "id": "EX-2-T-3",
+          "id": "KEG-2-1-T-3",
           "kind": "NORMAL",
           "given": "A fee of 120 is waived at the pub's request",
           "when": "The billing clerk submits the waiver",
@@ -447,8 +449,8 @@
           "recommendation": "Quantity and batch per pub",
           "rationale": "R-1 asks for traceability to a pub, not to a single keg, so the standard option meets it. Revisit if the unaccounted-keg KPI does not fall.",
           "impactedStepIds": [
-            "EX-1",
-            "EX-2"
+            "KEG-1-1",
+            "KEG-2-1"
           ],
           "requirementIds": [
             "R-1"
@@ -469,8 +471,8 @@
           "ricefwType": null,
           "justification": "Returnable packaging stock holds company-owned kegs per pub, so no custom object is needed.",
           "stepIds": [
-            "EX-1",
-            "EX-2"
+            "KEG-1-1",
+            "KEG-2-1"
           ],
           "referenceIds": [
             "S4-2023-INV-CUSTOMER-RETURNABLE-PACKAGING"
@@ -487,7 +489,7 @@
           "ricefwType": null,
           "justification": "Settlement with a rental-free time is customising, not delivered as is; a flat fee per keg would need an extension.",
           "stepIds": [
-            "EX-2"
+            "KEG-2-1"
           ],
           "referenceIds": [
             "S4-2023-SD-RP-RENTAL-FEES"
@@ -519,8 +521,8 @@
           ],
           "contextFieldIds": [],
           "stepIds": [
-            "EX-1",
-            "EX-2"
+            "KEG-1-1",
+            "KEG-2-1"
           ],
           "creationChannel": "Created by the steward in the material master app; the keg register is loaded once at cutover.",
           "governance": "Changes to the fee base or batch settings need the steward's approval and are logged."
@@ -539,7 +541,7 @@
           ],
           "contextFieldIds": [],
           "stepIds": [
-            "EX-1"
+            "KEG-1-1"
           ]
         }
       ],
@@ -555,7 +557,36 @@
           ],
           "contextFieldIds": [],
           "stepIds": [
-            "EX-1"
+            "KEG-1-1"
+          ]
+        }
+      ],
+      "periodEndActivities": [
+        {
+          "id": "PEA-1",
+          "activity": "Reconcile each pub's returnable stock to the Friday yard count before the period is closed.",
+          "sequence": 1,
+          "owner": "Warehouse lead",
+          "requirementIds": [
+            "R-1"
+          ],
+          "contextFieldIds": [],
+          "stepIds": [
+            "KEG-2-1"
+          ]
+        },
+        {
+          "id": "PEA-2",
+          "activity": "Run the month-end rental fee billing for pubs past the free period, then review waivers against the approvals.",
+          "sequence": 2,
+          "owner": "Billing clerk",
+          "requirementIds": [
+            "R-2",
+            "R-3"
+          ],
+          "contextFieldIds": [],
+          "stepIds": [
+            "KEG-2-1"
           ]
         }
       ]
@@ -582,14 +613,15 @@
             "retained_systems"
           ],
           "stepIds": [
-            "EX-2"
+            "KEG-2-1"
           ],
           "failureHandling": {
             "detection": "A pick-up the app sent and SAP rejected shows in the interface error list.",
             "alerting": "The dispatch supervisor gets a mail for every rejected pick-up.",
             "rerun": "The supervisor corrects the pub or batch and resends that pick-up only.",
             "idempotency": "The app's pick-up number is stored on the posting; a repeat is ignored."
-          }
+          },
+          "systemOfRecord": "SAP holds the pick-up posting and the pub's returnable stock; the route-planning app holds the planned run."
         }
       ],
       "kpis": [
@@ -612,11 +644,11 @@
             "kpi_targets"
           ],
           "stepIds": [
-            "EX-1",
-            "EX-2"
+            "KEG-1-1",
+            "KEG-2-1"
           ],
           "owner": "Head of logistics",
-          "producingStepId": "EX-2"
+          "producingStepId": "KEG-2-1"
         }
       ]
     },
@@ -633,8 +665,8 @@
             "kpi_targets"
           ],
           "stepIds": [
-            "EX-1",
-            "EX-2"
+            "KEG-1-1",
+            "KEG-2-1"
           ]
         },
         {
@@ -647,7 +679,7 @@
           ],
           "contextFieldIds": [],
           "stepIds": [
-            "EX-2"
+            "KEG-2-1"
           ]
         }
       ],
@@ -689,23 +721,29 @@
             "target_org_units"
           ],
           "stepIds": [
-            "EX-1"
+            "KEG-1-1"
           ],
-          "parentId": null
+          "parentId": null,
+          "codeStatus": "CODE_CONFIRMED",
+          "code": "1000",
+          "owner": "Head of logistics"
         },
         {
           "id": "ORG-2",
           "unitType": "Storage location",
           "proposal": "One storage location in the plant for kegs returned from pubs.",
-          "openPoint": "Whether returned kegs need a location apart from clean stock is not decided.",
+          "openPoint": "Whether returned kegs need a location apart from clean stock is not decided; the business provides the location code once it is.",
           "requirementIds": [
             "R-1"
           ],
           "contextFieldIds": [],
           "stepIds": [
-            "EX-2"
+            "KEG-2-1"
           ],
-          "parentId": "ORG-1"
+          "parentId": "ORG-1",
+          "codeStatus": "BUSINESS_TO_PROVIDE",
+          "code": null,
+          "owner": "Head of logistics"
         }
       ]
     },
@@ -726,8 +764,8 @@
           ],
           "contextFieldIds": [],
           "stepIds": [
-            "EX-1",
-            "EX-2"
+            "KEG-1-1",
+            "KEG-2-1"
           ]
         }
       ],
@@ -739,8 +777,8 @@
           "when": "Dispatch, pick-up and the monthly settlement run in order",
           "then": "The pub holds 8, plant stock rose by 12, and rental is charged only for the days held.",
           "stepIds": [
-            "EX-1",
-            "EX-2"
+            "KEG-1-1",
+            "KEG-2-1"
           ],
           "requirementIds": [
             "R-1",
@@ -762,13 +800,13 @@
             {
               "from": null,
               "to": "Open",
-              "stepId": "EX-1",
+              "stepId": "KEG-1-1",
               "event": "Delivery created from the released order"
             },
             {
               "from": "Open",
               "to": "Goods issued",
-              "stepId": "EX-1",
+              "stepId": "KEG-1-1",
               "event": "Goods issue posted"
             }
           ],
@@ -795,13 +833,13 @@
             {
               "from": null,
               "to": "Calculated",
-              "stepId": "EX-2",
+              "stepId": "KEG-2-1",
               "event": "Monthly run"
             },
             {
               "from": "Calculated",
               "to": "Released",
-              "stepId": "EX-2",
+              "stepId": "KEG-2-1",
               "event": "Billing clerk releases"
             }
           ],
@@ -828,7 +866,7 @@
           "referenceIds": [],
           "note": "The business names the delivery type to use for pub runs.",
           "stepIds": [
-            "EX-1"
+            "KEG-1-1"
           ]
         },
         {
@@ -843,7 +881,7 @@
           ],
           "note": null,
           "stepIds": [
-            "EX-2"
+            "KEG-2-1"
           ]
         },
         {
@@ -856,7 +894,7 @@
           "referenceIds": [],
           "note": "The business lists the reasons it accepts.",
           "stepIds": [
-            "EX-2"
+            "KEG-2-1"
           ]
         }
       ]
@@ -868,8 +906,8 @@
           "name": "Dispatch clerk",
           "responsibilities": "Posts dispatches and pick-ups.",
           "stepIds": [
-            "EX-1",
-            "EX-2"
+            "KEG-1-1",
+            "KEG-2-1"
           ]
         },
         {
@@ -877,7 +915,7 @@
           "name": "Billing clerk",
           "responsibilities": "Runs and releases the monthly settlement.",
           "stepIds": [
-            "EX-2"
+            "KEG-2-1"
           ]
         },
         {
@@ -885,7 +923,7 @@
           "name": "Head of logistics",
           "responsibilities": "Approves fee waivers.",
           "stepIds": [
-            "EX-2"
+            "KEG-2-1"
           ]
         }
       ],
@@ -898,8 +936,8 @@
             "ROLE-1"
           ],
           "stepIds": [
-            "EX-1",
-            "EX-2"
+            "KEG-1-1",
+            "KEG-2-1"
           ],
           "mitigation": "The warehouse lead reviews each pub's balance difference every month."
         }
@@ -911,9 +949,9 @@
           "mechanism": "BUSINESS_RULE",
           "realization": "The waiver waits in an approval workflow; the fee is not changed before approval.",
           "stepIds": [
-            "EX-2"
+            "KEG-2-1"
           ],
-          "ruleId": "EX-2-BR-3"
+          "ruleId": "KEG-2-1-BR-3"
         }
       ]
     }

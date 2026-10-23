@@ -32,7 +32,9 @@ export type DocumentControl = {
 export type AsIsNarrative = { toBeStepId: string; toBeTitle: string;
   asIs: { asIsStepId: string; name: string; actor: string; system: string; trigger: string; description: string; inputs: string[]; outputs: string[]; controls: string[]; exceptions: string[] }[] };
 export type EliminatedAsIs = { asIsStepId: string; name: string; description: string; reason: string };
-export type RicefwItem = { id: string; type: string; classification: string; requirementId: string; linkedSteps: { id: string; title: string }[];
+/** Where a RICEFW item comes from: a fit-gap row, a step realised as an extension or integration, or a report or KPI built with custom analytics. */
+export type RicefwSource = "FIT_GAP" | "STEP" | "ANALYTICS";
+export type RicefwItem = { id: string; source: RicefwSource; type: string; classification: string; requirementId: string | null; linkedSteps: { id: string; title: string }[];
   rationale: string; referenceIds: string[]; needsValidation: boolean; validationReason: string | null; owner: string | null; status: string | null };
 export type ActorRoleRow = { stepId: string; actor: string; roleIds: string[] };
 export type DerivedSections = {
@@ -69,16 +71,42 @@ export function asIsNarratives({ design, asIsSteps }: Pick<DeriveInput, "design"
   };
 }
 
-/** One entry per fit-gap row that needs something built or connected, with the steps that cite its requirement. Version 1 designs have no fit-gap. */
+/** A report or KPI whose realization names something built: custom or key-user queries and CDS views, BTP or SAP Analytics Cloud content. */
+const CUSTOM_ANALYTICS = /\b(?:custom(?:ised|ized)?|bespoke)\b|\bCDS\b|\banalytical quer|\bSAP Analytics Cloud\b|\bSAC\b|\bBTP\b|\bkey[- ]user (?:report|quer|view|analytic)/i;
+const STEP_KIND_ITEM = { EXTENSION: { type: "ENHANCEMENT", classification: "STEP_EXTENSION" }, INTEGRATION: { type: "INTERFACE", classification: "STEP_INTEGRATION" } } as const;
+const RATIONALE_CHARS = 400;
+
+/** Everything that needs something built or connected, once each: the fit-gap rows of the classes in RICEFW_CLASSES, every step whose realization is an
+ * extension or an integration and that no such row already links, and every report or KPI realised with custom analytics. Version 1 designs have no registers. */
 export function ricefwList({ design }: Pick<DeriveInput, "design">): RicefwItem[] {
   const classes: readonly string[] = RICEFW_CLASSES;
-  return (design.fitGap ?? []).filter(row => classes.includes(row.classification)).map((row, i) => {
+  const titleOf = (stepIds: ReadonlySet<string>) => design.steps.filter(step => stepIds.has(step.id)).map(step => ({ id: step.id, title: step.title }));
+  const items: Omit<RicefwItem, "id">[] = (design.fitGap ?? []).filter(row => classes.includes(row.classification)).map(row => {
     const linked = new Set([...row.stepIds, ...design.steps.filter(step => step.requirementIds.includes(row.requirementId)).map(step => step.id)]);
-    return { id: `RICEFW-${i + 1}`, type: row.ricefwType ?? row.classification, classification: row.classification, requirementId: row.requirementId,
-      linkedSteps: design.steps.filter(step => linked.has(step.id)).map(step => ({ id: step.id, title: step.title })),
-      rationale: row.justification, referenceIds: row.referenceIds, needsValidation: row.needsValidation, validationReason: row.validationReason,
+    return { source: "FIT_GAP" as const, type: row.ricefwType ?? row.classification, classification: row.classification, requirementId: row.requirementId,
+      linkedSteps: titleOf(linked), rationale: row.justification, referenceIds: row.referenceIds, needsValidation: row.needsValidation, validationReason: row.validationReason,
       owner: row.owner ?? null, status: row.status ?? null };
   });
+  const covered = new Set(items.flatMap(item => item.linkedSteps.map(step => step.id)));
+  for (const step of design.steps) {
+    const kind = step.implementation.kind;
+    if ((kind !== "EXTENSION" && kind !== "INTEGRATION") || covered.has(step.id)) continue;
+    covered.add(step.id);
+    const referenced = step.implementation.referenceIds.length > 0;
+    items.push({ source: "STEP", ...STEP_KIND_ITEM[kind], requirementId: step.requirementIds[0] ?? null, linkedSteps: titleOf(new Set([step.id])),
+      rationale: step.implementation.detail.slice(0, RATIONALE_CHARS), referenceIds: step.implementation.referenceIds, needsValidation: !referenced,
+      validationReason: referenced ? null : "The step is an extension or integration but cites no catalog reference.", owner: null, status: null });
+  }
+  const analytics = [
+    ...(design.reports ?? []).map(row => ({ ...row, text: `${row.name}: ${row.realization}`, linked: row.stepIds })),
+    ...(design.kpis ?? []).map(row => ({ ...row, text: `${row.name}: ${row.measuredFrom}`, linked: [...row.stepIds, ...(row.producingStepId ? [row.producingStepId] : [])] })),
+  ];
+  for (const row of analytics) {
+    if (!CUSTOM_ANALYTICS.test(row.text) || items.some(item => item.type === "REPORT" && item.requirementId !== null && row.requirementIds.includes(item.requirementId))) continue;
+    items.push({ source: "ANALYTICS", type: "REPORT", classification: "CUSTOM_ANALYTICS", requirementId: row.requirementIds[0] ?? null, linkedSteps: titleOf(new Set(row.linked)),
+      rationale: row.text.slice(0, RATIONALE_CHARS), referenceIds: row.referenceIds, needsValidation: row.needsValidation, validationReason: row.validationReason, owner: null, status: null });
+  }
+  return items.map((item, i) => ({ id: `RICEFW-${i + 1}`, ...item }));
 }
 
 /** Which role-catalogue rows cover each step, next to the step's actor as written. */

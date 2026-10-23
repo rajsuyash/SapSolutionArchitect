@@ -26,7 +26,7 @@ export function splitDesign(design: DetailedDesign) {
 }
 
 /** Which tool a request asked the model to call (a register call names its group in the tool). */
-export const toolOf = (body: RequestBody) => body.tools[0]!.name as "submit_to_be_outline" | "submit_to_be_outline_patch" | "submit_to_be_step" | "submit_to_be" | `submit_to_be_registers_${RegisterGroup}`;
+export const toolOf = (body: RequestBody) => body.tools[0]!.name as "submit_to_be_outline" | "submit_to_be_outline_patch" | "submit_to_be_step" | "submit_to_be" | "submit_to_be_review" | `submit_to_be_registers_${RegisterGroup}`;
 export const registerGroupOf = (body: RequestBody) => (toolOf(body).startsWith("submit_to_be_registers_") ? toolOf(body).slice("submit_to_be_registers_".length) : undefined) as RegisterGroup | undefined;
 /** The step id a submit_to_be_step request is about (read from the request payload, never from the model). */
 export const stepIdOf = (body: RequestBody) => (JSON.parse(body.messages[0]!.content) as { step: { id: string } }).step.id;

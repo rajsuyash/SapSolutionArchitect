@@ -2,7 +2,8 @@ import { describe, expect, it } from "vitest";
 import { DetailedDesignSchema, evaluateDesign, type DesignContext, type DetailedDesign } from "../src/lib/ai/design-quality";
 import { LATE_GROUPS, REGISTER_GROUPS, RegisterGroupSchemas, VERSION_2_KEYS } from "../src/lib/ai/design-registers";
 import { StepDetailSchema } from "../src/lib/ai/to-be-pipeline";
-import { rentalContext } from "../fixtures/ai/to-be/rental-benchmark";
+import { rentalContext, rentalDraft } from "../fixtures/ai/to-be/rental-benchmark";
+import { splitDesign } from "./support/to-be-split";
 import { rentalDraftV2, rentalDraftV3, rentalRegisterGroups } from "../fixtures/ai/to-be/rental-registers";
 
 const reference = { id: "REF-OBJ", targetProduct: "S4HANA_CLOUD_PRIVATE" as const, targetRelease: "TBD", status: "VERIFIED" as const, evidence: "synthetic",
@@ -53,7 +54,7 @@ describe("schema versions 1, 2 and 3", () => {
   it("every register key belongs to exactly one group, and only documents and governance wait for the steps", () => {
     const keys = Object.values(REGISTER_GROUPS).flat();
     expect(new Set(keys).size).toBe(keys.length);
-    expect(keys.length).toBe(VERSION_2_KEYS.length + 9);
+    expect(keys.length).toBe(VERSION_2_KEYS.length + 10);
     expect([...LATE_GROUPS]).toEqual(["documents", "governance"]);
   });
   it("model answers require the version 3 fields that stored version 2 rows lack", () => {
@@ -106,7 +107,7 @@ describe("extended registers (checklists 15, 17, 21, 23, 27)", () => {
   });
   const iface = (extra: object = {}) => ({ id: "IF-1", counterpartSystem: "Customer portal", direction: "INBOUND" as const, triggerFrequency: "Daily", payload: "Orders",
     errorOwner: "Integration lead", outOfScopeReason: null, referenceIds: [], needsValidation: true, validationReason: "API to be confirmed", requirementIds: [], contextFieldIds: [],
-    stepIds: ["TB-1"], failureHandling: { detection: "Error list", alerting: "Mail", rerun: "Resend after correction", idempotency: "Message key stored" }, ...extra });
+    stepIds: ["TB-1"], failureHandling: { detection: "Error list", alerting: "Mail", rerun: "Resend after correction", idempotency: "Message key stored" }, systemOfRecord: "SAP", ...extra });
   it("an interface in scope must say how a failed message is seen, alerted, rerun and kept idempotent", () => {
     expect(codes(design(draft => { draft.interfaces = [iface()]; }))).toEqual([]);
     expect(codes(design(draft => { draft.interfaces = [iface({ failureHandling: null })]; }))).toEqual(["INTERFACE_FAILURE_HANDLING_MISSING@draft.interfaces.0"]);
@@ -239,3 +240,73 @@ describe("register ids stay unique across all registers", () => {
     expect(codes(design(draft => { draft.reports![0]!.id = "KDD-1"; }))).toEqual(["DUPLICATE_OUTPUT_ID@draft.reports.0"]);
   });
 });
+
+describe("version 3 additions: codes, organisation codes, system of record, period end, internal wording", () => {
+  const withText = (change: (draft: DetailedDesign) => void) => design(draft => change(draft));
+  it("a code a step uses that no register defines is a review finding on that step, naming the code; defining it in the catalogue or organisation clears it", () => {
+    const used = withText(draft => { draft.steps[1]!.actions[0]!.operation += " Post with document type ZHO for plant 4100."; });
+    const result = evaluateDesign(rentalContext, used);
+    expect(result.errors).toEqual([]);
+    expect(result.blockers).toContainEqual({ code: "UNRESOLVED_CODE", path: "draft.steps.1", detail: "document type ZHO, org code 4100" });
+    const defined = withText(draft => {
+      draft.steps[1]!.actions[0]!.operation += " Post with document type ZHO for plant 4100.";
+      draft.configurationCatalogue!.push({ ...at(draft.configurationCatalogue), id: "CFG-2", category: "DOCUMENT_TYPE", name: "Document type ZHO", purpose: "Hire order", stepIds: ["TB-2"] });
+      draft.orgStructure![0]!.proposal = "Plant 4100 for the hire business";
+    });
+    expect(evaluateDesign(rentalContext, defined).blockers.some(item => item.code === "UNRESOLVED_CODE")).toBe(false);
+    // Negative control: the same design without the definitions does flag, so the clean result above means something.
+    expect(evaluateDesign(rentalContext, used).blockers.some(item => item.code === "UNRESOLVED_CODE")).toBe(true);
+  });
+  it("an organisational unit has a code status and an owner; a unit without a code is BUSINESS_TO_PROVIDE with an owner", () => {
+    expect(codes(design(draft => { delete (draft.orgStructure![0] as Record<string, unknown>).owner; }))).toContain("REGISTER_FIELD_MISSING@draft.orgStructure.0");
+    expect(codes(design(draft => { draft.orgStructure![0]!.codeStatus = "CODE_CONFIRMED"; }))).toContain("ORG_CODE_INCONSISTENT@draft.orgStructure.0");
+    expect(codes(design(draft => { draft.orgStructure![0]!.code = "4100"; }))).toContain("ORG_CODE_INCONSISTENT@draft.orgStructure.0");
+    const row = at(rentalRegisterGroups.scope.orgStructure);
+    expect(RegisterGroupSchemas.scope.safeParse({ ...rentalRegisterGroups.scope, orgStructure: [{ ...row, owner: undefined }] }).success).toBe(false);
+    expect(RegisterGroupSchemas.scope.safeParse({ ...rentalRegisterGroups.scope, orgStructure: [{ ...row, codeStatus: "OPEN_POINT" }] }).success).toBe(false);
+    // A confirmed code must come from the answers; one that does not appear there is a finding, not an error.
+    const confirmed = design(draft => { draft.orgStructure![0]!.codeStatus = "CODE_CONFIRMED"; draft.orgStructure![0]!.code = "4100"; });
+    expect(evaluateDesign(rentalContext, confirmed).errors).toEqual([]);
+    expect(evaluateDesign(rentalContext, confirmed).blockers).toContainEqual({ code: "ORG_CODE_NOT_IN_CONTEXT", path: "draft.orgStructure.0" });
+    const answeredCode = { ...rentalContext, companyContext: [{ fieldId: "target_org_units", value: "One plant, plant code 4100" }] };
+    expect(evaluateDesign(answeredCode, confirmed).blockers.some(item => item.code === "ORG_CODE_NOT_IN_CONTEXT")).toBe(false);
+  });
+  it("an interface names its system of record, and an integration step must be listed by some interface", () => {
+    const row = { id: "IF-1", counterpartSystem: "Customer portal", direction: "INBOUND" as const, triggerFrequency: "Daily", payload: "Proof of delivery", errorOwner: "Integration lead",
+      outOfScopeReason: null, referenceIds: [], needsValidation: true, validationReason: "API to be confirmed", requirementIds: [], contextFieldIds: [], stepIds: ["TB-1"],
+      failureHandling: { detection: "Error list", alerting: "Mail", rerun: "Resend", idempotency: "Key stored" }, systemOfRecord: "SAP" };
+    expect(codes(design(draft => { draft.interfaces = [{ ...row, systemOfRecord: undefined } as never]; }))).toContain("REGISTER_FIELD_MISSING@draft.interfaces.0");
+    expect(RegisterGroupSchemas.integration.safeParse({ interfaces: [{ ...row, systemOfRecord: undefined }], kpis: [] }).success).toBe(false);
+    const integrationStep = (listed: boolean) => design(draft => { draft.steps[0]!.stepType = "INTEGRATION"; draft.interfaces = [{ ...row, stepIds: listed ? ["TB-1"] : ["TB-2"] }]; });
+    expect(evaluateDesign(rentalContext, integrationStep(false)).blockers).toContainEqual({ code: "INTERFACE_STEP_UNCOVERED", path: "draft.steps.0" });
+    expect(evaluateDesign(rentalContext, integrationStep(true)).blockers.some(item => item.code === "INTERFACE_STEP_UNCOVERED")).toBe(false);
+  });
+  it("period-end activities are a version 3 register in the foundation group: traced, sequenced, owned; none at all is a finding", () => {
+    expect(rentalDraftV3.periodEndActivities!.length).toBeGreaterThan(0);
+    expect(REGISTER_GROUPS.foundation).toContain("periodEndActivities");
+    expect(codes(design(draft => { delete draft.periodEndActivities; }))).toContain("REGISTER_MISSING@draft.periodEndActivities");
+    expect(codes({ ...rentalDraftV2, periodEndActivities: [] })).toEqual(["REGISTER_VERSION_MISMATCH@draft.periodEndActivities"]);
+    expect(codes(design(draft => { draft.periodEndActivities![0]!.stepIds = ["TB-9"]; }))).toContain("UNKNOWN_STEP@draft.periodEndActivities.0");
+    expectFinding(design(draft => { draft.periodEndActivities = []; }), "PERIOD_END_MISSING@draft.periodEndActivities");
+    const row = at(rentalRegisterGroups.foundation.periodEndActivities);
+    expect(RegisterGroupSchemas.foundation.safeParse({ ...rentalRegisterGroups.foundation, periodEndActivities: [{ ...row, owner: undefined }] }).success).toBe(false);
+    expect(RegisterGroupSchemas.foundation.safeParse({ ...rentalRegisterGroups.foundation, periodEndActivities: [{ ...row, sequence: 0 }] }).success).toBe(false);
+  });
+  it("the pipeline's working words in client text are a review finding naming the term, never an error", () => {
+    const text = design(draft => { draft.steps[2]!.implementation.detail += " The outline fixes the kind."; });
+    const result = evaluateDesign(rentalContext, text);
+    expect(result.errors).toEqual([]);
+    expect(result.blockers).toContainEqual({ code: "INTERNAL_TERM", path: "draft.steps.2", detail: "outline" });
+  });
+  it("a step answer states its accounting entry and keeps implementation.detail within the cap; a stored step may omit the entry", () => {
+    const step = splitDetails()["TB-1"]!;
+    expect(StepDetailSchema.safeParse(step).success).toBe(true);
+    expect(StepDetailSchema.safeParse({ ...step, effects: { ...step.effects, accountingEntry: undefined } }).success).toBe(false);
+    expect(StepDetailSchema.safeParse({ ...step, implementation: { detail: "x".repeat(901) } }).success).toBe(false);
+    expect(StepDetailSchema.safeParse({ ...step, implementation: { detail: "x".repeat(900) } }).success).toBe(true);
+    const stored = structuredClone(rentalDraftV3); delete stored.steps[0]!.effects.accountingEntry;
+    expect(DetailedDesignSchema.safeParse(stored).success).toBe(true);
+  });
+});
+
+const splitDetails = () => splitDesign(rentalDraft).details;

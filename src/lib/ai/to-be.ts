@@ -6,6 +6,7 @@ import { DetailedDesignSchema, evaluateDesign, type DesignContext, type DesignEv
 import { loadSapReferences, type SapReferenceOptions } from "./sap-references";
 import type { ValidationIssue } from "./problem-analysis";
 import type { StageMetrics } from "./runStage";
+import { reviewBlockers, type ReviewOutcome } from "./to-be-review";
 
 const InputSchema = z.strictObject({
   targetProduct: z.enum(["S4HANA_CLOUD_PUBLIC", "S4HANA_CLOUD_PRIVATE", "S4HANA_ON_PREMISE"]),
@@ -22,6 +23,8 @@ export type ToBeInput = z.infer<typeof InputSchema>;
 export type ToBeOutput = {
   design: DetailedDesign; evaluation: DesignEvaluation;
   unresolvedInputQuestions: ToBeInput["discovery"]["openQuestions"];
+  /** What the consistency pass found (kind, the elements it named, its sentence, and whether a repair resolved it). Absent when the pass did not run. Its unresolved findings are already in evaluation.blockers. */
+  reviewFindings?: ReviewOutcome[];
 };
 const sensitive = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}|\b(?:sk-(?:ant-)?[A-Za-z0-9_-]{16,}|AKIA[A-Z0-9]{16})\b|\b(?:Bearer\s+\S+|(?:password|api[_ -]?key|secret|token)\s*[:=]\s*\S+)/i;
 
@@ -58,7 +61,8 @@ export function toBeContext(input: ToBeInput, references: DesignContext["referen
   };
 }
 
-export function validateToBeOutput(input: ToBeInput, raw: unknown, references: DesignContext["references"] = []):
+/** `extraBlockers` are review findings that come from outside the design checks (the consistency pass); they are added to the evaluation like any other blocker. */
+export function validateToBeOutput(input: ToBeInput, raw: unknown, references: DesignContext["references"] = [], extraBlockers: readonly DesignEvaluation["blockers"][number][] = []):
   { success: true; data: ToBeOutput } | { success: false; errors: ValidationIssue[] } {
   const evaluation = evaluateDesign(toBeContext(input, references), raw);
   if (!evaluation.structurallyValid) return { success: false, errors: evaluation.errors.slice(0, 30) };
@@ -66,7 +70,7 @@ export function validateToBeOutput(input: ToBeInput, raw: unknown, references: D
   // Model omission cannot erase a business question or its assigned owner.
   const unresolvedInputQuestions = input.discovery.openQuestions;
   evaluation.blockers.push(...unresolvedInputQuestions.map((_, i) =>
-    ({ code: "INPUT_QUESTION_UNRESOLVED", path: `input.openQuestions.${i}` })));
+    ({ code: "INPUT_QUESTION_UNRESOLVED", path: `input.openQuestions.${i}` })), ...extraBlockers);
   if (evaluation.blockers.length) evaluation.reviewStatus = "BLOCKED";
   return { success: true, data: { design, evaluation, unresolvedInputQuestions } };
 }
@@ -101,7 +105,7 @@ export function createToBeGenerator(discovery: Pick<ReturnType<typeof createDisc
     const references = await loadToBeReferences(input, options);
     const result = await generate(input, signal);
     signal?.throwIfAborted();
-    const validated = validateToBeOutput(input, result.payload.design, references);
+    const validated = validateToBeOutput(input, result.payload.design, references, reviewBlockers(result.payload.reviewFindings));
     if (!validated.success) throw new Error("AI_INVALID_OUTPUT");
     // Recheck membership before exposing output if access changed during the call.
     const access = await load();

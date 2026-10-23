@@ -4,7 +4,8 @@ import { describe, expect, it, vi } from "vitest";
 import { parseEnvironment } from "../src/lib/env";
 import { createStageRunner } from "../src/lib/ai/runStage";
 import { evaluateDesign, DetailedDesignSchema } from "../src/lib/ai/design-quality";
-import { toBeContext, parseToBeInput } from "../src/lib/ai/to-be";
+import { toBeContext, parseToBeInput, validateToBeOutput } from "../src/lib/ai/to-be";
+import { reviewBlockers } from "../src/lib/ai/to-be-review";
 import { rentalDraft } from "../fixtures/ai/to-be/rental-benchmark";
 import { rentalDraftV3, rentalRegisterGroups } from "../fixtures/ai/to-be/rental-registers";
 import { LATE_GROUPS, REGISTER_GROUP_NAMES, type RegisterGroup } from "../src/lib/ai/design-registers";
@@ -13,7 +14,7 @@ import { fixture, withCompanyContext } from "./support/to-be-input";
 import { registerGroupOf, splitDesign, stepIdOf, toolOf, toolResponse, type RequestBody } from "./support/to-be-split";
 
 const local = parseEnv(readFileSync(new URL("../.env.example", import.meta.url), "utf8"));
-const settings = (overrides: Record<string, string> = {}) => parseEnvironment({ ...local, NODE_ENV: "test",
+const settings = (overrides: Record<string, string> = {}) => parseEnvironment({ ...local, NODE_ENV: "test", AI_TO_BE_REVIEW: "off",
   AI_PROVIDER: "anthropic", ANTHROPIC_API_KEY: "synthetic-split-key", ...overrides });
 const split = splitDesign(rentalDraft);
 const STEP_IDS = rentalDraft.steps.map(step => step.id);
@@ -24,10 +25,13 @@ type Handlers = {
   patch?: (nth: number, body: RequestBody) => unknown | Promise<unknown>;
   step?: (id: string, nth: number, body: RequestBody) => unknown | Promise<unknown>;
   registers?: (group: RegisterGroup, nth: number, body: RequestBody) => unknown | Promise<unknown>;
+  /** Answer to a submit_to_be_review call; a test that does not expect the consistency pass leaves it unset and fails if one is requested. */
+  review?: (nth: number, body: RequestBody) => unknown | Promise<unknown>;
   overrides?: Record<string, string>;
 };
 /** A fake provider that answers by requested tool and records every request and the in-flight high-water mark. */
 function harness(handlers: Handlers = {}) {
+  const reviewCalls: RequestBody[] = [];
   const outlineCalls: RequestBody[] = [], patchCalls: RequestBody[] = [], stepCalls: { id: string; body: RequestBody; signal: AbortSignal | null | undefined }[] = [];
   const registerCalls: { group: RegisterGroup; body: RequestBody; signal: AbortSignal | null | undefined }[] = [];
   const stepCount: Record<string, number> = {}, registerCount: Partial<Record<RegisterGroup, number>> = {};
@@ -49,6 +53,12 @@ function harness(handlers: Handlers = {}) {
         const out = await handlers.patch(patchCalls.length, body);
         return asStream(out instanceof Response ? out : toolResponse(out, tool));
       }
+      if (tool === "submit_to_be_review") {
+        reviewCalls.push(body);
+        if (!handlers.review) throw new Error("unexpected submit_to_be_review call");
+        const out = await handlers.review(reviewCalls.length, body);
+        return asStream(out instanceof Response ? out : toolResponse(out, tool));
+      }
       const group = registerGroupOf(body);
       if (group) {
         registerCount[group] = (registerCount[group] ?? 0) + 1;
@@ -64,7 +74,7 @@ function harness(handlers: Handlers = {}) {
     } finally { inFlight--; }
   });
   const run = (input = fixture(), signal?: AbortSignal) => createStageRunner(settings(handlers.overrides), { fetch })("to_be", input, signal);
-  return { run, fetch, outlineCalls, patchCalls, stepCalls, stepCount, registerCalls, registerCount, max: () => maxInFlight };
+  return { run, fetch, reviewCalls, outlineCalls, patchCalls, stepCalls, stepCount, registerCalls, registerCount, max: () => maxInFlight };
 }
 /** The rental outline with one invalid field in step 0: a path-attributable error, repaired with a patch. */
 const badKindOutline = { ...split.outline, steps: split.outline.steps.map((step, i) => i === 0 ? { ...step, implementation: { ...step.implementation, kind: "LICENSE_DEPENDENT" } } : step) };
@@ -511,7 +521,7 @@ describe("register calls: repair and checks", () => {
     const rows = ["Customer portal", "Legacy dispatch system"].map((system, i) => ({ id: `IF-${i + 1}`, counterpartSystem: system, direction: "BIDIRECTIONAL" as const,
       triggerFrequency: "Daily", payload: "Hire orders", errorOwner: "Integration lead", outOfScopeReason: null, referenceIds: [], needsValidation: true,
       validationReason: "Confirm the API", requirementIds: [], contextFieldIds: ["retained_systems"], stepIds: ["TB-1"],
-      failureHandling: { detection: "Error list", alerting: "Mail to the integration lead", rerun: "Resend the message", idempotency: "Message key is stored" } }));
+      failureHandling: { detection: "Error list", alerting: "Mail to the integration lead", rerun: "Resend the message", idempotency: "Message key is stored" }, systemOfRecord: "SAP" }));
     const h = harness({ registers: (group, nth) => group !== "integration" ? rentalRegisterGroups[group]
       : { interfaces: nth === 1 ? rows.slice(0, 1) : rows, kpis: [] } });
     const result = await h.run(withRetained);
@@ -861,5 +871,38 @@ describe("stop reason of a complete tool call", () => {
     await expect(cut.run()).rejects.toMatchObject({ code: "AI_INVALID_OUTPUT" });
     const wrong = harness({ outline: () => toolResponse(split.outline, "some_other_tool", "end_turn") });
     await expect(wrong.run()).rejects.toMatchObject({ code: "AI_INVALID_OUTPUT" });
+  });
+});
+
+describe("consistency review through the stage runner", () => {
+  it("is on by default in the environment, can be switched off, and rejects other values", () => {
+    const base = { ...local, NODE_ENV: "test", AI_PROVIDER: "anthropic", ANTHROPIC_API_KEY: "synthetic-split-key" };
+    expect(parseEnvironment(base).AI_TO_BE_REVIEW).toBe("on");
+    expect(parseEnvironment({ ...base, AI_TO_BE_REVIEW: "off" }).AI_TO_BE_REVIEW).toBe("off");
+    expect(parseEnvironment({ ...base, AI_TO_BE_REVIEW: " " }).AI_TO_BE_REVIEW).toBe("on");
+    expect(() => parseEnvironment({ ...base, AI_TO_BE_REVIEW: "maybe" })).toThrow("AI_TO_BE_REVIEW");
+  });
+  it("makes one extra call under the to_be_review substage and reports it", async () => {
+    const h = harness({ overrides: { AI_TO_BE_REVIEW: "on" }, review: () => ({ findings: [] }) });
+    const result = await h.run();
+    expect(h.reviewCalls).toHaveLength(1);
+    expect(result.metrics.substages).toMatchObject({ to_be_review: { calls: 1, inputTokens: 100, outputTokens: 200 } });
+    expect(result.payload.reviewFindings).toEqual([]);
+    expect(h.reviewCalls[0]!.tool_choice).toEqual({ type: "auto", disable_parallel_tool_use: true });
+    const sent = JSON.parse(h.reviewCalls[0]!.messages[0]!.content) as { design: { steps: unknown[] } };
+    expect(sent.design.steps).toHaveLength(STEP_IDS.length);
+  });
+  it("AI_TO_BE_REVIEW=off makes no review call", async () => {
+    const h = harness({ overrides: { AI_TO_BE_REVIEW: "off" } });
+    const result = await h.run();
+    expect(h.reviewCalls).toHaveLength(0);
+    expect(result.metrics.substages).not.toHaveProperty("to_be_review");
+  });
+  it("an unresolved finding reaches the payload as a blocker with the reviewer's sentence, and revalidating with the payload's findings reproduces it", async () => {
+    const h = harness({ overrides: { AI_TO_BE_REVIEW: "on" }, review: () => ({ findings: [{ kind: "COVERAGE_GAP", paths: ["R-1"], explanation: "Nothing covers the quarterly count." }] }) });
+    const result = await h.run();
+    expect(result.payload.evaluation.blockers).toContainEqual({ code: "REVIEW_COVERAGE_GAP", path: "draft", detail: "Nothing covers the quarterly count." });
+    const again = validateToBeOutput(parseToBeInput(fixture()), result.payload.design, [], reviewBlockers(result.payload.reviewFindings));
+    expect(again.success && again.data.evaluation.blockers).toContainEqual({ code: "REVIEW_COVERAGE_GAP", path: "draft", detail: "Nothing covers the quarterly count." });
   });
 });

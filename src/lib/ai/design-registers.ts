@@ -3,7 +3,7 @@ import { FIT_TYPES, basis, id, ids, list, text, trace } from "./design-primitive
 import { norm, overlaps, type RegisterContext, type Report, type Row } from "./design-register-types";
 import {
   ConfigurationItemSchema, ControlMappingSchema, DocumentStatusModelSchema, EndToEndTestSchema, ObjectiveSchema, ReportRowSchema, RoleSchema,
-  ScopeStatementSchema, SodAssessmentSchema, checkVersion3, fitGapExtension, interfaceExtension, kpiExtension, masterDataExtension, orgExtension,
+  PeriodEndActivitySchema, ScopeStatementSchema, SodAssessmentSchema, checkVersion3, fitGapExtension, interfaceExtension, kpiExtension, masterDataExtension, orgExtension,
 } from "./design-registers-v3";
 
 export type { RegisterContext } from "./design-register-types";
@@ -57,7 +57,7 @@ export const RegistersShape = {
   objectives: list(ObjectiveSchema).optional(), scopeStatements: list(ScopeStatementSchema).optional(),
   documentStatusModels: list(DocumentStatusModelSchema).optional(), configurationCatalogue: list(ConfigurationItemSchema).optional(),
   roles: list(RoleSchema).optional(), sodAssessments: list(SodAssessmentSchema).optional(), controlMappings: list(ControlMappingSchema).optional(),
-  reports: list(ReportRowSchema).optional(), endToEndTests: list(EndToEndTestSchema).optional(),
+  reports: list(ReportRowSchema).optional(), endToEndTests: list(EndToEndTestSchema).optional(), periodEndActivities: list(PeriodEndActivitySchema).optional(),
 };
 export type RegisterKey = keyof typeof RegistersShape;
 export const REGISTER_KEYS = Object.keys(RegistersShape) as RegisterKey[];
@@ -67,7 +67,7 @@ export const VERSION_2_KEYS = REGISTER_KEYS.slice(0, 8);
 /** One model call per group; each stays within roughly 4k output tokens. */
 export const REGISTER_GROUPS = {
   decisions: ["keyDesignDecisions"], fitgap: ["fitGap"],
-  foundation: ["masterDataPrerequisites", "dataMigration", "cutover"], integration: ["interfaces", "kpis"],
+  foundation: ["masterDataPrerequisites", "dataMigration", "cutover", "periodEndActivities"], integration: ["interfaces", "kpis"],
   scope: ["objectives", "scopeStatements", "orgStructure"], reporting: ["reports", "endToEndTests"],
   documents: ["documentStatusModels", "configurationCatalogue"], governance: ["roles", "sodAssessments", "controlMappings"],
 } as const satisfies Record<string, readonly RegisterKey[]>;
@@ -80,7 +80,7 @@ export const groupOf = (key: string): RegisterGroup | undefined => REGISTER_GROU
 export const RegisterGroupSchemas = {
   decisions: z.strictObject({ keyDesignDecisions: list(KeyDesignDecisionSchema) }),
   fitgap: z.strictObject({ fitGap: list(FitGapRowSchema) }),
-  foundation: z.strictObject({ masterDataPrerequisites: list(MasterDataPrerequisiteSchema), dataMigration: list(DataMigrationSchema), cutover: list(CutoverSchema) }),
+  foundation: z.strictObject({ masterDataPrerequisites: list(MasterDataPrerequisiteSchema), dataMigration: list(DataMigrationSchema), cutover: list(CutoverSchema), periodEndActivities: list(PeriodEndActivitySchema) }),
   integration: z.strictObject({ interfaces: list(InterfaceSchema), kpis: list(KpiSchema) }),
   scope: z.strictObject({ objectives: list(ObjectiveSchema), scopeStatements: list(ScopeStatementSchema), orgStructure: list(OrgUnitSchema) }),
   reporting: z.strictObject({ reports: list(ReportRowSchema), endToEndTests: list(EndToEndTestSchema) }),

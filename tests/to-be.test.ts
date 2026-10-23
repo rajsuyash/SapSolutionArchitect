@@ -20,7 +20,7 @@ import { fixture } from "./support/to-be-input";
 import { routeLegacyReply } from "./support/to-be-split";
 
 const local = parseEnv(readFileSync(new URL("../.env.example", import.meta.url), "utf8"));
-const settings = (overrides = {}) => parseEnvironment({ ...local, NODE_ENV: "test",
+const settings = (overrides = {}) => parseEnvironment({ ...local, NODE_ENV: "test", AI_TO_BE_REVIEW: "off",
   AI_PROVIDER: "anthropic", ANTHROPIC_API_KEY: "synthetic-to-be-key", ...overrides });
 type Body = { model: string; system: string; messages: { content: string }[];
   tools: { name: string; input_schema: unknown }[]; tool_choice: unknown };

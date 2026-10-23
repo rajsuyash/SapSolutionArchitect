@@ -21,9 +21,9 @@ const modelPrices = z.preprocess((value) => {
 }, z.record(z.string().trim().min(1), z.tuple([z.number().positive().max(1000), z.number().positive().max(1000)])).default({}));
 /** The AI stages the runner knows; runStage derives its Stage type from this list. */
 export const STAGE_NAMES = ["problem_analysis", "to_be", "interview_turn", "extraction_turn"] as const;
-/** The To-Be stage runs as an outline call, one call per step and four register calls; each kind can have reasoning switched off on its own
- * ("to_be" covers both). They are request kinds inside one stage, so they are not in STAGE_NAMES. */
-export const TO_BE_SUBSTAGES = ["to_be_outline", "to_be_step", "to_be_registers"] as const;
+/** The To-Be stage runs as an outline call, one call per step, eight register calls and a consistency review of the finished design; each kind can have
+ * reasoning switched off on its own ("to_be" covers all). They are request kinds inside one stage, so they are not in STAGE_NAMES. */
+export const TO_BE_SUBSTAGES = ["to_be_outline", "to_be_step", "to_be_registers", "to_be_review"] as const;
 // Comma-separated stage or To-Be substage names; blank or unset means none. Unknown names are rejected.
 const stageList = z.preprocess((value) => typeof value === "string"
   ? value.split(",").map((name) => name.trim()).filter(Boolean) : value, z.array(z.enum([...STAGE_NAMES, ...TO_BE_SUBSTAGES])).default([]));
@@ -56,6 +56,9 @@ const schema = z.object({
   AI_TO_BE_OUTLINE_REPAIRS: whole(2, 0, 2),
   // Re-requests per To-Be step or register call after its first answer (0-2); the second only while more than half of the stage budget remains.
   AI_TO_BE_PART_REPAIRS: whole(2, 0, 2),
+  // Consistency review: after a valid design is assembled, one call reads the whole of it and lists contradictions, missing links, unresolved codes and gaps; each finding that
+  // names a step or register group sends that part back once. "off" skips the call. It also runs only while more than a quarter of AI_STAGE_BUDGET_SECONDS remains.
+  AI_TO_BE_REVIEW: z.preprocess(blankToUndefined, z.enum(["on", "off"]).default("on")),
   // Output-token ceilings (max_tokens) of the three To-Be request kinds. Reasoning tokens count against them, so a model that
   // thinks needs room above the visible JSON (outline ~3k, step ~3k, register group ~3.5k tokens without reasoning).
   AI_TO_BE_OUTLINE_MAX_TOKENS: whole(16000, 1000, 64000),

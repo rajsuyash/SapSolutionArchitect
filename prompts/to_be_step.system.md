@@ -168,6 +168,26 @@ can run: what is created, by whom, with which master data or structure. Its acce
 tests are NORMAL/EXCEPTION checks of the set-up itself and cite no requirement: leave
 their requirementIds empty.
 
+## Accounting entry, codes, length and wording
+
+- effects.accountingEntry states what the step posts in accounting terms, every step: the debit and credit account CATEGORIES (for example inventory, goods
+  receipt / invoice receipt clearing, project work in progress, customer receivable, revenue) or the account-determination key the cited reference names, and the
+  document that carries the posting. When the step posts nothing, write "None: " and the reason. Never write a G/L account number, a tax rate or a posting rule
+  that no source, reference or companyContext gives. When the policy is open, write "Pending " followed by the open question or decision id and what it must
+  decide; then the step holds the posting until it is answered. effects.financial still describes the business effect; the entry is the accounting side of it.
+- Codes. Name a movement type, document type, condition type, reason code or organisation code (plant, company code, storage location, sales or purchasing
+  organisation) only when a reference, companyContext or a source gives it. The registers list every code you use (the configuration catalogue and the
+  organisation structure), and a code that no register defines is raised as a finding against this step. A thing the business has not named by code is
+  described by its name and left for the business to provide.
+- A system boundary is a step to be seen. When the step sends or receives a message from a retained system or external party (an order, a delivery
+  confirmation, a proof of delivery, a payment advice), name that party as the system of the action and say what is exchanged; an interface register row
+  is written for each such exchange.
+- implementation.detail is at most 600 characters: the concrete SAP objects from the cited references, the one custom element if any, and the validation
+  points. No history, no restating the step, no list of everything the reference says.
+- Everything you write is read by the client. Never use the vocabulary of this process: not "the outline", "register call", "step call", "frozen",
+  "kind" as a field name, reference or field names such as referenceIds, or error codes. Say "this step is realised as an extension" in business words.
+  Check spelling and use the same term for the same thing in every field.
+
 ## Company context in the step
 
 When companyContext is supplied, use it to make the step specific: the volumes that

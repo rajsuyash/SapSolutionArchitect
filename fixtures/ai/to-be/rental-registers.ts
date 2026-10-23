@@ -41,6 +41,8 @@ export const rentalRegisterGroups: RegisterPayloads = {
     masterDataPrerequisites: [{ ...rentalLegacyRegisters.masterDataPrerequisites[0]!, creationChannel: "Created by the master-data steward in the asset register app, or loaded at cutover.",
       governance: "The steward approves every new asset; a duplicate asset identifier is rejected on save." }],
     dataMigration: rentalLegacyRegisters.dataMigration, cutover: rentalLegacyRegisters.cutover,
+    periodEndActivities: [{ id: "PEA-1", activity: "Review hire items billed to date against the monthly hire billing run before the period is closed.", sequence: 1,
+      owner: "Billing clerk", requirementIds: [], contextFieldIds: [], stepIds: ["TB-3"] }],
   },
   integration: { interfaces: [], kpis: [] },
   scope: {
@@ -52,7 +54,7 @@ export const rentalRegisterGroups: RegisterPayloads = {
       { id: "SCP-1", kind: "IN_SCOPE", statement: "Hire order creation, partial returns and monthly hire billing.", reason: "These are the three current steps discovery described.", requirementIds: ["R-1"], contextFieldIds: [], stepIds: [] },
       { id: "SCP-2", kind: "OUT_OF_SCOPE", statement: "Maintenance and repair of hired assets.", reason: "Discovery did not describe it; the business must confirm.", requirementIds: [], contextFieldIds: [], stepIds: [] },
     ],
-    orgStructure: [{ ...rentalLegacyRegisters.orgStructure[0]!, parentId: null }],
+    orgStructure: [{ ...rentalLegacyRegisters.orgStructure[0]!, parentId: null, codeStatus: "BUSINESS_TO_PROVIDE" as const, code: null, owner: "Finance controller" }],
   },
   reporting: {
     reports: [{ id: "REP-1", name: "Open hire items by return date", purpose: "Show which items are still on hire and when each is due back.",
@@ -80,7 +82,7 @@ export const rentalRegisterGroups: RegisterPayloads = {
 };
 
 export const rentalRegisters = Object.assign({}, ...Object.values(rentalRegisterGroups)) as Pick<DetailedDesign, keyof typeof rentalLegacyRegisters
-  | "objectives" | "scopeStatements" | "documentStatusModels" | "configurationCatalogue" | "roles" | "sodAssessments" | "controlMappings" | "reports" | "endToEndTests">;
+  | "objectives" | "scopeStatements" | "documentStatusModels" | "configurationCatalogue" | "roles" | "sodAssessments" | "controlMappings" | "reports" | "endToEndTests" | "periodEndActivities">;
 /** The schemaVersion 2 design as it was stored before version 3: still readable and valid. */
 export const rentalDraftV2: DetailedDesign = { ...rentalDraft, schemaVersion: 2, ...rentalLegacyRegisters };
 /** The schemaVersion 3 design the pipeline assembles from rentalDraft plus rentalRegisterGroups. */

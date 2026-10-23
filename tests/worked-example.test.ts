@@ -33,6 +33,12 @@ describe("worked example fixture", () => {
     expect(evaluation.structurallyValid).toBe(true);
     expect(design().schemaVersion).toBe(3);
   });
+  it("raises none of the review findings the prompts teach against: no undefined code, no internal wording, no uncovered integration step, no missing period end", () => {
+    const codes = evaluateDesign(context, design()).blockers.map(blocker => blocker.code);
+    for (const code of ["UNRESOLVED_CODE", "INTERNAL_TERM", "INTERFACE_STEP_UNCOVERED", "PERIOD_END_MISSING", "ORG_CODE_NOT_IN_CONTEXT"]) expect(codes, code).not.toContain(code);
+    expect(example.outline.steps.map(step => step.id)).toEqual(["KEG-1-1", "KEG-2-1"]);
+    for (const detail of Object.values(example.details)) { expect(detail.implementation.detail.length).toBeLessThanOrEqual(600); expect(detail.effects.accountingEntry.length).toBeGreaterThan(0); }
+  });
   it("passes the SAP-object linter", () => {
     expect(lintSapObjects(design(), references)).toEqual([]);
   });
@@ -51,7 +57,7 @@ describe("worked example fixture", () => {
   });
   it("keeps each example within its token budget", () => {
     expect(tokens(example.outline)).toBeLessThanOrEqual(800);
-    expect(tokens(example.details["EX-1"])).toBeLessThanOrEqual(1200);
+    expect(tokens(example.details["KEG-1-1"])).toBeLessThanOrEqual(1200);
     for (const group of REGISTER_GROUP_NAMES) expect(tokens(example.registers[group])).toBeLessThanOrEqual(1000);
   });
 });
@@ -67,7 +73,7 @@ describe("prompt rendering", () => {
       expect(system).toContain("Illustrative example from an unrelated process — do not copy its content; match its depth, specificity and traceability");
     }
     expect(withWorkedExample(prompt("outline"), rendered.outline)).toContain(JSON.stringify(example.outline));
-    expect(withWorkedExample(prompt("step"), rendered.step)).toContain(JSON.stringify(example.details["EX-1"]));
+    expect(withWorkedExample(prompt("step"), rendered.step)).toContain(JSON.stringify(example.details["KEG-1-1"]));
     const registers = withWorkedExample(prompt("registers"), rendered.registers);
     for (const group of REGISTER_GROUP_NAMES) expect(registers).toContain(JSON.stringify(example.registers[group]));
   });
@@ -103,5 +109,22 @@ describe("no leakage from evaluation material", () => {
     const theirs = shingles(sentence);
     expect([...shingles(`Unrelated lead-in. ${sentence}`)].filter(item => theirs.has(item)).length).toBeGreaterThan(0);
     expect([...own].filter(item => theirs.has(item))).toEqual([]);
+  });
+});
+
+describe("prompts teach the independent judge's criticisms", () => {
+  it("each prompt carries its rules", () => {
+    const outline = prompt("outline"), step = prompt("step"), registers = prompt("registers"), review = prompt("review");
+    expect(outline).toContain("AREA-S-N");
+    expect(outline).toContain("\"KEG-1-1\"");
+    for (const text of [outline, step, registers]) for (const term of ["register call", "step call", "frozen"]) expect(text).toContain(term);
+    expect(step).toContain("effects.accountingEntry");
+    expect(step).toContain("at most 600 characters");
+    expect(registers).toContain("BUSINESS_TO_PROVIDE");
+    expect(registers).toContain("systemOfRecord");
+    expect(registers).toContain("periodEndActivities");
+    expect(registers).toContain("steps[].codes");
+    for (const kind of ["CONTRADICTION", "MISSING_LINK", "UNRESOLVED_CODE", "COVERAGE_GAP", "INTERNAL_TERM"]) expect(review).toContain(kind);
+    expect(review).toContain("submit_to_be_review");
   });
 });

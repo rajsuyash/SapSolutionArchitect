@@ -123,3 +123,29 @@ describe("older designs still render", () => {
     expect(text).toContain("## Document control");
   });
 });
+
+describe("report: sections added with the consistency work", () => {
+  const rich = structuredClone(rentalDraftV3);
+  rich.orgStructure![0] = { ...rich.orgStructure![0]!, codeStatus: "CODE_CONFIRMED", code: "4100", owner: "Finance controller" };
+  rich.interfaces = [{ id: "IF-1", counterpartSystem: "Customer portal", direction: "INBOUND", triggerFrequency: "Daily", payload: "Proof of delivery", errorOwner: "Integration lead",
+    outOfScopeReason: null, referenceIds: [], needsValidation: true, validationReason: "API to be confirmed", requirementIds: [], contextFieldIds: [], stepIds: ["TB-2"],
+    failureHandling: { detection: "Error list", alerting: "Mail", rerun: "Resend", idempotency: "Key stored" }, systemOfRecord: "SAP for the posting, the portal for the plan" }];
+  const text = renderMarkdown(buildReport({ ...data(rich), blockers: [{ code: "REVIEW_CONTRADICTION", path: "draft.steps.1", detail: "TB-2 says A while DSM-1 says B." },
+    { code: "UNRESOLVED_CODE", path: "draft.steps.0", detail: "movement type 321" }] }));
+  it("shows the accounting entry on each step, the org code and owner, the interface's system of record and the period-end list", () => {
+    expect(text).toContain("**Accounting entry:** None: reserving hire items posts nothing to accounting.");
+    expect(section("Solution design registers", text)).toContain("System of record");
+    expect(text).toContain("SAP for the posting, the portal for the plan");
+    expect(text).toMatch(/\| ORG-1 \| Company code \| 4100 \| Finance controller \|/);
+    expect(markdown).toMatch(/\| ORG-1 \| Company code \| Business to provide \| Finance controller \|/);
+    expect(section("Solution design registers", text)).toContain("### Period-end activities");
+    expect(text).toContain(rentalDraftV3.periodEndActivities![0]!.activity);
+  });
+  it("lists review-pass and code findings under Review findings with the reviewer's sentence and the code", () => {
+    const findings = section("Review findings", text);
+    expect(findings).toContain("TB-2 says A while DSM-1 says B.");
+    expect(findings).toContain("movement type 321");
+    expect(findings).toContain("code REVIEW_CONTRADICTION");
+    expect(text).not.toContain("## Blockers");
+  });
+});

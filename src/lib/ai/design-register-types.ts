@@ -1,7 +1,7 @@
 /** Shared by the register checks. Types and two text helpers only, so the check modules do not import each other. */
 export type Row = { id?: string; requirementIds?: string[]; contextFieldIds?: string[]; stepIds?: string[]; referenceIds?: string[];
   needsValidation?: boolean; validationReason?: string | null };
-export type StepFacts = { id: string; actor: string; outputDocuments: readonly string[]; businessRuleIds: readonly string[];
+export type StepFacts = { id: string; actor: string; /** Every text field of the step (ids skipped), for the checks that read what a step says. */ texts?: readonly string[]; outputDocuments: readonly string[]; businessRuleIds: readonly string[];
   stepType?: string; phase?: string; interimProcess?: string | null };
 export type RegisterContext = {
   requirements: ReadonlyMap<string, { critical: boolean; kind?: string }>; stepIds: ReadonlySet<string>;

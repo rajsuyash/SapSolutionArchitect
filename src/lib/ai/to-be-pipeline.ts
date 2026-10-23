@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { contextForStep } from "../company-context";
 import { phase } from "./design-primitives";
-import { DetailedDesignSchema, IMPLEMENTATION_KINDS, STEP_TYPES, draftIssues, evaluateDesign, id, ids, list, text,
+import { DetailedDesignSchema, EFFECTS_SHAPE, IMPLEMENTATION_KINDS, STEP_TYPES, draftIssues, evaluateDesign, id, ids, list, text,
   type DesignContext, type DetailedDesign } from "./design-quality";
 import { LATE_GROUPS, REGISTER_GROUPS, REGISTER_GROUP_NAMES, RegisterGroupSchemas, groupOf, type RegisterGroup, type RegisterPayloads } from "./design-registers";
 import type { ValidationIssue } from "./problem-analysis";
@@ -11,6 +11,8 @@ import { noCatalogNote } from "../sap-releases";
 import { normalizeToolInput } from "./tool-input-normalizer";
 import { repairRegisterGroup, repairStepBody } from "./part-repair";
 import { toBeContext, validateToBeOutput, type ToBeInput, type ToBeOutput } from "./to-be";
+import { extractSapCodes, textFields } from "./design-text-lint";
+import { ReviewSchema, compactDesign, partKey, repairNote, routeFindings, reviewBlockers, type Part, type RoutedFinding } from "./to-be-review";
 
 /** Skeleton-then-expansion To-Be generation. A slow model cannot emit a whole design inside the stage budget, so the model
  * first returns an outline (steps, traceability, coverage, questions), then one small call per step fills in the operational
@@ -19,7 +21,7 @@ import { toBeContext, validateToBeOutput, type ToBeInput, type ToBeOutput } from
  * (actors, output documents, rule ids) and run once the steps are in. The assembled result is a schemaVersion 3 DetailedDesign,
  * validated by the same checks as a one-shot design. */
 
-export type Substage = "to_be_outline" | "to_be_step" | "to_be_registers";
+export type Substage = "to_be_outline" | "to_be_step" | "to_be_registers" | "to_be_review";
 
 export const OutlineSchema = z.strictObject({
   schemaVersion: z.literal(1), processName: text,
@@ -51,10 +53,14 @@ export const OutlinePatchSchema = z.strictObject({
   "a patch must replace, add or remove at least one item");
 type OutlineStep = Outline["steps"][number];
 
+/** Longest implementation.detail a step answer may carry. The prompt asks for about 600 characters; the rest is slack, not a target. */
+export const IMPLEMENTATION_DETAIL_MAX_CHARS = 900;
 /** Everything in a design step that the outline does not already fix. Derived from DetailedDesignSchema so the two cannot drift. */
 export const StepDetailSchema = DetailedDesignSchema.shape.steps.element
   .omit({ id: true, sequence: true, title: true, asIsStepIds: true, requirementIds: true, enablesStepIds: true, implementation: true })
-  .extend({ implementation: z.strictObject({ detail: text }),
+  .extend({ implementation: z.strictObject({ detail: text.max(IMPLEMENTATION_DETAIL_MAX_CHARS) }),
+    // Required in a step answer; optional in a stored design, whose older steps predate it.
+    effects: z.strictObject({ ...EFFECTS_SHAPE, accountingEntry: text }),
     // Required in a step answer; optional in a stored design, whose version 1 and 2 steps predate them.
     stepType: z.enum(STEP_TYPES), phase, interimProcess: text.nullable() });
 export type StepDetail = z.infer<typeof StepDetailSchema>;
@@ -253,7 +259,9 @@ export function outlineRequest(input: ToBeInput, references: DesignContext["refe
 }
 
 /** Per-step model input: the frozen outline plus only this step's requirements, the sources they quote, the references it cites. */
-export function stepRequest(input: ToBeInput, references: DesignContext["references"], outline: Outline, step: OutlineStep, validationErrors: ValidationIssue[]) {
+/** A consistency-pass repair: the reviewer's findings about this part in `note`, and the part's present answer, which the model changes as little as it can. */
+export type PartRepair = { note: string; current: unknown };
+export function stepRequest(input: ToBeInput, references: DesignContext["references"], outline: Outline, step: OutlineStep, validationErrors: ValidationIssue[], repair?: PartRepair) {
   const { discovery } = input;
   const requirements = discovery.requirements.filter(requirement => step.requirementIds.includes(requirement.id));
   const asIsSteps = discovery.asIsSteps.filter(asIs => step.asIsStepIds.includes(asIs.id));
@@ -278,6 +286,7 @@ export function stepRequest(input: ToBeInput, references: DesignContext["referen
     inputOpenQuestions: discovery.openQuestions,
     references: references.filter(reference => step.implementation.referenceIds.includes(reference.id)),
     approvedDecisions: [], validationErrors, ...catalogNote(input, references), ...repairNotes(validationErrors),
+    ...(repair && { repairNote: repair.note, currentAnswer: repair.current }),
   };
 }
 
@@ -288,6 +297,7 @@ const NO_CATALOG_GROUPS: readonly RegisterGroup[] = ["scope", "governance"];
 export const stepDigest = (steps: DetailedDesign["steps"]) => steps.map(step => ({
   id: step.id, title: step.title, actor: step.actor, actionActors: [...new Set(step.actions.map(action => action.actor))],
   inputDocuments: step.inputDocuments, outputDocuments: step.outputDocuments, stepType: step.stepType,
+  codes: [...new Set(textFields(step).flatMap(extractSapCodes).map(code => `${code.kind.toLowerCase().replace("_", " ")} ${code.token}`))],
   businessRules: step.businessRules.map(rule => ({ id: rule.id, condition: rule.condition })),
 }));
 
@@ -295,7 +305,7 @@ export const stepDigest = (steps: DetailedDesign["steps"]) => steps.map(step => 
  * objects. No source text, no evidence quotes. The early groups see no step bodies (the step calls run in parallel and are not available
  * yet); the late groups also get the finished steps as a digest. */
 export function registerRequest(input: ToBeInput, references: DesignContext["references"], outline: Outline, group: RegisterGroup, validationErrors: ValidationIssue[],
-  steps?: DetailedDesign["steps"]) {
+  steps?: DetailedDesign["steps"], repair?: PartRepair) {
   const { discovery } = input;
   return {
     group, registerKeys: REGISTER_GROUPS[group],
@@ -307,6 +317,18 @@ export function registerRequest(input: ToBeInput, references: DesignContext["ref
     ...(NO_CATALOG_GROUPS.includes(group) ? {} : { references: references.map(({ id, fitType, capability, objects }) => ({ id, fitType, capability, objects })) }),
     ...(steps && { steps: stepDigest(steps) }),
     inputOpenQuestions: discovery.openQuestions, validationErrors, ...catalogNote(input, references), ...repairNotes(validationErrors),
+    ...(repair && { repairNote: repair.note, currentAnswer: repair.current }),
+  };
+}
+
+/** Consistency-pass input: the finished design in compact form, what the business asked for, and the answered company context to check it against. */
+export function reviewRequest(input: ToBeInput, design: DetailedDesign) {
+  const { discovery } = input;
+  return {
+    targetProduct: input.targetProduct, targetRelease: discovery.targetRelease, variantName: discovery.variantName,
+    companyContext: (discovery.companyContext ?? []).map(({ fieldId, value }) => ({ fieldId, value })),
+    requirements: discovery.requirements.map(r => ({ id: r.id, kind: r.kind, critical: r.critical, statement: r.statement })),
+    design: compactDesign(design),
   };
 }
 
@@ -340,12 +362,18 @@ export type DesignDeps = {
   maxPartRepairs?: number;
   /** Fraction (0-1) of the stage budget still unspent. Default 1. */
   remainingBudget?: () => number;
+  /** Run the consistency pass on a valid design (AI_TO_BE_REVIEW). Default false here; the stage runner turns it on unless the operator switched it off. */
+  review?: boolean;
 };
 
 /** The first outline repair is always allowed; each further one only while more than this share of the stage budget remains. */
 export const EXTRA_OUTLINE_REPAIR_MIN_REMAINING = 0.5;
 /** A step body that still fails after its repairs gets one last call with model reasoning on, only while more than this share of the stage budget remains. */
 export const THINKING_RETRY_MIN_REMAINING = 0.25;
+/** The consistency pass, and each repair it triggers, only starts while more than this share of the stage budget remains. */
+export const REVIEW_MIN_REMAINING = 0.25;
+/** Step and register-group repairs one consistency pass may spend: one per affected part, at most this many parts. */
+export const MAX_REVIEW_REPAIRS = 6;
 export const outlineRepairAllowed = (done: number, max: number, remaining: number) =>
   done < max && (done === 0 || remaining > EXTRA_OUTLINE_REPAIR_MIN_REMAINING);
 
@@ -406,6 +434,24 @@ export async function runDesign(input: ToBeInput, references: DesignContext["ref
     retries.set(key, done + 1);
   };
 
+  /** One step answer, read the way every step answer is: normalised, its decision ids repaired, parsed. `errors` is what the next request carries when it does not parse. */
+  const readStep = (current: Outline, stepId: string, raw: unknown) => {
+    const index = current.steps.findIndex(step => step.id === stepId), path = `draft.steps.${index}`;
+    const normalized = normalizeToolInput(StepDetailSchema, raw, path);
+    const repaired = repairStepBody(normalized.value, decisionIds, path);
+    const parsed = StepDetailSchema.safeParse(repaired.value);
+    if (parsed.success) return { ok: true as const, value: parsed.data, warnings: [normalized.warnings, repaired.warnings] };
+    return { ok: false as const, errors: raw === TRUNCATED ? [{ path, code: OUTPUT_TRUNCATED }] : raw === null ? [{ path, code: "NO_TOOL_PAYLOAD" }] : rePath(draftIssues(parsed.error.issues), "draft", path) };
+  };
+  /** The same for one register group. */
+  const readGroup = (current: Outline, group: RegisterGroup, raw: unknown) => {
+    const normalized = normalizeToolInput(RegisterGroupSchemas[group], raw, "draft");
+    const repaired = repairRegisterGroup(normalized.value, { requirementIds, stepIds: new Set(current.steps.map(step => step.id)), decisionIds });
+    const parsed = RegisterGroupSchemas[group].safeParse(repaired.value);
+    if (parsed.success) return { ok: true as const, value: parsed.data satisfies RegisterPayloads[RegisterGroup], warnings: [normalized.warnings, repaired.warnings] };
+    return { ok: false as const, errors: raw === TRUNCATED ? [{ path: "draft", code: OUTPUT_TRUNCATED }] : raw === null ? [{ path: "draft", code: "NO_TOOL_PAYLOAD" }] : draftIssues(parsed.error.issues) };
+  };
+
   /** Steps and register groups are independent calls over the frozen outline, so they share one bounded pool. */
   const expand = async (stepIds: readonly string[], groups: readonly RegisterGroup[], errors: ReadonlyMap<string, ValidationIssue[]>) => {
     const current = outline;
@@ -414,13 +460,10 @@ export async function runDesign(input: ToBeInput, references: DesignContext["ref
       let validationErrors = errors.get(stepId) ?? [], thinking = false;
       for (;;) {
         const raw = await deps.ask("to_be_step", stepRequest(input, references, current, current.steps[index]!, validationErrors), undefined, thinking ? { thinking } : undefined);
-        const normalized = normalizeToolInput(StepDetailSchema, raw, `draft.steps.${index}`);
-        const repaired = repairStepBody(normalized.value, decisionIds, `draft.steps.${index}`);
-        const parsed = StepDetailSchema.safeParse(repaired.value);
-        if (parsed.success) { details.set(stepId, parsed.data); warnAll(normalized.warnings, repaired.warnings); return; }
+        const result = readStep(current, stepId, raw);
+        if (result.ok) { details.set(stepId, result.value); warnAll(...result.warnings); return; }
         if (raw !== TRUNCATED && raw !== null) deps.rawFailure?.("to_be_step", stepId, raw);
-        validationErrors = raw === TRUNCATED ? [{ path: `draft.steps.${index}`, code: OUTPUT_TRUNCATED }] : raw === null ? [{ path: `draft.steps.${index}`, code: "NO_TOOL_PAYLOAD" }]
-          : rePath(draftIssues(parsed.error.issues), "draft", `draft.steps.${index}`);
+        validationErrors = result.errors;
         deps.record(validationErrors);
         if (!thinking && (deps.maxPartRepairs ?? 2) > 0 && !outlineRepairAllowed(retries.get(stepId) ?? 0, deps.maxPartRepairs ?? 2, deps.remainingBudget?.() ?? 1)
           && (deps.remainingBudget?.() ?? 1) > THINKING_RETRY_MIN_REMAINING) {
@@ -439,16 +482,10 @@ export async function runDesign(input: ToBeInput, references: DesignContext["ref
       const steps = isLate(group) ? assemble(current, details).steps : undefined;
       for (;;) {
         const raw = await deps.ask("to_be_registers", registerRequest(input, references, current, group, validationErrors, steps), group);
-        const normalized = normalizeToolInput(RegisterGroupSchemas[group], raw, "draft");
-        const repaired = repairRegisterGroup(normalized.value, { requirementIds, stepIds: new Set(current.steps.map(step => step.id)), decisionIds });
-        const parsed = RegisterGroupSchemas[group].safeParse(repaired.value);
-        if (parsed.success) {
-          registers.set(group, parsed.data satisfies RegisterPayloads[RegisterGroup]);
-          warnAll(normalized.warnings, repaired.warnings);
-          return;
-        }
+        const result = readGroup(current, group, raw);
+        if (result.ok) { registers.set(group, result.value); warnAll(...result.warnings); return; }
         if (raw !== TRUNCATED && raw !== null) deps.rawFailure?.("to_be_registers", group, raw);
-        validationErrors = raw === TRUNCATED ? [{ path: "draft", code: OUTPUT_TRUNCATED }] : raw === null ? [{ path: "draft", code: "NO_TOOL_PAYLOAD" }] : draftIssues(parsed.error.issues);
+        validationErrors = result.errors;
         deps.record(validationErrors);
         markRetry(registerKey(group));
       }
@@ -458,11 +495,85 @@ export async function runDesign(input: ToBeInput, references: DesignContext["ref
     await runPool(groups.filter(isLate).map(group => () => expandGroup(group)), deps.parallelism, task => task());
   };
 
+  /** The consistency pass. A valid design is read once as a whole; each finding that names a step or register group sends that part back once with the finding as its
+   * repair note, and a repair is kept only if the whole design is still valid with it. Findings that name no part, parts the repair could not fix and findings beyond the
+   * repair limit stay as review findings. The pass never fails the stage: a design that was valid before it is valid after it. */
+  const reviewed = async (data: ToBeOutput, design: DetailedDesign): Promise<ToBeOutput> => {
+    const skip = (code: string) => { deps.warn?.([{ code, path: "to_be_review" }]); return data; };
+    if (!deps.review) return data;
+    if ((deps.remainingBudget?.() ?? 1) <= REVIEW_MIN_REMAINING) return skip("REVIEW_SKIPPED_BUDGET");
+    let found;
+    try {
+      const raw = await deps.ask("to_be_review", reviewRequest(input, design));
+      if (raw === TRUNCATED || raw === null) return skip(raw === null ? "REVIEW_NO_PAYLOAD" : OUTPUT_TRUNCATED);
+      const normalized = normalizeToolInput(ReviewSchema, raw, "review");
+      const parsed = ReviewSchema.safeParse(normalized.value);
+      if (!parsed.success) return skip("REVIEW_INVALID_OUTPUT");
+      found = parsed.data.findings;
+    } catch { return skip("REVIEW_FAILED"); }
+    const findings: RoutedFinding[] = routeFindings(design, found);
+    const byPart = new Map<string, { part: Part; findings: RoutedFinding[] }>();
+    for (const finding of findings) for (const part of finding.parts) {
+      const entry = byPart.get(partKey(part)) ?? { part, findings: [] };
+      entry.findings.push(finding); byPart.set(partKey(part), entry);
+    }
+    const parts = [...byPart.values()].slice(0, MAX_REVIEW_REPAIRS);
+    const current = outline;
+    const proposals = new Map<string, { part: Part; step?: StepDetail; group?: RegisterPayloads[RegisterGroup] }>();
+    if ((deps.remainingBudget?.() ?? 1) > REVIEW_MIN_REMAINING) {
+      const attempt = async ({ part, findings: concerned }: { part: Part; findings: RoutedFinding[] }) => {
+        const note = repairNote(part, concerned);
+        try {
+          if (part.type === "step") {
+            const step = current.steps.find(candidate => candidate.id === part.stepId)!;
+            const raw = await deps.ask("to_be_step", stepRequest(input, references, current, step, [], { note, current: details.get(part.stepId) }));
+            const result = readStep(current, part.stepId, raw);
+            if (result.ok) { proposals.set(partKey(part), { part, step: result.value }); warnAll(...result.warnings); }
+            else if (raw !== TRUNCATED && raw !== null) deps.rawFailure?.("to_be_step", `${part.stepId}-review`, raw);
+          } else {
+            const steps = isLate(part.group) ? assemble(current, details).steps : undefined;
+            const raw = await deps.ask("to_be_registers", registerRequest(input, references, current, part.group, [], steps, { note, current: registers.get(part.group) }), part.group);
+            const result = readGroup(current, part.group, raw);
+            if (result.ok) { proposals.set(partKey(part), { part, group: result.value }); warnAll(...result.warnings); }
+            else if (raw !== TRUNCATED && raw !== null) deps.rawFailure?.("to_be_registers", `${part.group}-review`, raw);
+          }
+        } catch { /* a failed repair leaves its findings open; the stage still has its design */ }
+      };
+      await runPool(parts, deps.parallelism, attempt);
+    }
+    // Adopt each proposal on its own, and only when the whole design is still valid with it.
+    let result = data, finalDesign = design;
+    const adopted = new Set<string>();
+    for (const { part } of parts) {
+      const proposal = proposals.get(partKey(part));
+      if (!proposal) continue;
+      const priorStep = part.type === "step" ? details.get(part.stepId) : undefined, priorGroup = part.type === "group" ? registers.get(part.group) : undefined;
+      if (proposal.step && part.type === "step") details.set(part.stepId, proposal.step);
+      if (proposal.group && part.type === "group") registers.set(part.group, proposal.group);
+      const trial = assemble(current, details, registers), validated = validateToBeOutput(input, trial, references);
+      if (validated.success) {
+        result = validated.data; finalDesign = trial; adopted.add(partKey(part));
+        deps.warn?.([{ code: "REVIEW_REPAIRED", path: part.type === "step" ? `draft.steps.${current.steps.findIndex(step => step.id === part.stepId)}` : `draft.${part.group}` }]);
+      } else {
+        if (part.type === "step" && priorStep) details.set(part.stepId, priorStep);
+        if (part.type === "group" && priorGroup) registers.set(part.group, priorGroup);
+        deps.warn?.([{ code: "REVIEW_REPAIR_REJECTED", path: partKey(part) }]);
+      }
+    }
+    // A finding is resolved only when every part it names was repaired and kept. The blockers point into the final design.
+    const open = routeFindings(finalDesign, found).map((routed, i) => ({ ...routed,
+      outcome: findings[i]!.parts.length > 0 && findings[i]!.parts.every(part => adopted.has(partKey(part))) ? "REPAIRED" as const : "UNRESOLVED" as const }));
+    const extra = reviewBlockers(open);
+    const final = extra.length ? validateToBeOutput(input, finalDesign, references, extra) : undefined;
+    deps.warn?.(open.map(finding => ({ code: `REVIEW_${finding.outcome}_${finding.kind}`, path: finding.blockerPath })));
+    return { ...(final?.success ? final.data : result), reviewFindings: open.map(({ kind, paths, explanation, outcome, blockerPath }) => ({ kind, paths, explanation, outcome, blockerPath })) };
+  };
+
   await expand(outline.steps.map(step => step.id), REGISTER_GROUP_NAMES, new Map());
   for (let round = 0; ; round++) {
     const design = assemble(outline, details, registers);
     const result = validateToBeOutput(input, design, references);
-    if (result.success) return result.data;
+    if (result.success) return reviewed(result.data, design);
     deps.record(result.errors);
     if (round >= 1) throw deps.invalid();
     const { byStep, byGroup, global } = attributeErrors(result.errors, design);

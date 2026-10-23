@@ -2,9 +2,13 @@ import { z } from "zod";
 
 import { FIT_TYPES, STEP_TYPES, id, ids, list, phase, text, texts } from "./design-primitives";
 import { checkRegisters, RegistersShape } from "./design-registers";
+import { internalTermHits, textFields } from "./design-text-lint";
 import { lintSapObjects } from "./sap-object-lint";
 
 export { id, ids, list, text, FIT_TYPES, STEP_TYPES };
+/** Inventory, financial and ownership effects are stated separately (checklist 9). `accountingEntry` (checklist 8) is the posting in accounting terms:
+ * debit and credit account categories or the account-determination key, or "None: <reason>". Required when the model answers, optional in a stored design. */
+export const EFFECTS_SHAPE = { inventory: text, financial: text, ownership: text };
 export const IMPLEMENTATION_KINDS = ["STANDARD", "CONFIGURATION", "EXTENSION", "INTEGRATION", "MANUAL", "NEEDS_VALIDATION"] as const;
 
 /** A reference is trusted only because a server-side curated catalog supplied it. */
@@ -59,7 +63,7 @@ export const DetailedDesignSchema = z.strictObject({
     exceptions: list(z.strictObject({ condition: text, response: text, owner: text })),
     exceptionsNotApplicableReason: text.nullable(),
     masterData: list(z.strictObject({ object: text, fields: texts, owner: text })).min(1),
-    effects: z.strictObject({ inventory: text, financial: text, ownership: text }),
+    effects: z.strictObject({ ...EFFECTS_SHAPE, accountingEntry: text.optional() }),
     implementation: z.strictObject({
       kind: z.enum(IMPLEMENTATION_KINDS),
       detail: text, referenceIds: ids,
@@ -126,7 +130,7 @@ export function evaluateDesign(input: unknown, value: unknown): DesignEvaluation
   const errors: Issue[] = [];
   const blockers: Issue[] = [];
   const error = (code: string, path: string, detail?: string) => { errors.push(detail ? { code, path, detail } : { code, path }); };
-  const block = (code: string, path: string) => { blockers.push({ code, path }); };
+  const block = (code: string, path: string, detail?: string) => { blockers.push(detail ? { code, path, detail } : { code, path }); };
   const result = (): DesignEvaluation => ({
     structurallyValid: errors.length === 0, errors, blockers,
     reviewStatus: errors.length || blockers.length ? "BLOCKED" : "HUMAN_REVIEW_REQUIRED",
@@ -140,6 +144,8 @@ export function evaluateDesign(input: unknown, value: unknown): DesignEvaluation
   const context = parsedInput.data;
   const draft = parsedDraft.data;
   for (const hit of lintSapObjects(draft, context.references)) error("UNKNOWN_SAP_OBJECT", hit.path, `${hit.kind} ${hit.token}`);
+  // The generator's working vocabulary in client text is a review finding, never a reason to reject the design.
+  for (const hit of internalTermHits(draft)) block("INTERNAL_TERM", hit.path, hit.term);
   const unique = (values: string[], path: string, code: string) => {
     if (new Set(values).size !== values.length) error(code, path);
   };
@@ -304,7 +310,7 @@ export function evaluateDesign(input: unknown, value: unknown): DesignEvaluation
   checkRegisters(draft, {
     requirements: new Map(context.requirements.map(item => [item.id, { critical: item.critical, kind: item.kind }])),
     stepIds: new Set(steps.keys()), referenceIds: new Set(references.keys()), companyContext: context.companyContext ?? [],
-    steps: draft.steps.map(step => ({ id: step.id, actor: step.actor, outputDocuments: step.outputDocuments, stepType: step.stepType, phase: step.phase,
+    steps: draft.steps.map(step => ({ id: step.id, actor: step.actor, outputDocuments: step.outputDocuments, stepType: step.stepType, phase: step.phase, texts: textFields(step),
       interimProcess: step.interimProcess, businessRuleIds: step.businessRules.map(rule => rule.id) })),
     takenIds: new Set([...steps.keys(), ...draft.steps.flatMap(step => [...step.businessRules.map(rule => rule.id), ...step.acceptanceTests.map(test => test.id)]),
       ...draft.openQuestions.map(question => question.id)]),
