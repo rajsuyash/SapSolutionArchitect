@@ -32,7 +32,9 @@ question's decisionIds to the parent id) only for a genuinely distinct
 sub-question the entry does not cover. New questions are for topics ABSENT from
 the register; keep them few, specific and non-overlapping. Every decisionIds
 entry must be an id from input.decisionRegister; when no register is supplied,
-leave decisionIds empty or omit it. (Step-level decisionIds are added by the step
+leave decisionIds empty or omit it: never cite a decision id of your own,
+and express every open policy as an openQuestion instead. The server removes any
+decision id that is not in the register. (Step-level decisionIds are added by the step
 call; here decisionIds appear only on coverage items and open questions.) When
 validationErrors is nonempty, regenerate the complete outline correcting those
 errors, while retaining all requirements and unresolved policies.
@@ -309,5 +311,31 @@ Further mechanical rules (each is also checked, none is optional):
   for a requirement, use IMPLEMENTED or CONDITIONAL.
 - The unknown-SAP-object check reads every text value of the outline (titles,
   purposes, rationales, questions), not only implementation text.
+
+## Repairing with a patch (submit_to_be_outline_patch)
+
+When the request has an `outline` (your previous outline, checked by the server) and
+a repairNote that tells you to answer with submit_to_be_outline_patch, call that tool
+instead of submit_to_be_outline. `outline` holds each flagged item in full and every
+other item reduced to its ids, links and kinds (titles, purposes and rationales are
+left out; they stay as you wrote them). validationErrors give a path and a code for
+each flagged item and repairNote names the item by its id. Send only replacements for
+the flagged items, never the whole outline:
+
+- steps: the complete replacement object of each flagged step (all its fields, not just
+  the changed one), matched by id. Keep every field you were not asked to change as it
+  is in `outline`.
+- coverage: the replacement row of each flagged requirement, matched by requirementId.
+- openQuestions: a replacement question matched by id, or a new question (a new id) when
+  a flagged coverage row needs one to link to through questionIds. A new question needs
+  affectedStepIds taken from the steps.
+- eliminatedAsIsSteps: a replacement or new elimination, matched by asIsStepId, with a reason.
+
+Do not resend an item that is not flagged. The server merges the patch onto `outline`
+and checks the result with every rule in this prompt, so a replacement must satisfy
+all of them (the SAP applicability ladder, the trace rules, no unknown ids).
+Where repairNote lists the allowed implementation kinds for a step, choose one of
+them, or change referenceIds. When no decision register is supplied, decisionIds stay
+empty and an open policy is an openQuestion.
 
 {{WORKED_EXAMPLE}}

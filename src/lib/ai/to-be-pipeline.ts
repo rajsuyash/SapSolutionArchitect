@@ -5,6 +5,7 @@ import { DetailedDesignSchema, IMPLEMENTATION_KINDS, draftIssues, evaluateDesign
 import { REGISTER_GROUPS, REGISTER_GROUP_NAMES, RegisterGroupSchemas, groupOf, type RegisterGroup, type RegisterPayloads } from "./design-registers";
 import type { ValidationIssue } from "./problem-analysis";
 import { repairOutlineLinks, repairOutlineShape, restoreFromPrevious } from "./outline-repair";
+import { allowedKinds, applyOutlinePatch, isPatchable, locate, type OutlinePatch } from "./outline-patch";
 import { noCatalogNote } from "../sap-releases";
 import { normalizeToolInput } from "./tool-input-normalizer";
 import { toBeContext, validateToBeOutput, type ToBeInput, type ToBeOutput } from "./to-be";
@@ -29,6 +30,15 @@ export const OutlineSchema = z.strictObject({
   openQuestions: DetailedDesignSchema.shape.openQuestions,
 });
 export type Outline = z.infer<typeof OutlineSchema>;
+
+/** What the model sends to repair a few flagged outline items: whole replacement items, matched by id or key (steps and open questions
+ * by id, coverage by requirementId, eliminated As-Is steps by asIsStepId); an item with no match is added. See outline-patch.ts. */
+export const OutlinePatchSchema = z.strictObject({
+  steps: z.array(OutlineSchema.shape.steps.element).min(1).max(200).optional(),
+  coverage: z.array(OutlineSchema.shape.coverage.element).min(1).max(200).optional(),
+  openQuestions: z.array(OutlineSchema.shape.openQuestions.element).min(1).max(200).optional(),
+  eliminatedAsIsSteps: z.array(OutlineSchema.shape.eliminatedAsIsSteps.element).min(1).max(200).optional(),
+}).refine(patch => Object.values(patch).some(items => items?.length), "a patch must replace or add at least one item");
 type OutlineStep = Outline["steps"][number];
 
 /** Everything in a design step that the outline does not already fix. Derived from DetailedDesignSchema so the two cannot drift. */
@@ -60,6 +70,65 @@ const repairNotes = (errors: readonly ValidationIssue[]) => {
     ...(errors.some(error => error.code === OUTPUT_TRUNCATED) ? [TRUNCATION_NOTE] : [])];
   return parts.length ? { repairNote: parts.join(" ") } : {};
 };
+
+type Obj = Record<string, unknown>;
+const isObj = (value: unknown): value is Obj => typeof value === "object" && value !== null && !Array.isArray(value);
+const quote = (value: unknown) => typeof value === "string" ? `"${value}"` : "(unknown id)";
+/** Patch request notes: for each error, the item it points at (by the id the patch matches on), the issue kind and, where the answer is
+ * computable, what is allowed. Ids and codes only, never anything the model wrote. */
+function patchNotes(errors: readonly ValidationIssue[], outline: unknown, input: ToBeInput, references: DesignContext["references"]) {
+  const item = (section: string, index: number): Obj | undefined => {
+    const list = isObj(outline) ? outline[section] : undefined;
+    return Array.isArray(list) && isObj(list[index]) ? list[index] : undefined;
+  };
+  const fitTypes = (step: Obj | undefined) => {
+    const cited = isObj(step?.implementation) && Array.isArray(step.implementation.referenceIds) ? step.implementation.referenceIds : [];
+    return [...new Set(cited.flatMap(ref => references.find(reference => reference.id === ref)?.fitType ?? []))];
+  };
+  const lines = errors.filter(error => error.code !== OUTPUT_TRUNCATED).slice(0, MAX_NOTE_ISSUES).map(error => {
+    const at = locate(error.path), index = at?.index ?? -1;
+    const label = !at ? "" : at.section === "asIsSteps" ? `As-Is step ${quote(input.discovery.asIsSteps[index]?.id)}`
+      : at.section === "requirements" ? `requirement ${quote(input.discovery.requirements[index]?.id)}`
+      : at.section === "steps" ? `step ${quote(item("steps", index)?.id)}` : at.section === "coverage" ? `coverage of requirement ${quote(item("coverage", index)?.requirementId)}`
+      : at.section === "openQuestions" ? `open question ${quote(item("openQuestions", index)?.id)}` : `elimination of As-Is step ${quote(item("eliminatedAsIsSteps", index)?.asIsStepId)}`;
+    const where = `${error.path} (${label})`;
+    switch (error.code) {
+      case "SAP_FIT_MISMATCH": {
+        const types = fitTypes(item("steps", index)), kind = (item("steps", index)?.implementation as Obj | undefined)?.kind;
+        return `${where}: SAP_FIT_MISMATCH. Kind ${String(kind)}; cited fit types ${types.join(", ") || "none"} -> allowed kinds: ${allowedKinds(types).join(", ")}; or change referenceIds so a cited reference has the fit type of the kind you want (EXTENSION and INTEGRATION need a cited reference of that same fit type; STANDARD and CONFIGURATION may cite no EXTENSION, INTEGRATION or LICENSE_DEPENDENT reference).`;
+      }
+      case "UNKNOWN_DECISION": return input.decisionRegister
+        ? `${where}: UNKNOWN_DECISION. decisionIds may only cite ids from input.decisionRegister; remove the others.`
+        : `${where}: UNKNOWN_DECISION. No decision register is supplied, so decisionIds must be empty; express the open policy as an open question and link it through questionIds.`;
+      case "CONDITIONAL_UNLINKED": return `${where}: CONDITIONAL_UNLINKED. A CONDITIONAL row must list a decision (decisionIds, from the register) or an open question (questionIds): add the question to openQuestions and list its id, or change the disposition.`;
+      case "AS_IS_UNCOVERED": return `${where}: AS_IS_UNCOVERED. No step traces this As-Is step and it is not eliminated: add its id to asIsStepIds of the step that realizes it, or add it to eliminatedAsIsSteps with a reason.`;
+      case "REQUIREMENT_UNDISPOSITIONED": return `${where}: REQUIREMENT_UNDISPOSITIONED. Add a coverage row for this requirement.`;
+      default: return `${describeIssue(error)} (${label}).`;
+    }
+  });
+  return `Fix exactly these items of your previous outline (supplied as "outline"), and only these: ${lines.join(" ")} Answer with submit_to_be_outline_patch holding a replacement for each flagged item, and nothing else: a complete step object per flagged step (matched by id), a coverage row per flagged requirement (matched by requirementId), open questions (matched by id; a new id adds a question) and eliminatedAsIsSteps (matched by asIsStepId). The server merges the patch onto the outline, so do not resend items that are not listed.`;
+}
+
+/** What the patch call sees of the last outline: each flagged item in full (the model has to change it) and every other item reduced to
+ * its ids, links and kinds. Titles, purposes, rationales, questions and the process name are left out, so the repair request still
+ * carries none of the model's prose beyond the items it is asked to fix. */
+const OUTLINE_DIGEST = {
+  steps: ["id", "sequence", "asIsStepIds", "requirementIds", "enablesStepIds", "implementation"],
+  coverage: ["requirementId", "disposition", "stepIds", "decisionId", "decisionIds", "questionIds"],
+  openQuestions: ["id", "affectedStepIds", "decisionIds"], eliminatedAsIsSteps: ["asIsStepId"], conflictDecisions: ["conflictId", "decisionId"],
+} as const;
+function outlineDigest(outline: unknown, errors: readonly ValidationIssue[]) {
+  if (!isObj(outline)) return {};
+  const flagged = new Set(errors.flatMap(error => { const at = locate(error.path); return at ? [`${at.section}.${at.index}`] : []; }));
+  return Object.fromEntries(Object.entries(OUTLINE_DIGEST).map(([section, keys]) => [section, !Array.isArray(outline[section]) ? outline[section]
+    : outline[section].map((item, i) => !isObj(item) || flagged.has(`${section}.${i}`) ? item : Object.fromEntries(keys.flatMap(key => key in item ? [[key, item[key]]] : [])))]));
+}
+
+/** Patch model input: the discovery, the catalog slice and the last outline the server checked (see outlineDigest), with the errors and where each one is. */
+export function outlinePatchRequest(input: ToBeInput, references: DesignContext["references"], outline: unknown, validationErrors: ValidationIssue[]) {
+  return { input, approvedDecisions: [] as never[], references: references.map(outlineReference), outline: outlineDigest(outline, validationErrors), validationErrors,
+    ...catalogNote(input, references), repairNote: patchNotes(validationErrors, outline, input, references) };
+}
 
 const PLACEHOLDER = "(filled in by the step call)";
 const MAX_ERRORS = 30;
@@ -93,7 +162,8 @@ export function validateOutline(input: ToBeInput, references: DesignContext["ref
   { success: true; outline: Outline; warnings: ValidationIssue[]; shaped: unknown } | { success: false; errors: ValidationIssue[]; shaped: unknown } {
   const normalized = normalizeToolInput(OutlineSchema, raw, "outline");
   const restored = previous ? restoreFromPrevious(previous, normalized.value) : { value: normalized.value, warnings: [] };
-  const repaired = repairOutlineShape(input.discovery, new Set(references.map(reference => reference.id)), restored.value);
+  const repaired = repairOutlineShape(input.discovery, new Set(references.map(reference => reference.id)), restored.value,
+    new Set((input.decisionRegister ?? []).map(decision => decision.id)));
   const linked = repairOutlineLinks({ product: input.targetProduct, release: input.discovery.targetRelease ?? "UNKNOWN" }, references, repaired.value);
   const parsed = OutlineSchema.safeParse(linked.value);
   if (!parsed.success) return { success: false, errors: rePath(draftIssues(parsed.error.issues), "draft", "outline"), shaped: linked.value };
@@ -228,7 +298,7 @@ export async function runPool<T>(items: readonly T[], limit: number, worker: (it
 
 export type DesignDeps = {
   /** One model call; resolves to the tool payload, null when the provider did not return exactly one complete tool call, or TRUNCATED when it stopped on max_tokens. */
-  ask: (substage: Substage, user: unknown, group?: RegisterGroup) => Promise<unknown>;
+  ask: (substage: Substage, user: unknown, group?: RegisterGroup | "patch") => Promise<unknown>;
   /** The error to throw for AI_INVALID_OUTPUT. */
   invalid: () => Error;
   /** Record the issues of one failed attempt in the stage metrics. */
@@ -255,19 +325,42 @@ export async function runDesign(input: ToBeInput, references: DesignContext["ref
   let outlineRepairs = 0;
   const canRepairOutline = () => outlineRepairAllowed(outlineRepairs, deps.maxOutlineRepairs ?? 2, deps.remainingBudget?.() ?? 1);
   let lastShaped: unknown;
-  const requestOutline = async (errors: ValidationIssue[]) => {
-    const raw = await deps.ask("to_be_outline", outlineRequest(input, references, errors));
-    const result = raw === TRUNCATED ? { success: false as const, errors: [{ path: "to_be_outline", code: OUTPUT_TRUNCATED }] }
-      : validateOutline(input, references, raw, errors.length && lastShaped !== undefined ? { value: lastShaped, issues: errors } : undefined);
+  const settle = (raw: unknown, key: string, result: ReturnType<typeof validateOutline>) => {
     // A cut-off answer has no shaped payload; the last one stays the reference for the next restore.
     if ("shaped" in result) lastShaped = result.shaped;
-    if (!result.success) { deps.record(result.errors); if (raw !== TRUNCATED) deps.rawFailure?.("to_be_outline", "outline", raw); }
+    if (!result.success) { deps.record(result.errors); if (raw !== TRUNCATED) deps.rawFailure?.("to_be_outline", key, raw); }
     else if (result.warnings.length) deps.warn?.(result.warnings);
     return result;
   };
+  const requestOutline = async (errors: ValidationIssue[]) => {
+    const raw = await deps.ask("to_be_outline", outlineRequest(input, references, errors));
+    return settle(raw, "outline", raw === TRUNCATED ? { success: false as const, errors: [{ path: "to_be_outline", code: OUTPUT_TRUNCATED }], shaped: lastShaped }
+      : validateOutline(input, references, raw, errors.length && lastShaped !== undefined ? { value: lastShaped, issues: errors } : undefined));
+  };
+  /** Ask for a patch of the flagged items, merge it onto the last outline and validate the merge. A patch that is cut off, missing or
+   * fails its schema is a failed repair that leaves the errors (and the last outline) as they were. */
+  const requestPatch = async (errors: ValidationIssue[]) => {
+    const raw = await deps.ask("to_be_outline", outlinePatchRequest(input, references, lastShaped, errors), "patch");
+    const normalized = raw === TRUNCATED || raw === null ? undefined : normalizeToolInput(OutlinePatchSchema, raw, "outline.patch");
+    const parsed = normalized ? OutlinePatchSchema.safeParse(normalized.value) : undefined;
+    if (!normalized || !parsed || !parsed.success) {
+      const issues = raw === TRUNCATED ? [{ path: "to_be_outline", code: OUTPUT_TRUNCATED }] : parsed && !parsed.success
+        ? rePath(draftIssues(parsed.error.issues), "draft", "outline.patch") : [{ path: "to_be_outline", code: "NO_TOOL_PAYLOAD" }];
+      deps.record(issues);
+      if (raw !== TRUNCATED && raw !== null) deps.rawFailure?.("to_be_outline", "outline-patch", raw);
+      return { success: false as const, errors, shaped: lastShaped };
+    }
+    if (normalized.warnings.length) deps.warn?.(normalized.warnings);
+    return settle(raw, "outline-patch", validateOutline(input, references, applyOutlinePatch(lastShaped, parsed.data as OutlinePatch)));
+  };
+  /** Errors that all point into named items of the last outline take a patch; anything global takes the whole outline again. */
+  const repairOutline = (errors: ValidationIssue[]) => {
+    const here = rePath(errors, "draft", "outline");
+    return lastShaped !== undefined && isPatchable(here, lastShaped) ? requestPatch(here) : requestOutline(errors);
+  };
   // The outline gets up to maxOutlineRepairs repairs (the second only while the stage budget is more than half unspent): errors only, never the model's own text.
   let first = await requestOutline([]);
-  while (!first.success && canRepairOutline()) { outlineRepairs++; first = await requestOutline(first.errors); }
+  while (!first.success && canRepairOutline()) { outlineRepairs++; first = await repairOutline(first.errors); }
   if (!first.success) throw deps.invalid();
   let outline = first.outline;
 
@@ -334,7 +427,7 @@ export async function runDesign(input: ToBeInput, references: DesignContext["ref
     if (global.length) {
       if (!canRepairOutline()) throw deps.invalid();
       outlineRepairs++;
-      const repaired = await requestOutline(global);
+      const repaired = await repairOutline(global);
       if (!repaired.success) throw deps.invalid();
       // Frozen means unchanged steps keep their expansion; a step whose outline entry changed (or is new) is expanded again.
       // The registers were written against the old outline, so they are all written again.

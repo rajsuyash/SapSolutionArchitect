@@ -20,13 +20,15 @@ const STEP_IDS = rentalDraft.steps.map(step => step.id);
 
 type Handlers = {
   outline?: (nth: number, body: RequestBody) => unknown | Promise<unknown>;
+  /** Answer to a submit_to_be_outline_patch call; a test that expects no patch leaves it unset and fails if one is requested. */
+  patch?: (nth: number, body: RequestBody) => unknown | Promise<unknown>;
   step?: (id: string, nth: number, body: RequestBody) => unknown | Promise<unknown>;
   registers?: (group: RegisterGroup, nth: number, body: RequestBody) => unknown | Promise<unknown>;
   overrides?: Record<string, string>;
 };
 /** A fake provider that answers by requested tool and records every request and the in-flight high-water mark. */
 function harness(handlers: Handlers = {}) {
-  const outlineCalls: RequestBody[] = [], stepCalls: { id: string; body: RequestBody; signal: AbortSignal | null | undefined }[] = [];
+  const outlineCalls: RequestBody[] = [], patchCalls: RequestBody[] = [], stepCalls: { id: string; body: RequestBody; signal: AbortSignal | null | undefined }[] = [];
   const registerCalls: { group: RegisterGroup; body: RequestBody; signal: AbortSignal | null | undefined }[] = [];
   const stepCount: Record<string, number> = {}, registerCount: Partial<Record<RegisterGroup, number>> = {};
   let inFlight = 0, maxInFlight = 0;
@@ -39,6 +41,12 @@ function harness(handlers: Handlers = {}) {
       if (tool === "submit_to_be_outline") {
         outlineCalls.push(body);
         const out = await (handlers.outline?.(outlineCalls.length, body) ?? split.outline);
+        return asStream(out instanceof Response ? out : toolResponse(out, tool));
+      }
+      if (tool === "submit_to_be_outline_patch") {
+        patchCalls.push(body);
+        if (!handlers.patch) throw new Error("unexpected submit_to_be_outline_patch call");
+        const out = await handlers.patch(patchCalls.length, body);
         return asStream(out instanceof Response ? out : toolResponse(out, tool));
       }
       const group = registerGroupOf(body);
@@ -56,8 +64,10 @@ function harness(handlers: Handlers = {}) {
     } finally { inFlight--; }
   });
   const run = (input = fixture(), signal?: AbortSignal) => createStageRunner(settings(handlers.overrides), { fetch })("to_be", input, signal);
-  return { run, fetch, outlineCalls, stepCalls, stepCount, registerCalls, registerCount, max: () => maxInFlight };
+  return { run, fetch, outlineCalls, patchCalls, stepCalls, stepCount, registerCalls, registerCount, max: () => maxInFlight };
 }
+/** The rental outline with one invalid field in step 0: a path-attributable error, repaired with a patch. */
+const badKindOutline = { ...split.outline, steps: split.outline.steps.map((step, i) => i === 0 ? { ...step, implementation: { ...step.implementation, kind: "LICENSE_DEPENDENT" } } : step) };
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
 describe("worked examples in the system prompts", () => {
@@ -283,26 +293,30 @@ describe("per-step repair", () => {
     expect(result.metrics.warnings).toEqual(expect.arrayContaining([{ code: "REPAIRED_WRAPPED_PAYLOAD", path: "draft", detail: "parameter" }]));
     expect(result.payload.design).toEqual(rentalDraftV2);
   });
-  it("sends a global error back to the outline once, then re-expands only the steps whose outline entry changed", async () => {
-    // A step body valid on its own but breaking a coverage rule can only be fixed in the outline: here the outline omits R-6 on its first answer.
+  it("repairs an outline that omits a coverage row with a patch of the missing rows, then expands every step once", async () => {
+    // The first outline omits R-6; the missing row is a path-attributable error, so the model is asked for that row only.
     const broken = { ...split.outline, coverage: split.outline.coverage.slice(0, 5) };
-    const h = harness({ outline: nth => nth === 1 ? broken : split.outline });
+    const h = harness({ outline: () => broken, patch: () => ({ coverage: split.outline.coverage.slice(5) }) });
     const result = await h.run();
-    expect(h.outlineCalls).toHaveLength(2);
-    expect(h.outlineCalls[1]!.messages[0]!.content).toContain("REQUIREMENT_UNDISPOSITIONED");
+    expect(h.outlineCalls).toHaveLength(1);
+    expect(h.patchCalls).toHaveLength(1);
+    expect(h.patchCalls[0]!.messages[0]!.content).toContain("REQUIREMENT_UNDISPOSITIONED");
+    for (const id of STEP_IDS) expect(h.stepCount[id]).toBe(1);
     expect(result.payload.design).toEqual(rentalDraftV2);
   });
 });
 
 describe("outline validation and repair", () => {
-  it("repairs an invalid outline once", async () => {
+  it("repairs an invalid outline with a patch that keeps the accepted fields, and keeps the model's prose out of the error list", async () => {
     const wrong = { ...split.outline, processName: "private-invalid-model-output", coverage: split.outline.coverage.slice(0, 5) };
-    const h = harness({ outline: nth => nth === 1 ? wrong : split.outline });
+    const h = harness({ outline: nth => nth === 1 ? wrong : split.outline, patch: () => ({ coverage: split.outline.coverage.slice(5) }) });
     const result = await h.run();
-    expect(h.outlineCalls).toHaveLength(2);
-    expect(h.outlineCalls[1]!.messages[0]!.content).toContain("REQUIREMENT_UNDISPOSITIONED");
-    expect(h.outlineCalls[1]!.messages[0]!.content).not.toContain("private-invalid-model-output");
-    expect(result.payload.design).toEqual(rentalDraftV2);
+    expect(h.outlineCalls).toHaveLength(1);
+    const request = JSON.parse(h.patchCalls[0]!.messages[0]!.content) as { validationErrors: unknown; repairNote: string };
+    expect(JSON.stringify(request.validationErrors)).toContain("REQUIREMENT_UNDISPOSITIONED");
+    expect(JSON.stringify(request.validationErrors)).not.toContain("private-invalid-model-output");
+    expect(request.repairNote).not.toContain("private-invalid-model-output");
+    expect(result.payload.design).toEqual({ ...rentalDraftV2, processName: "private-invalid-model-output" }); // the patch replaces only what was flagged
   });
   it("fails with AI_INVALID_OUTPUT, before any step call, when the outline is still invalid", async () => {
     const wrong = { ...split.outline, conflictDecisions: [{ conflictId: "CON-1", decisionId: "FAKE-APPROVAL" }] };
@@ -312,9 +326,10 @@ describe("outline validation and repair", () => {
   });
   it("checks catalog-only reference ids and the fit ladder on the outline", async () => {
     const wrong = { ...split.outline, steps: split.outline.steps.map((step, i) => i ? step : { ...step, implementation: { kind: "STANDARD" as const, referenceIds: ["NOPE"] } }) };
-    const h = harness({ outline: () => wrong });
-    await expect(h.run()).rejects.toMatchObject({ code: "AI_INVALID_OUTPUT" });
-    expect(h.outlineCalls[1]!.messages[0]!.content).toContain("UNKNOWN_REFERENCE");
+    const h = harness({ outline: () => wrong, patch: () => ({ steps: [wrong.steps[0]] }) });
+    await expect(h.run()).rejects.toMatchObject({ code: "AI_INVALID_OUTPUT", metrics: { attempts: 3 } });
+    expect(h.patchCalls).toHaveLength(2); // a patch that fixes nothing spends the repair; the budget is the same as for a whole outline
+    expect(h.patchCalls[0]!.messages[0]!.content).toContain("UNKNOWN_REFERENCE");
     expect(h.stepCalls).toHaveLength(0);
   });
 });
@@ -524,6 +539,43 @@ describe("output ceilings and truncation", () => {
   });
 });
 
+describe("outline repair by patch", () => {
+  it("asks for a small patch when the only error is one bad step, merges it, and counts the call under to_be_outline", async () => {
+    const h = harness({ outline: () => badKindOutline, patch: () => ({ steps: [split.outline.steps[0]] }) });
+    const result = await h.run();
+    expect(result.payload.design).toEqual(rentalDraftV2);
+    expect(h.outlineCalls).toHaveLength(1);
+    expect(h.patchCalls).toHaveLength(1);
+    expect(result.metrics.substages!.to_be_outline!.calls).toBe(2); // the outline and its patch
+    expect(result.metrics.attemptIssues![0]).toEqual([expect.objectContaining({ code: "INVALID_DRAFT", path: "outline.steps.0.implementation.kind" })]);
+    const request = JSON.parse(h.patchCalls[0]!.messages[0]!.content) as { outline: { steps: { id: string }[] }; repairNote: string };
+    expect(h.patchCalls[0]!.tools.map(tool => tool.name)).toEqual(["submit_to_be_outline_patch"]);
+    expect(request.outline.steps.map(step => step.id)).toEqual(STEP_IDS);
+    expect(request.repairNote).toContain(`step "${STEP_IDS[0]}"`);
+    expect(String(h.patchCalls[0]!.system)).toContain("Repairing with a patch");
+  });
+  it("forces the patch tool on DeepInfra like the other tools", async () => {
+    const h = harness({ outline: () => badKindOutline, patch: () => ({ steps: [split.outline.steps[0]] }), overrides: { AI_PROVIDER: "deepinfra", DEEPINFRA_API_KEY: "synthetic-di-key", AI_MODEL: "XiaomiMiMo/MiMo-V2.6-Pro" } });
+    await h.run();
+    expect(h.patchCalls[0]!.tool_choice).toEqual({ type: "tool", name: "submit_to_be_outline_patch", disable_parallel_tool_use: true });
+  });
+  it("a patch that is cut off or fails its schema is a failed repair; the third answer is a patch again, built on the same outline", async () => {
+    const h = harness({ outline: () => badKindOutline, patch: n => n === 1 ? { steps: "x" } : { steps: [split.outline.steps[0]] } });
+    const result = await h.run();
+    expect(result.payload.design).toEqual(rentalDraftV2);
+    expect(h.patchCalls).toHaveLength(2);
+    expect(result.metrics.substages!.to_be_outline!.calls).toBe(3);
+    expect(result.metrics.attemptIssues!.flat().map(issue => issue.path)).toEqual(["outline.steps.0.implementation.kind", "outline.patch.steps"]);
+  });
+  it("keeps a failed patch's raw payload for the eval, under its own key", async () => {
+    const h = harness({ outline: () => badKindOutline, patch: () => ({ steps: [badKindOutline.steps[0]] }) });
+    const failed = await createStageRunner(settings(), { fetch: h.fetch, captureRaw: true })("to_be", fixture()).then(() => null, e => e);
+    expect(failed.code).toBe("AI_INVALID_OUTPUT");
+    expect(failed.metrics.rawFailures.map((raw: { key: string }) => raw.key)).toEqual(["outline", "outline-patch", "outline-patch"]);
+    expect(failed.metrics.substages.to_be_outline.calls).toBe(3);
+  });
+});
+
 describe("model slips in tool inputs", () => {
   const notes = (result: Awaited<ReturnType<ReturnType<typeof harness>["run"]>>) => (result.metrics.warnings ?? []).map(w => `${w.code}@${w.path}`);
   it("accepts an outline whose list fields arrive as JSON strings or a bare id, without a repair call, and records the repairs", async () => {
@@ -665,13 +717,18 @@ describe("tool input schemas sent to the provider", () => {
   };
   it("lists every non-optional field as required in the outline, step and all four register tools (nested objects included)", async () => {
     const seen: RequestBody[] = [];
-    const h = harness();
+    // The first outline has one bad field, so the repair asks for a patch and every tool the pipeline can send is requested once.
+    const h = harness({ outline: () => badKindOutline, patch: () => ({ steps: [split.outline.steps[0]] }) });
     const spy = vi.fn<typeof globalThis.fetch>(async (url, init) => { seen.push(JSON.parse(String(init?.body))); return h.fetch(url, init); });
     await createStageRunner(settings(), { fetch: spy })("to_be", fixture());
     const tools = new Map(seen.flatMap(body => body.tools ?? []).map((tool: { name: string; input_schema: unknown }) => [tool.name, tool.input_schema as Node] as const));
-    expect([...tools.keys()].sort()).toEqual(["submit_to_be_outline", "submit_to_be_registers_decisions", "submit_to_be_registers_fitgap",
+    expect([...tools.keys()].sort()).toEqual(["submit_to_be_outline", "submit_to_be_outline_patch", "submit_to_be_registers_decisions", "submit_to_be_registers_fitgap",
       "submit_to_be_registers_foundation", "submit_to_be_registers_integration", "submit_to_be_step"]);
-    for (const [name, schema] of tools) expect(missing(schema, name), name).toEqual([]);
+    // The patch's four sections are each optional (a patch names only what it replaces); the items inside them must be fully required.
+    const patchSections = ["steps", "coverage", "openQuestions", "eliminatedAsIsSteps"].map(key => `submit_to_be_outline_patch.${key}`);
+    for (const [name, schema] of tools) expect(missing(schema, name).filter(path => !patchSections.includes(path)), name).toEqual([]);
+    expect(missing(tools.get("submit_to_be_outline_patch")!, "submit_to_be_outline_patch").sort()).toEqual([...patchSections].sort());
+    expect(tools.get("submit_to_be_outline_patch")!.properties!.steps!.items!.required).toEqual(expect.arrayContaining(["id", "sequence", "implementation"]));
     const step = tools.get("submit_to_be_step")!;
     expect(step.required).toEqual(expect.arrayContaining(["effects", "addedValue", "acceptanceTests", "implementation"]));
     expect(step.properties!.effects!.required).toEqual(expect.arrayContaining(["financial", "ownership"]));

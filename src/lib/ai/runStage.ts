@@ -7,7 +7,7 @@ import { ProblemAnalysisInputSchema, ProblemAnalysisSchema, redactInput, schemaI
 import { createProviderClient, logProviderFailure, logStageTimeout, type Provider } from "./provider";
 import { loadToBeReferences, parseToBeInput, type ToBeOutput } from "./to-be";
 import { REGISTER_GROUP_NAMES, RegisterGroupSchemas } from "./design-registers";
-import { OutlineSchema, StepDetailSchema, TRUNCATED, runDesign, type Substage } from "./to-be-pipeline";
+import { OutlinePatchSchema, OutlineSchema, StepDetailSchema, TRUNCATED, runDesign, type Substage } from "./to-be-pipeline";
 import { interviewModelView } from "./interview-sentences";
 import { parseWorkedExample, renderWorkedExamples, withWorkedExample } from "./worked-example";
 
@@ -326,6 +326,8 @@ export function createStageRunner(config: Config, options: Options = {}) {
         // The four register groups share one system prompt (a stable prefix) and differ by tool.
         const kinds = {
           to_be_outline: { system: outlineSystem, schema: OutlineSchema, name: "submit_to_be_outline", maxTokens: config.AI_TO_BE_OUTLINE_MAX_TOKENS },
+          // The patch repairs a few flagged outline items; it shares the outline's system prompt (the rules it must keep) and its limits.
+          to_be_outline_patch: { system: outlineSystem, schema: OutlinePatchSchema, name: "submit_to_be_outline_patch", maxTokens: config.AI_TO_BE_OUTLINE_MAX_TOKENS },
           to_be_step: { system: stepSystem, schema: StepDetailSchema, name: "submit_to_be_step", maxTokens: config.AI_TO_BE_STEP_MAX_TOKENS },
           ...Object.fromEntries(REGISTER_GROUP_NAMES.map(group => [`to_be_registers:${group}`,
             { system: registersSystem, schema: RegisterGroupSchemas[group], name: `submit_to_be_registers_${group}`, maxTokens: config.AI_TO_BE_REGISTERS_MAX_TOKENS }])),
@@ -349,9 +351,10 @@ export function createStageRunner(config: Config, options: Options = {}) {
           warn: (issues) => { metrics.warnings = [...(metrics.warnings ?? []), ...issues]; },
           ...(options.captureRaw && { rawFailure: keepRaw }),
           ask: async (substage, request, group) => {
-            const key = substage === "to_be_registers" ? `to_be_registers:${group}` : substage;
+            // A patch call is an outline call: it is counted under the to_be_outline substage.
+            const key = substage === "to_be_registers" ? `to_be_registers:${group}` : group === "patch" ? "to_be_outline_patch" : substage;
             const kind = kinds[key as keyof typeof kinds];
-            const rawKeyOf = substage === "to_be_registers" ? String(group) : substage === "to_be_step" ? (request as { step: { id: string } }).step.id : "outline";
+            const rawKeyOf = substage === "to_be_registers" ? String(group) : substage === "to_be_step" ? (request as { step: { id: string } }).step.id : group === "patch" ? "outline-patch" : "outline";
             const output = await generate({ system: kind.system, user: JSON.stringify(request), tool: tools[key]!, maxTokens: kind.maxTokens,
               guard: true, thinkingOff: reasoningOff || noThinking.has(substage) || noThinking.has("to_be") || expansionThinkingOff(substage),
               // A model that ends its turn with the payload as a JSON text block instead of calling the tool is accepted exactly as in the interview.

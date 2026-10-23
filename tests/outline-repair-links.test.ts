@@ -1,7 +1,8 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+import { applyOutlinePatch, isPatchable } from "../src/lib/ai/outline-patch";
 import { repairOutlineLinks } from "../src/lib/ai/outline-repair";
-import { validateOutline } from "../src/lib/ai/to-be-pipeline";
+import { outlinePatchRequest, validateOutline } from "../src/lib/ai/to-be-pipeline";
 import { loadSapReferences } from "../src/lib/ai/sap-references";
 import { buildToBeInput } from "./support/expert-control";
 import type { Fixture } from "../src/lib/eval-user";
@@ -59,23 +60,35 @@ describe("REPAIRED_ENABLING_LINK", () => {
   });
 });
 
-/** The three outline payloads DeepSeek-V4.1-Flash returned live (engineering-mto, --tobe-only; synthetic case data), replayed through validateOutline. */
-describe("replay of the live outline attempts", async () => {
+/** Outline payloads DeepSeek-V4.1-Flash returned live (engineering-mto, --tobe-only; synthetic case data), replayed through validateOutline.
+ * `prefix` picks the run's fixtures; `asIsFrom` is the attempt whose first-appearance order of As-Is ids maps to the fixture's steps
+ * (an attempt that leaves an As-Is step out cannot define the order). */
+async function liveReplay(prefix: string, asIsFrom?: number) {
   const fixture = JSON.parse(readFileSync("fixtures/eval/engineering-mto.json", "utf8")) as Fixture;
   const input = buildToBeInput(fixture);
   const references = await loadSapReferences(input.targetProduct, input.discovery.targetRelease);
-  const live = JSON.parse(readFileSync("fixtures/ai/to-be/live-outline-requirements.json", "utf8")) as { id: string; statement: string }[];
+  const live = JSON.parse(readFileSync(`fixtures/ai/to-be/${prefix}-requirements.json`, "utf8")) as { id: string; statement: string }[];
   const byStatement = new Map(input.discovery.requirements.map(r => [r.statement, r.id]));
   const requirementOf = new Map(live.map(r => [r.id, byStatement.get(r.statement)!]));
-  const replay = (attempt: number) => {
-    const payload = JSON.parse(readFileSync(`fixtures/ai/to-be/live-outline-${attempt}.json`, "utf8")).payload;
-    // As-Is ids: the live run's ids in order of first appearance map to the fixture's steps in order.
-    const asIsOf = new Map<string, string>();
+  const load = (attempt: number) => JSON.parse(readFileSync(`fixtures/ai/to-be/${prefix}-${attempt}.json`, "utf8")).payload;
+  const asIsOf = new Map<string, string>();
+  const order = (payload: { steps: { asIsStepIds: string[] }[] }) => {
+    asIsOf.clear();
     for (const s of payload.steps) for (const id of s.asIsStepIds) if (!asIsOf.has(id)) asIsOf.set(id, input.discovery.asIsSteps[asIsOf.size]?.id ?? id);
-    const mapped = JSON.parse(JSON.stringify(payload, (_, v) => typeof v === "string" ? requirementOf.get(v) ?? asIsOf.get(v) ?? v : v));
-    return validateOutline(input, references, mapped);
   };
+  if (asIsFrom) order(load(asIsFrom));
+  const mapped = (attempt: number) => {
+    const payload = load(attempt);
+    if (!asIsFrom) order(payload);
+    return JSON.parse(JSON.stringify(payload, (_, v) => typeof v === "string" ? requirementOf.get(v) ?? asIsOf.get(v) ?? v : v));
+  };
+  const replay = (attempt: number) => validateOutline(input, references, mapped(attempt));
+  return { input, references, live, requirementOf, replay };
+}
+const left = (result: ReturnType<typeof validateOutline>) => result.success ? [] : result.errors.map(e => `${e.code}@${e.path}`);
 
+describe("replay of the live outline attempts", async () => {
+  const { references, live, requirementOf, replay } = await liveReplay("live-outline");
   it("has a catalog and maps every live requirement", () => {
     expect(references.length).toBeGreaterThan(0);
     expect(live.length).toBeGreaterThan(0);
@@ -83,8 +96,52 @@ describe("replay of the live outline attempts", async () => {
   });
   const remaining: Record<number, string[]> = { 1: [], 2: ["CONDITIONAL_UNLINKED@outline.coverage.7"], 3: [] };
   it.each([1, 2, 3])("attempt %i: only the unrepairable judgment error is left", attempt => {
-    const result = replay(attempt);
-    const left = result.success ? [] : result.errors.map(e => `${e.code}@${e.path}`);
-    expect(left).toEqual(remaining[attempt]);
+    expect(left(replay(attempt))).toEqual(remaining[attempt]);
+  });
+});
+
+/** Second live run (0ad3ae0): attempt 1 had one error, the full re-answer after it regressed fields that were valid, and with no decision
+ * register supplied every decisionIds value the model wrote was invented. Attempts 1 and 2 are the first 20000 characters the eval kept
+ * (the last, cut-off open question dropped and the lists closed). */
+describe("replay of the second live run (no decision register)", async () => {
+  const { input, references, requirementOf, replay } = await liveReplay("live2-outline", 3);
+  const outlineOf = (attempt: number) => { const r = replay(attempt); return { r, shaped: (r as { shaped: unknown }).shaped }; };
+  const stepAt = (shaped: unknown, i: number) => (shaped as { steps: Record<string, unknown>[] }).steps[i]!;
+  const asManual = (step: Record<string, unknown>) => ({ ...step, implementation: { kind: "NEEDS_VALIDATION", referenceIds: [] } });
+
+  it("maps every live requirement and the run had no register", () => {
+    expect([...requirementOf.values()].every(Boolean)).toBe(true);
+    expect(input.decisionRegister).toBeUndefined();
+  });
+
+  it("attempt 1: one patchable SAP_FIT_MISMATCH; a stub patch for that step alone validates", () => {
+    const { r, shaped } = outlineOf(1);
+    expect(left(r)).toEqual(["SAP_FIT_MISMATCH@outline.steps.12.implementation"]);
+    const errors = r.success ? [] : r.errors;
+    expect(isPatchable(errors, shaped)).toBe(true);
+    const note = String(outlinePatchRequest(input, references, shaped, errors).repairNote);
+    expect(note).toContain("cited fit types STANDARD, CONFIGURATION, LICENSE_DEPENDENT -> allowed kinds: MANUAL, NEEDS_VALIDATION");
+    const merged = applyOutlinePatch(shaped, { steps: [asManual(stepAt(shaped, 12))] });
+    expect((merged as { steps: unknown[] }).steps).toHaveLength((shaped as { steps: unknown[] }).steps.length);
+    expect(left(validateOutline(input, references, merged))).toEqual([]);
+  });
+
+  it("attempt 2: two patchable errors remain (a fit mismatch and an As-Is step nobody traces); the decision ids are repaired away", () => {
+    const { r, shaped } = outlineOf(2);
+    expect(left(r)).toEqual(["SAP_FIT_MISMATCH@outline.steps.11.implementation", "AS_IS_UNCOVERED@input.asIsSteps.10"]);
+    const errors = r.success ? [] : r.errors;
+    expect(isPatchable(errors, shaped)).toBe(true);
+    const merged = applyOutlinePatch(shaped, { steps: [asManual(stepAt(shaped, 11))],
+      eliminatedAsIsSteps: [{ asIsStepId: input.discovery.asIsSteps[10]!.id, reason: "Stub patch: not part of the To-Be process." }] });
+    expect(left(validateOutline(input, references, merged))).toEqual([]);
+  });
+
+  it("attempt 3: the invented decision ids are dropped (paths only) and nothing else is wrong", () => {
+    const result = replay(3);
+    expect(left(result)).toEqual([]);
+    if (!result.success) return;
+    const dropped = result.warnings.filter(w => w.code === "REPAIRED_UNKNOWN_DECISION").map(w => w.path);
+    expect(dropped).toEqual(["outline.coverage.1", "outline.coverage.3", "outline.coverage.4", "outline.coverage.8", "outline.coverage.9", "outline.coverage.10", "outline.openQuestions.0"]);
+    expect(result.warnings.every(w => Object.keys(w).sort().join() === "code,path")).toBe(true);
   });
 });

@@ -10,7 +10,8 @@ const isObj = (value: unknown): value is Obj => typeof value === "object" && val
 const strings = (value: unknown): string[] | undefined => Array.isArray(value) && value.every(item => typeof item === "string") ? value : undefined;
 const TRACED = new Set(["IMPLEMENTED", "CONDITIONAL"]);
 
-export function repairOutlineShape(input: Pick<ToBeInput["discovery"], "requirements">, catalogIds: ReadonlySet<string>, raw: unknown):
+export function repairOutlineShape(input: Pick<ToBeInput["discovery"], "requirements">, catalogIds: ReadonlySet<string>, raw: unknown,
+  registerIds: ReadonlySet<string> = new Set()):
   { value: unknown; warnings: ValidationIssue[] } {
   const warnings: ValidationIssue[] = [];
   if (!isObj(raw) || !Array.isArray(raw.steps) || !raw.steps.every(isObj)) return { value: raw, warnings };
@@ -83,7 +84,17 @@ export function repairOutlineShape(input: Pick<ToBeInput["discovery"], "requirem
       return !clash;
     }) : raw.eliminatedAsIsSteps;
 
-  return { value: { ...raw, steps, coverage: repairedCoverage, openQuestions: questions, eliminatedAsIsSteps: eliminated }, warnings };
+  // A decision id that is not in the supplied register is an invention (with no register every id is): the link is dropped, never replaced.
+  // A CONDITIONAL row left without any link, or a DEFERRED / REJECTED row whose approval was never supplied, stays an error for the model.
+  const knownDecisions = (items: unknown, name: string) => !Array.isArray(items) ? items : items.map((item, i) => {
+    const cited = isObj(item) ? strings(item.decisionIds) : undefined, kept = cited?.filter(ref => registerIds.has(ref));
+    if (!isObj(item) || !cited || kept!.length === cited.length) return item;
+    warn("REPAIRED_UNKNOWN_DECISION", `outline.${name}.${i}`);
+    return { ...item, decisionIds: kept };
+  });
+
+  return { value: { ...raw, steps, coverage: knownDecisions(repairedCoverage, "coverage"), openQuestions: knownDecisions(questions, "openQuestions"),
+    eliminatedAsIsSteps: eliminated }, warnings };
 }
 
 /** The outline repair answer is a whole new outline, so a model asked to fix one field can break another that was fine. For a step
