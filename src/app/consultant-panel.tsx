@@ -9,6 +9,8 @@ import styles from "./consultant.module.css";
 type Tab = "chat" | "summary";
 const DEFAULT_CODE = "MAIN";
 const POLL_MS = 1500;
+/** How long to keep refreshing for the background extraction of the latest message (it normally takes seconds). */
+const EXTRACTION_WAIT_MS = 90000;
 const withJob = (jobs: JobView[], job: JobView) => [job, ...jobs.filter(item => item.id !== job.id)];
 const messageOf = (error: unknown) => error instanceof Error ? error.message : "Something went wrong. Try again.";
 
@@ -62,6 +64,19 @@ export function ConsultantPanel({ projectId }: { projectId: string }) {
     }, POLL_MS);
     return () => clearTimeout(timer);
   }, [busy, jobs, code, base, load, pollFailures]);
+
+  // The reply arrives first; the proposals read out of the same message arrive from a background job that has no job row to poll,
+  // so keep refreshing the workspace until the latest message is recorded as extracted (or the wait runs out).
+  const lastUserId = workspace?.state?.messages.findLast(message => message.role === "user")?.id;
+  const extractionPending = Boolean(lastUserId) && !workspace?.state?.extractedMessageIds?.includes(lastUserId!);
+  const extractionStarted = useRef<{ id: string; at: number } | null>(null);
+  useEffect(() => {
+    if (busy || !extractionPending || !lastUserId) return;
+    if (extractionStarted.current?.id !== lastUserId) extractionStarted.current = { id: lastUserId, at: Date.now() };
+    if (Date.now() - extractionStarted.current.at > EXTRACTION_WAIT_MS) return;
+    const timer = setTimeout(() => { load(code).catch(() => setPollFailures(count => count + 1)); }, POLL_MS);
+    return () => clearTimeout(timer);
+  }, [busy, extractionPending, lastUserId, workspace, code, load, pollFailures]);
 
   const keyFor = (intent: string) => {
     let key = keys.current.get(intent);

@@ -44,9 +44,15 @@ function design(input: ToBeInput) {
     rationale: "Covered by the proposed hire step." }], conflictDecisions: [], openQuestions: [] };
 }
 
+// A message starting "Slow extraction." holds its extraction back so the browser can see chat answer first.
+async function slowExtraction(input: InterviewInput) {
+  if (input.currentMessage.text.startsWith("Slow extraction.")) await new Promise(resolve => setTimeout(resolve, 2500));
+  return { payload: interviewTurn(input), metrics: metrics("extraction_turn") };
+}
+
 const runStage = (async (stage: string, raw: unknown) => stage === "interview_turn"
   ? { payload: interviewTurn(raw as InterviewInput), metrics: metrics("interview_turn") }
-  : stage === "extraction_turn" ? { payload: interviewTurn(raw as InterviewInput), metrics: metrics("extraction_turn") }
+  : stage === "extraction_turn" ? await slowExtraction(raw as InterviewInput)
   : { payload: { design: design(raw as ToBeInput) }, metrics: metrics("to_be") }) as ReturnType<typeof createStageRunner>;
 
 const { services, consultantJobs, startQueue } = getRuntime();

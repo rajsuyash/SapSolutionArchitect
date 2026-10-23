@@ -319,3 +319,21 @@ test("accepting every pending proposal at once records the field, the proposed s
     await expect(page.getByRole("tabpanel", { name: "Summary" }).getByRole("article", { name: /^Step 1/ })).toBeVisible();
   });
 });
+
+test("the chat reply appears first and the proposals from background extraction follow", async ({ page }) => {
+  test.setTimeout(90000);
+  // The scripted extraction is held back for this marker message, so the order is observable and not a race.
+  const slow = "Slow extraction. Dispatch books the truck by phone. The clerk logs the return in a spreadsheet. Invoices are wrong when the return is late.";
+  await setup(page);
+  await startConversation(page);
+  await withWorker(async () => {
+    await say(page, slow, 1);
+    await expect(page.getByTestId("message-assistant").first()).toContainText("Thank you for that context.");
+    // The conversation is already usable while extraction is still running.
+    await expect(page.getByTestId("proposal")).toHaveCount(0);
+    await expect(page.getByLabel("Your message")).toBeEnabled();
+    // Then the proposals arrive without any further user action.
+    await expect(page.getByTestId("proposal")).not.toHaveCount(0, { timeout: 15000 });
+    await expect(page.getByTestId("proposal").filter({ hasText: "Current systems and handoffs" })).toHaveCount(1);
+  });
+});
