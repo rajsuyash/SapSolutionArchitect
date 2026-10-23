@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { STEP_GAP_PREFIX } from "../workspace-fields";
 import { indexSentences, resolveSentenceIds, type Citation } from "./interview-sentences";
 
 const identifier = z.string().regex(/^[A-Za-z0-9_-]{1,64}$/);
@@ -46,6 +47,8 @@ const MAX_NEW_STEPS = 12;
 const MAX_NEW_REQUIREMENTS = 16;
 const requirementKind = z.enum(["PAIN_POINT", "TO_BE_REQUIREMENT", "CONTROL"]);
 const REPLIES = ["Thank you for that context.", "Let's review what you've shared.", "We can take this one step at a time."] as const;
+/** Further gaps, all about the same step as `gapKey`, that one question also asks (see the interview prompt). */
+const alsoGaps = z.array(identifier).min(1).max(8).optional();
 const observationShape = z.strictObject({
   kind: z.enum(["POSSIBLE_CONFLICT", "FOLLOW_UP_SUGGESTION"]),
   fieldIds: z.array(identifier).min(1).max(10), detail: content(1000),
@@ -71,7 +74,7 @@ export const InterviewTurnSchema = z.strictObject({
   // Keep acknowledgement separate from questions and application-owned status.
   reply: z.enum(REPLIES),
   questions: z.array(z.strictObject({
-    gapKey: identifier, question: content(500), whyItMatters: content(500),
+    gapKey: identifier, question: content(500), whyItMatters: content(500), gapKeys: alsoGaps,
   })).max(3),
   proposedUpdates: z.array(z.strictObject({ ...updateBase, ...storedCite, value: fieldValue })).max(MAX_PROPOSALS),
   proposedSteps: z.array(z.strictObject({ ...storedCite, value: fieldValue, nameHint: content(200).nullable() })).max(MAX_NEW_STEPS),
@@ -81,7 +84,7 @@ export const InterviewTurnSchema = z.strictObject({
 /** The chat call's contract: what to say next. It proposes nothing; extraction (below) does that from the same message. */
 export const InterviewChatToolSchema = z.strictObject({
   reply: z.enum(REPLIES),
-  questions: z.array(z.strictObject({ gapKey: identifier, question: content(500), whyItMatters: content(500) })).max(3),
+  questions: z.array(z.strictObject({ gapKey: identifier, question: content(500), whyItMatters: content(500), gapKeys: alsoGaps })).max(3),
 });
 /** The extraction call's contract: facts and structure found in one user message, each citing sentence IDs. */
 export const ExtractionToolSchema = z.strictObject({
@@ -93,7 +96,7 @@ export const ExtractionToolSchema = z.strictObject({
 /** The combined contract (one call that both asks and extracts): kept for turns stored before the split and for tests. */
 export const InterviewTurnToolSchema = z.strictObject({
   reply: z.enum(REPLIES),
-  questions: z.array(z.strictObject({ gapKey: identifier, question: content(500), whyItMatters: content(500) })).max(3),
+  questions: z.array(z.strictObject({ gapKey: identifier, question: content(500), whyItMatters: content(500), gapKeys: alsoGaps })).max(3),
   proposedUpdates: z.array(z.strictObject({ ...updateBase, sentenceIds })).max(MAX_PROPOSALS),
   proposedSteps: z.array(z.strictObject({ ...stepBase, sentenceIds })).max(MAX_NEW_STEPS),
   proposedRequirements: z.array(z.strictObject({ ...requirementBase, sentenceIds })).max(MAX_NEW_REQUIREMENTS),
@@ -104,7 +107,7 @@ export const InterviewTurnToolSchema = z.strictObject({
  * differs by who wrote the turn: a model cites `sentenceIds`; a turn the server already validated carries `sourceId` + `quote`. */
 const rawTurn = <C extends z.ZodRawShape>(cite: C) => z.strictObject({
   schemaVersion: z.unknown().optional(), contextRevision: z.unknown().optional(), reply: z.unknown().optional(),
-  questions: z.array(z.strictObject({ gapKey: identifier, question: content(500), whyItMatters: z.unknown().optional() })).max(3).default([]),
+  questions: z.array(z.strictObject({ gapKey: identifier, question: content(500), whyItMatters: z.unknown().optional(), gapKeys: alsoGaps })).max(3).default([]),
   proposedUpdates: z.array(z.strictObject({ ...updateBase, ...cite, value: z.unknown().optional() })).max(MAX_PROPOSALS).default([]),
   proposedSteps: z.array(z.strictObject({ ...stepBase, ...cite, value: z.unknown().optional() })).max(MAX_NEW_STEPS).default([]),
   proposedRequirements: z.array(z.strictObject({ ...requirementBase, ...cite, value: z.unknown().optional() })).max(MAX_NEW_REQUIREMENTS).default([]),
@@ -157,7 +160,8 @@ function tidy(raw: unknown, warnings: InterviewWarning[]): unknown {
   const isObject = (value: unknown): value is Record<string, unknown> => !!value && typeof value === "object" && !Array.isArray(value);
   if (Array.isArray(out.questions)) {
     if (out.questions.length > 3) warnings.push({ path: "questions", code: "questions_truncated", detail: `dropped ${out.questions.length - 3}` });
-    out.questions = out.questions.slice(0, 3).map(q => isObject(q) ? { gapKey: q.gapKey, question: q.question, whyItMatters: q.whyItMatters } : q);
+    out.questions = out.questions.slice(0, 3).map(q => isObject(q) ? { gapKey: q.gapKey, question: q.question, whyItMatters: q.whyItMatters,
+      ...(Array.isArray(q.gapKeys) && q.gapKeys.length ? { gapKeys: q.gapKeys } : {}) } : q);
   }
   if (Array.isArray(out.proposedUpdates)) {
     out.proposedUpdates = out.proposedUpdates.flatMap((u, index) => {
@@ -179,7 +183,7 @@ function tidy(raw: unknown, warnings: InterviewWarning[]): unknown {
 
 /** One citation as written in a turn: a model cites `sentenceIds`; a turn the server already validated has `sourceId` + `quote`. */
 type Cited = { sentenceIds?: string[]; sourceId?: string; quote?: string };
-type RawTurn = { reply?: unknown; questions: { gapKey: string; question: string; whyItMatters?: unknown }[];
+type RawTurn = { reply?: unknown; questions: { gapKey: string; question: string; whyItMatters?: unknown; gapKeys?: string[] }[];
   proposedUpdates: (Cited & { fieldId: string; operation: "PROPOSE_SET" | "PROPOSE_REPLACE"; previousValue: string | null })[];
   proposedSteps: (Cited & { nameHint?: string | null })[];
   proposedRequirements: (Cited & { stepRef: string; kind: z.infer<typeof requirementKind>; critical: boolean })[];
@@ -246,6 +250,7 @@ function validate(input: InterviewInput, raw: unknown, mode: "model" | "stored",
   const stepOfGap = new Map(input.activeGaps.map(gap => [gap.key, gap.stepId]));
   const seenSteps = new Set<string>();
   const refused: { path: string; code: string }[] = [];
+  const extras = new Map<number, string[]>();
   // A question that cannot be asked (gap not open, gap or step already asked this turn, wording asked before) is dropped
   // with a warning as long as another question survives; if none does, each refusal is a hard error so the model repairs.
   const asked = kept.filter(({ index, question }) => {
@@ -260,6 +265,15 @@ function validate(input: InterviewInput, raw: unknown, mode: "model" | "stored",
     if (refusal) { refused.push(refusal); return false; }
     seenGaps.add(question.gapKey); seenQuestions.add(normalized);
     if (stepId) seenSteps.add(stepId);
+    // One question may also cover further single-field gaps of the SAME step; any other extra key is dropped with a warning.
+    const stepOf = (key: string) => { const gap = input.activeGaps.find(g => g.key === key); return gap?.stepId && !key.startsWith(STEP_GAP_PREFIX)
+      && gap.fieldId.startsWith(`${gap.stepId}_`) ? gap.stepId : null; };
+    const primaryStep = stepOf(question.gapKey);
+    extras.set(index, (question.gapKeys ?? []).filter((key, at) => {
+      const ok = !!primaryStep && stepOf(key) === primaryStep && !seenGaps.has(key);
+      if (ok) seenGaps.add(key); else warnings.push({ path: `${path}.gapKeys.${at}`, code: "gap_key_dropped" });
+      return ok;
+    }));
     return true;
   });
   if (asked.length) refused.forEach(item => warnings.push({ path: item.path, code: "question_dropped", detail: item.code }));
@@ -376,7 +390,8 @@ function validate(input: InterviewInput, raw: unknown, mode: "model" | "stored",
   });
   if (errors.length) return { success: false, errors: errors.slice(0, 30) };
   const turn = InterviewTurnSchema.safeParse({ schemaVersion: 1, contextRevision: input.contextRevision,
-    reply: reply ?? REPLIES[0], questions: asked.map(({ question }) => question), proposedUpdates: updates,
+    reply: reply ?? REPLIES[0], questions: asked.map(({ index, question }) => ({ gapKey: question.gapKey, question: question.question,
+      whyItMatters: question.whyItMatters, ...(extras.get(index)?.length ? { gapKeys: extras.get(index)! } : {}) })), proposedUpdates: updates,
     proposedSteps: steps, proposedRequirements: requirements, observations });
   return turn.success ? { success: true, data: turn.data, warnings }
     : { success: false, errors: [{ path: "", code: "invalid_turn" }] };

@@ -5,7 +5,7 @@ import { AuthError, type AuthService } from "./auth";
 import { withTenantSession } from "./tenant";
 import { containsSensitiveText, revalidateStoredTurn, type Scope } from "./ai/discovery-interview";
 import { applyWorkspaceCommand, backfillCatalog, buildInterviewInput, compileDiscovery, createWorkspace,
-  getWorkspaceReadiness, recordInterviewTurn, WorkspaceCommandSchema, WorkspaceStateSchema,
+  getWorkspaceReadiness, recordInterviewTurn, settleChatTurn, WorkspaceCommandSchema, WorkspaceStateSchema,
   type WorkspaceState } from "./discovery-workspace-model";
 
 const uuid = z.uuid();
@@ -112,14 +112,6 @@ export async function loadWorkspaceForWorker(client: PoolClient, args: Workspace
   return result(row, a);
 }
 
-/** Questions of a chat turn whose gap is still open now; one answered meanwhile (by an extraction or an edit) is not asked. */
-function stillOpen(input: ReturnType<typeof buildInterviewInput>, turn: unknown) {
-  const questions = (turn as { questions?: unknown } | null)?.questions;
-  if (!Array.isArray(questions)) return turn;
-  const open = new Set(input.activeGaps.map(gap => gap.key));
-  return { ...(turn as object), questions: questions.filter(q => open.has((q as { gapKey?: string })?.gapKey ?? "")) };
-}
-
 /** Called only inside the worker's transaction after it has fenced the job.
  * Model/network execution belongs outside this transaction. */
 export async function persistWorkspaceTurn(client: PoolClient, args: WorkspaceTurnArgs) {
@@ -141,7 +133,9 @@ export async function persistWorkspaceTurn(client: PoolClient, args: WorkspaceTu
   // An extraction that was already recorded (a retry, or the same message extracted twice) changes nothing.
   if (scope === "extraction" && state.extractedMessageIds?.includes(args.currentMessageId)) return result(current, a);
   const input = buildInterviewInput(state, args.currentMessageId);
-  const turn = scope === "chat" ? stillOpen(input, args.turn) : args.turn;
+  // A chat turn is stored after its message's extraction may have answered what it asked: closed gaps are not asked, and
+  // are replaced so the stored turn still asks something while any gap is open (see settleChatTurn).
+  const turn = scope === "chat" ? settleChatTurn(state, args.currentMessageId, args.turn) : args.turn;
   if (!revalidateStoredTurn(input, turn, scope).success) {
     throw new AuthError("INVALID_INTERVIEW_TURN", 400, "The interview response could not be validated");
   }

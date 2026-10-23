@@ -1,8 +1,8 @@
 import { z } from "zod";
 import type { CompanyContext } from "./company-context";
 import { validateDiscovery, type DiscoveryInput } from "./discovery";
-import { REASK_AFTER_USER_TURNS, REASK_SUFFIX, STEP_GAP_PREFIX, STEP_KEYS as stepKeys, STEP_QUESTIONS as stepQuestions,
-  WORKSPACE_FIELDS } from "./workspace-fields";
+import { describeField, REASK_AFTER_USER_TURNS, REASK_SUFFIX, STEP_GAP_PREFIX, STEP_KEYS as stepKeys, STEP_QUESTIONS as stepQuestions,
+  stepLabel, WORKSPACE_FIELDS } from "./workspace-fields";
 import { parseInterviewInput, revalidateStoredTurn, type InterviewInput, type InterviewTurn, type Scope } from "./ai/discovery-interview";
 
 // Re-exported for server callers; the client imports ./workspace-fields directly.
@@ -385,8 +385,11 @@ export function recordInterviewTurn(rawState: WorkspaceState, rawTurn: unknown, 
   }
   const userTurn = state.messages.filter(m => m.role === "user").length;
   if (scope !== "chat") state.extractedMessageIds = [...(state.extractedMessageIds ?? []), currentMessageId];
-  for (const question of turn.questions) state.questions.push({ ...question,
-    fieldId: input.activeGaps.find(g => g.key === question.gapKey)!.fieldId, askedAtRevision: state.revision, askedAtUserTurn: userTurn });
+  // One question may cover several field gaps of one step: each covered gap is recorded as asked (so none is offered again).
+  for (const { gapKeys, ...question } of turn.questions) for (const gapKey of [question.gapKey, ...(gapKeys ?? [])]) {
+    state.questions.push({ ...question, gapKey, fieldId: input.activeGaps.find(g => g.key === gapKey)!.fieldId,
+      askedAtRevision: state.revision, askedAtUserTurn: userTurn });
+  }
   const proposalId = (index: number) => `p_${meta.id}_${index}`;
   const base = { status: "PENDING" as const, createdAt: meta.at, decidedBy: null };
   const fieldCount = turn.proposedUpdates.length;
@@ -406,6 +409,42 @@ export function recordInterviewTurn(rawState: WorkspaceState, rawTurn: unknown, 
   }));
   state.revision++;
   return checked(state);
+}
+
+/** A chat turn is saved after the message's extraction may already have answered what it asked. A question whose gap is no
+ * longer open is not asked; in its place goes the next still-open gap that this turn does not already ask (most urgent
+ * first, in the order the interview offers them), worded from the catalog, so a saved turn never ends without a question
+ * while a gap remains. Returns the turn to store: `rawTurn` itself when nothing changed. */
+const FALLBACK_WHY = "Without this the current process cannot be described well enough to design the future one.";
+export function settleChatTurn(rawState: WorkspaceState, currentMessageId: string, rawTurn: unknown): unknown {
+  const questions = (rawTurn as { questions?: unknown } | null)?.questions;
+  if (!Array.isArray(questions)) return rawTurn;
+  const state = checked(rawState);
+  const input = buildInterviewInput(state, currentMessageId);
+  const open = new Map(input.activeGaps.map(gap => [gap.key, gap]));
+  type Q = { gapKey: string; question: string; whyItMatters: string; gapKeys?: string[] };
+  const isOpen = (q: Q) => open.has(q?.gapKey ?? "");
+  const survivors = (questions as Q[]).filter(isOpen).map(q => q.gapKeys ? { ...q, gapKeys: q.gapKeys.filter(k => open.has(k)) } : q);
+  const missing = questions.length - survivors.length;
+  if (!missing) return rawTurn;
+  const taken = new Set(survivors.flatMap(q => [q.gapKey, ...(q.gapKeys ?? [])]));
+  const takenSteps = new Set(survivors.flatMap(q => { const id = open.get(q.gapKey)?.stepId; return id ? [id] : []; }));
+  const heard = input.history.filter(item => item.role === "assistant").map(item => item.text.replace(/\s+/g, " ").trim().toLocaleLowerCase("en"));
+  const filler: Q[] = [];
+  for (const gap of input.activeGaps) {
+    if (filler.length >= missing) break;
+    if (taken.has(gap.key) || (gap.stepId && takenSteps.has(gap.stepId))) continue;
+    const base = gap.key.startsWith(STEP_GAP_PREFIX) && gap.stepId
+      ? `Could you walk me through ${stepLabel(state, gap.stepId)}: who does it, in which system, what starts it and what can go wrong?`
+      : (gap.stepId ? describeField(state, gap.fieldId).question.replace(/this (?:current process )?step/, stepLabel(state, gap.stepId))
+        : describeField(state, gap.fieldId).question);
+    if (!base) continue;
+    const question = gap.key.endsWith(REASK_SUFFIX) ? `Coming back to this one: ${base}` : base;
+    if (heard.some(message => message.includes(question.replace(/\s+/g, " ").trim().toLocaleLowerCase("en")))) continue;
+    filler.push({ gapKey: gap.key, question, whyItMatters: FALLBACK_WHY });
+    taken.add(gap.key); if (gap.stepId) takenSteps.add(gap.stepId);
+  }
+  return { ...(rawTurn as object), questions: [...survivors, ...filler] };
 }
 
 const MAX_VISIBLE_DRAFTS = 12;
@@ -475,7 +514,10 @@ export function buildInterviewInput(rawState: WorkspaceState, currentMessageId: 
   // message may fill their blanks). Their EMPTY fields (and name and description for context) are listed.
   const recentlyAsked = new Set(incompleteDrafts.filter(d => askedAt.has(`${STEP_GAP_PREFIX}${d.id}`)).map(d => d.id));
   const shown = new Set(activeGaps.flatMap(g => g.stepId ? [g.stepId] : []));
-  const visibleDrafts = incompleteDrafts.filter(d => shown.has(d.id) || recentlyAsked.has(d.id)).slice(0, MAX_VISIBLE_DRAFTS);
+  // Every incomplete step is listed (those with a gap first): extraction can only fill fields it can see, and a step whose
+  // walkthrough gap fell below the shown head of the gap list must still have its blanks filled from what the user says.
+  const visibleDrafts = [...incompleteDrafts.filter(d => shown.has(d.id) || recentlyAsked.has(d.id)),
+    ...incompleteDrafts.filter(d => !shown.has(d.id) && !recentlyAsked.has(d.id))].slice(0, MAX_VISIBLE_DRAFTS);
   const fields = [...WORKSPACE_FIELDS.map(def => {
     const fact = state.facts.find(f => f.id === def.id)!;
     return { id: def.id, label: `${def.domain}: ${def.label}`, value: fact.value, status: wire(fact.status), ...(covered.has(def.id) ? { pending: true } : {}) };

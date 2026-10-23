@@ -20,12 +20,12 @@ export const TurnRecordSchema = z.object({
   /** stop_reason of each provider response for this turn, in attempt order (absent in older transcripts). */
   stopReasons: z.array(z.string().nullable()).default([]),
   /** Server-side repairs applied to the accepted turn (reply_replaced, question_dropped, name_hint_dropped). */
-  warnings: z.array(z.object({ path: z.string(), code: z.string() })).default([]),
+  warnings: z.array(z.object({ path: z.string(), code: z.string(), detail: z.string().optional() })).default([]),
   /** Provider responses of the chat call accepted from a JSON text block instead of a tool call (absent in older transcripts). */
   textFallbacks: count.default(0),
   /** The background extraction of this turn's user message (absent in older transcripts and when it was already done). */
   extraction: z.object({ attempts: count, validationErrors: count, textFallbacks: count,
-    warnings: z.array(z.object({ path: z.string(), code: z.string() })), inputTokens: count, outputTokens: count, latencyMs: count,
+    warnings: z.array(z.object({ path: z.string(), code: z.string(), detail: z.string().optional() })), inputTokens: count, outputTokens: count, latencyMs: count,
     error: z.string().nullable() }).nullable().default(null),
   /** Stage error code when the turn failed (AI_INVALID_OUTPUT, AI_PROVIDER_ERROR, ...). */
   error: z.string().nullable(),

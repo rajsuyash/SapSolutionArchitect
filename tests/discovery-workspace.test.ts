@@ -122,6 +122,28 @@ describe.skipIf(process.env.RUN_DB_TESTS !== "1")("durable discovery workspace",
     expect(loaded.canConfirm).toBe(true);
   });
 
+  it("never saves a chat turn without a question while gaps remain, even when extraction closed the asked gap first", async () => {
+    const { owner, project } = await fixture();
+    await workspaces.create(owner.token, project.id, "RACE", { variantName: "Race" }, randomUUID());
+    const sent = await workspaces.command(owner.token, project.id, "RACE", 1, randomUUID(),
+      { type: "SEND_MESSAGE", text: "Priya Nair owns the process and signs off every change." });
+    const messageId = sent.state.messages[0]!.id;
+    const args = { orgId: owner.user.orgId, projectId: project.id, variantCode: "RACE", requestedBy: owner.user.id,
+      expectedRevision: 2, currentMessageId: messageId };
+    const chat = { schemaVersion: 1, contextRevision: 2, reply: "Thank you for that context.",
+      questions: [{ gapKey: "g_process_owner", question: "Who owns this process day to day?", whyItMatters: "They confirm the rules." }] };
+    // Extraction finishes first and proposes an answer to the very gap the chat is about to ask.
+    const quote = "Priya Nair owns the process";
+    await transaction(pool, client => persistWorkspaceTurn(client, { ...args, requestKey: randomUUID(), scope: "extraction", turn: {
+      proposedUpdates: [{ fieldId: "process_owner", operation: "PROPOSE_SET", previousValue: null, value: quote, sourceId: messageId, quote }],
+      observations: [] } }));
+    const saved = await transaction(pool, client => persistWorkspaceTurn(client, { ...args, requestKey: randomUUID(), scope: "chat", turn: chat }));
+    const asked = saved.state.questions.map(q => q.gapKey);
+    expect(asked.length).toBeGreaterThan(0);
+    expect(asked).not.toContain("g_process_owner");
+    expect(saved.state.messages.at(-1)!.text).toContain(saved.state.questions[0]!.question);
+  });
+
   it("loads a workspace saved before the company-context fields existed and backfills them EMPTY", async () => {
     const { owner, project } = await fixture();
     const created = await workspaces.create(owner.token, project.id, "OLD", { variantName: "Old" }, randomUUID());

@@ -30,7 +30,7 @@ import { createProjectRepository } from "../src/lib/tenant";
 import { createDiscoveryWorkspaceRepository, persistWorkspaceTurn } from "../src/lib/discovery-workspace";
 import { extractMessage } from "../src/lib/consultant-extraction";
 import { buildInterviewInput, type WorkspaceState } from "../src/lib/discovery-workspace-model";
-import { REASK_SUFFIX, STEP_GAP_PREFIX, STEP_KEYS } from "../src/lib/workspace-fields";
+import { answerFor, composeReply, factStatus, fieldCommand, firstSentence, planForcedCompletion, type Asked, type Command, type Fixture } from "../src/lib/eval-user";
 import { jaccard, ScoringCaseSchema, scoreRun, summarize, TranscriptSchema, type ScoringCase, type Transcript } from "../src/lib/eval-score";
 
 const OUTPUT_TOKEN_CAP = 400_000;
@@ -39,14 +39,6 @@ const MAX_CONSECUTIVE_FAILURES = 3;
 const DEFAULT_CASE = "fixtures/eval/pump-o2c.json";
 const PROVIDERS = ["anthropic", "deepinfra", "stub"] as const;
 
-type Fixture = ScoringCase & {
-  opening: string; project: Record<string, unknown> & { variantCode: string; variantName: string };
-  answerBank: { catalog: Record<string, string> };
-  steps: ({ n: number } & Record<(typeof STEP_KEYS)[number], string>)[];
-  requirements: { key: string; stepN: number; kind: "PAIN_POINT" | "TO_BE_REQUIREMENT" | "CONTROL"; critical: boolean; statement: string }[];
-};
-type Command = Record<string, unknown>;
-
 function flag(name: string): string | undefined {
   const index = process.argv.indexOf(`--${name}`);
   return index >= 0 ? process.argv[index + 1] : undefined;
@@ -54,72 +46,6 @@ function flag(name: string): string | undefined {
 const has = (name: string) => process.argv.includes(`--${name}`);
 const loadFixture = (path: string) => JSON.parse(readFileSync(path, "utf8")) as Fixture;
 const message = (error: unknown) => error instanceof Error ? error.message : String(error);
-
-// --- simulated user ---------------------------------------------------------------------------------------------
-
-type FixtureStep = Fixture["steps"][number];
-const MATCH_THRESHOLD = 0.12;
-const stepDraftOf = (state: WorkspaceState, fieldId: string) => state.stepDrafts.find(d => fieldId.startsWith(`${d.id}_`));
-const factValue = (state: WorkspaceState, fieldId: string) => state.stepDrafts.flatMap(d => d.fields).find(f => f.id === fieldId)?.value ?? "";
-const firstSentence = (text: string) => text.trim().split(/(?<=[.!?])\s/)[0]!;
-
-/** The fixture step a draft the interviewer created stands for: the best word overlap between the draft's own name and
- * description (plus any extra hint such as the question asked) and each fixture step. Null when nothing resembles it. */
-function fixtureStepFor(fixture: Fixture, state: WorkspaceState, draftId: string, hint = "", avoid = new Set<number>()): FixtureStep | null {
-  const own = `${factValue(state, `${draftId}_name`)} ${factValue(state, `${draftId}_description`)}`;
-  const ranked = fixture.steps.map(step => ({ step, score: jaccard(`${own} ${hint}`, `${step.name} ${step.description}`) +
-    (own.toLowerCase().includes(step.name.toLowerCase()) ? 1 : 0) - (avoid.has(step.n) ? 0.5 : 0) })).sort((a, b) => b.score - a.score);
-  return ranked[0] && ranked[0].score >= MATCH_THRESHOLD ? ranked[0].step : null;
-}
-/** What the simulated user would say for a field the interviewer asked about, or null when the bank has no answer. */
-function answerFor(fixture: Fixture, state: WorkspaceState, fieldId: string): string | null {
-  const catalog = fixture.answerBank.catalog[fieldId];
-  if (catalog) return catalog;
-  const draft = stepDraftOf(state, fieldId);
-  if (!draft) return null;
-  return fixtureStepFor(fixture, state, draft.id)?.[fieldId.slice(draft.id.length + 1) as (typeof STEP_KEYS)[number]] ?? null;
-}
-const sentence = (text: string) => /[.!?]$/.test(text.trim()) ? text.trim() : `${text.trim()}.`;
-/** One step in the client's voice, as a real client would walk through it: the work, then the problems and wishes tied to it. */
-function stepParagraph(fixture: Fixture, step: FixtureStep): string {
-  const lead = { PAIN_POINT: "The problem here:", TO_BE_REQUIREMENT: "What we need:", CONTROL: "A control we need:" } as const;
-  return [`For the "${step.name}" step, ${step.actor} does the work in ${step.system}.`, sentence(step.trigger), sentence(step.description),
-    `The inputs are ${sentence(step.inputs)}`, `The outputs are ${sentence(step.outputs)}`,
-    `The controls are ${sentence(step.controls)}`, sentence(step.exceptions),
-    ...fixture.requirements.filter(r => r.stepN === step.n).map(r => `${lead[r.kind]} ${sentence(r.statement)}`)].join(" ");
-}
-type Asked = { gapKey: string; fieldId: string; question: string };
-/** The reply to an interviewer turn: a walkthrough question gets one paragraph about that step, any other asked field its
- * bank answer, anything the user cannot answer "I don't know". `answered` are fields the user spoke to directly, so a
- * missed capture can be seen (and counted as a direct edit); `told` remembers which fixture steps were already described. */
-function composeReply(fixture: Fixture, state: WorkspaceState, asked: Asked[], told: Set<number>) {
-  const paragraphs: string[] = [], singles: string[] = [], answered: string[] = [], unknown: string[] = [];
-  for (const q of asked) {
-    if (q.gapKey.startsWith(STEP_GAP_PREFIX)) {
-      const draftId = q.gapKey.slice(STEP_GAP_PREFIX.length).replace(new RegExp(`${REASK_SUFFIX}$`), "");
-      const step = fixtureStepFor(fixture, state, draftId, q.question, told);
-      if (step) { told.add(step.n); paragraphs.push(stepParagraph(fixture, step)); }
-      else singles.push("I am not sure how to describe that part of the process.");
-      continue;
-    }
-    const answer = answerFor(fixture, state, q.fieldId);
-    if (answer) { singles.push(answer); answered.push(q.fieldId); } else unknown.push(q.fieldId);
-  }
-  const text = [...paragraphs, [...singles, ...(unknown.length ? ["I don't know the rest of that."] : [])].join(" ")]
-    .filter(Boolean).join("\n\n");
-  return { text: text || "I don't have anything more to add.", answered, unknown };
-}
-function fieldCommand(state: WorkspaceState, fieldId: string, value: string | null): Command {
-  const base = { status: value === null ? "UNKNOWN" : "KNOWN", value, rationale: null, owner: null, sourceId: null, quote: null };
-  if (state.facts.some(f => f.id === fieldId)) return { type: "SET_FIELD", fieldId, ...base };
-  const draft = state.requirementDrafts.find(d => `${d.id}_statement` === fieldId);
-  if (draft) return { type: "SET_REQUIREMENT_DRAFT_STATEMENT", requirementDraftId: draft.id, ...base };
-  return { type: "SET_STEP_DRAFT_FIELD", fieldId, ...base };
-}
-function factStatus(state: WorkspaceState, fieldId: string) {
-  return (state.facts.find(f => f.id === fieldId) ?? state.stepDrafts.flatMap(d => d.fields).find(f => f.id === fieldId)
-    ?? state.requirementDrafts.map(d => d.statement).find(d => d.id === fieldId))?.status;
-}
 
 // --- scripted model (driver self-test, --fake-model) -------------------------------------------------------------
 
@@ -175,7 +101,7 @@ function metricsRecord(m: StageMetrics) {
   const groups = m.attemptIssues ?? (m.validationErrors.length ? [m.validationErrors] : []);
   return { model: m.model, attempts: m.attempts, validationErrors: m.validationErrors.length,
     issues: groups.flatMap((group, i) => group.map(issue => ({ attempt: i + 1, ...issue }))),
-    stopReasons: m.stopReasons ?? [], warnings: (m.warnings ?? []).map(({ path, code }) => ({ path, code })),
+    stopReasons: m.stopReasons ?? [], warnings: (m.warnings ?? []).map(({ path, code, detail }) => ({ path, code, ...(detail ? { detail } : {}) })),
     textFallbacks: m.textFallbacks ?? 0,
     inputTokens: m.inputTokens, outputTokens: m.outputTokens, latencyMs: m.latencyMs };
 }
@@ -258,7 +184,7 @@ async function runOnce(fixture: Fixture, deps: { pool: Pool; provider: string; m
         if (extractionMetrics) {
           outputTokens += extractionMetrics.outputTokens;
           record.extraction = { attempts: extractionMetrics.attempts, validationErrors: extractionMetrics.validationErrors.length,
-            textFallbacks: extractionMetrics.textFallbacks ?? 0, warnings: (extractionMetrics.warnings ?? []).map(({ path, code }) => ({ path, code })),
+            textFallbacks: extractionMetrics.textFallbacks ?? 0, warnings: (extractionMetrics.warnings ?? []).map(({ path, code, detail }) => ({ path, code, ...(detail ? { detail } : {}) })),
             inputTokens: extractionMetrics.inputTokens, outputTokens: extractionMetrics.outputTokens, latencyMs: extractionMetrics.latencyMs,
             error: extraction.error ? (extraction.error instanceof AIStageError ? extraction.error.code : "DRIVER_ERROR") : null };
         } else if (extraction.error) record.extraction = { attempts: 0, validationErrors: 0, textFallbacks: 0, warnings: [], inputTokens: 0,
