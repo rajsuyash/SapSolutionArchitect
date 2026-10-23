@@ -845,3 +845,21 @@ describe("late register groups (documents, governance)", () => {
       decisions: true, fitgap: true, foundation: true, integration: true, scope: false, reporting: true, documents: true, governance: false });
   });
 });
+
+describe("stop reason of a complete tool call", () => {
+  it("accepts one call of the expected tool whatever the stop reason (OpenRouter reports end_turn), and counts the call", async () => {
+    const h = harness({ outline: () => toolResponse(split.outline, "submit_to_be_outline", "end_turn"),
+      step: id => toolResponse(split.details[id], "submit_to_be_step", "end_turn") });
+    const result = await h.run();
+    expect(h.outlineCalls).toHaveLength(1);
+    expect(h.stepCalls).toHaveLength(STEP_IDS.length);
+    expect(result.metrics.stopReasons).toContain("end_turn");
+    expect(result.payload.design.steps).toHaveLength(STEP_IDS.length);
+  });
+  it("still treats max_tokens as truncated even when a tool_use block is present, and a wrong tool as no payload", async () => {
+    const cut = harness({ outline: () => toolResponse(split.outline, "submit_to_be_outline", "max_tokens"), patch: () => toolResponse(split.outline, "submit_to_be_outline_patch", "max_tokens") });
+    await expect(cut.run()).rejects.toMatchObject({ code: "AI_INVALID_OUTPUT" });
+    const wrong = harness({ outline: () => toolResponse(split.outline, "some_other_tool", "end_turn") });
+    await expect(wrong.run()).rejects.toMatchObject({ code: "AI_INVALID_OUTPUT" });
+  });
+});

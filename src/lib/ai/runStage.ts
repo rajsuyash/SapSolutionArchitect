@@ -301,7 +301,9 @@ export function createStageRunner(config: Config, options: Options = {}) {
         // A design answer cut off by the output limit is reported as such (reasoning tokens count against max_tokens), not as a missing payload.
         if (a.substage && message.stop_reason === "max_tokens") return TRUNCATED;
         const toolCalls = message.content.filter((block) => block.type === "tool_use");
-        const output = message.stop_reason === "tool_use" && toolCalls.length === 1 && toolCalls[0]!.name === a.tool.name ? toolCalls[0]!.input
+        // OpenRouter reports end_turn even when the model called the tool (measured live: 27 complete tool_use blocks rejected), so one call of the expected tool is accepted
+        // whatever the stop reason, except max_tokens, which means the input may be cut off.
+        const output = message.stop_reason !== "max_tokens" && toolCalls.length === 1 && toolCalls[0]!.name === a.tool.name ? toolCalls[0]!.input
           : a.textFallback && !toolCalls.length ? jsonFromText(message.content) : null;
         if (a.textFallback && !toolCalls.length && output !== null) metrics.textFallbacks! += 1;
         if (output === null) a.onNoPayload?.({ stopReason: message.stop_reason ?? null, blocks: message.content.map(describeBlock) });

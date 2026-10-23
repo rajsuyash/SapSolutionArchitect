@@ -328,13 +328,19 @@ describe("interview stage transport", () => {
     expect(JSON.parse(h.sent[1]!.messages[0]!.content).input).toEqual(extractionView(fixture()));
     expect(h.sent[1]!.messages[0]!.content).not.toContain("private-invalid-output");
   });
-  it.each(["wrong tool", "invented citation", "no tool"]) ("rejects %s after bounded repair", async kind => {
+  it.each(["wrong tool", "invented citation"]) ("rejects %s after bounded repair", async kind => {
     const wrong = extraction();
     if (kind === "invented citation") wrong.proposedUpdates[0]!.sentenceIds = ["S99"];
-    const h = harness(() => response(wrong, kind === "no tool" ? "end_turn" : "tool_use",
+    const h = harness(() => response(wrong, "tool_use",
       kind === "wrong tool" ? "other_tool" : "submit_extraction"));
     await expect(h.run(fixture())).rejects.toMatchObject({ code: "AI_INVALID_OUTPUT", metrics: { attempts: 2 } });
     expect(h.sent).toHaveLength(2);
+  });
+  it("accepts one complete call of the expected tool even when the provider reports end_turn (OpenRouter does)", async () => {
+    const h = harness(() => response(extraction(), "end_turn", "submit_extraction"));
+    const result = await h.run(fixture());
+    expect(h.sent).toHaveLength(1);
+    expect(result.metrics.stopReasons).toEqual(["end_turn"]);
   });
   it("requests 16000 output tokens for an extraction and records the stop reason per attempt", async () => {
     const h = harness(attempt => response(attempt === 1 ? { ...extraction(), proposedUpdates: [{ fieldId: "return-action" }] } : extraction(),
