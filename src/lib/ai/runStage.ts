@@ -27,7 +27,7 @@ export type StageMetrics = { stage: Stage; provider: Provider; model: string; in
   /** The provider's stop_reason for each completed provider response, in attempt order (aligned with attemptIssues);
    * null when the provider sent none. A response that never completed (timeout, transport error) adds no entry. */
   stopReasons?: (string | null)[];
-  /** Interview turns only: server-side repairs applied to an accepted turn (off-list reply, dropped question, normalized quote). */
+  /** Server-side repairs applied to an accepted turn (interview: off-list reply, dropped question, normalized quote) or outline (To-Be: REPAIRED_* codes). */
   warnings?: ValidationIssue[];
   /** Interview stages only: provider responses accepted from a JSON text block because the model skipped the tool call.
    * Counted so a run that leans on the fallback is visible; a clean native tool call is the expected case. */
@@ -298,6 +298,7 @@ export function createStageRunner(config: Config, options: Options = {}) {
           parallelism: config.AI_DESIGN_PARALLELISM,
           invalid: () => fail("AI_INVALID_OUTPUT"),
           record: (issues) => { metrics.validationErrors.push(...issues); metrics.attemptIssues!.push(issues); },
+          warn: (issues) => { metrics.warnings = [...(metrics.warnings ?? []), ...issues]; },
           ask: async (substage, request, group) => {
             const key = substage === "to_be_registers" ? `to_be_registers:${group}` : substage;
             const kind = kinds[key as keyof typeof kinds];

@@ -262,3 +262,20 @@ These trace rules are checked mechanically:
   step that lists it.
 - Each step needs a NORMAL test; if it has exceptions it also needs an EXCEPTION
   test, otherwise exceptionsNotApplicableReason must be set (never both).
+
+Further mechanical rules (each is also checked, none is optional):
+
+- Ids you create (steps, open questions) are 1 to 64 characters of letters, digits,
+  underscore or hyphen, and unique across all steps and open questions. No list of
+  ids may repeat an id. Every text value is non-empty.
+- Every step lists at least one requirementId, and `sequence` is exactly 1..n in the
+  order the steps appear.
+- Every open question lists at least one step id in affectedStepIds, taken from
+  your own steps.
+- An As-Is step is either traced by at least one step (in its asIsStepIds) or listed
+  in eliminatedAsIsSteps, never both.
+- IMPLEMENTED and CONDITIONAL coverage items have decisionId null. DEFERRED and
+  REJECTED are usable only with a supplied approved decision; when none is supplied
+  for a requirement, use IMPLEMENTED or CONDITIONAL.
+- The unknown-SAP-object check reads every text value of the outline (titles,
+  purposes, rationales, questions), not only implementation text.

@@ -4,6 +4,7 @@ import { DetailedDesignSchema, IMPLEMENTATION_KINDS, draftIssues, evaluateDesign
   type DesignContext, type DetailedDesign } from "./design-quality";
 import { REGISTER_GROUPS, REGISTER_GROUP_NAMES, RegisterGroupSchemas, groupOf, type RegisterGroup, type RegisterPayloads } from "./design-registers";
 import type { ValidationIssue } from "./problem-analysis";
+import { repairOutlineShape } from "./outline-repair";
 import { toBeContext, validateToBeOutput, type ToBeInput, type ToBeOutput } from "./to-be";
 
 /** Skeleton-then-expansion To-Be generation. A slow model cannot emit a whole design inside the stage budget, so the model
@@ -67,12 +68,13 @@ function skeleton(outline: Outline): DetailedDesign {
 }
 
 export function validateOutline(input: ToBeInput, references: DesignContext["references"], raw: unknown):
-  { success: true; outline: Outline } | { success: false; errors: ValidationIssue[] } {
-  const parsed = OutlineSchema.safeParse(raw);
+  { success: true; outline: Outline; warnings: ValidationIssue[] } | { success: false; errors: ValidationIssue[] } {
+  const repaired = repairOutlineShape(input.discovery, new Set(references.map(reference => reference.id)), raw);
+  const parsed = OutlineSchema.safeParse(repaired.value);
   if (!parsed.success) return { success: false, errors: rePath(draftIssues(parsed.error.issues), "draft", "outline") };
   const evaluation = evaluateDesign(toBeContext(input, references), skeleton(parsed.data));
   if (!evaluation.structurallyValid) return { success: false, errors: rePath(evaluation.errors, "draft", "outline").slice(0, MAX_ERRORS) };
-  return { success: true, outline: parsed.data };
+  return { success: true, outline: parsed.data, warnings: repaired.warnings };
 }
 
 /** Join the outline and the step bodies into a DetailedDesign. Parallel step calls cannot coordinate ids, so a business-rule or
@@ -188,6 +190,8 @@ export type DesignDeps = {
   invalid: () => Error;
   /** Record the issues of one failed attempt in the stage metrics. */
   record: (issues: ValidationIssue[]) => void;
+  /** Record the deterministic repairs the server applied to an accepted outline (warnings, not errors). */
+  warn?: (issues: ValidationIssue[]) => void;
   parallelism: number;
 };
 
@@ -199,6 +203,7 @@ export async function runDesign(input: ToBeInput, references: DesignContext["ref
     const result = raw === TRUNCATED ? { success: false as const, errors: [{ path: "to_be_outline", code: OUTPUT_TRUNCATED }] }
       : validateOutline(input, references, raw);
     if (!result.success) deps.record(result.errors);
+    else if (result.warnings.length) deps.warn?.(result.warnings);
     return result;
   };
   // The outline gets one repair: errors only, never the model's own text.
