@@ -120,7 +120,7 @@ RUN_BUILD_TESTS=1 RUN_INFRA_TESTS=1 RUN_DB_TESTS=1 pnpm test
 pnpm test:browser:synthetic
 ```
 
-The Playwright harness creates and removes an isolated local database, serves the production build over HTTPS, and tests all three fictional journeys with a deterministic worker. It covers progress after reload, retry, persisted scope review, and tenant isolation; it does not evaluate real AI quality. Local evidence is saved under ignored `playwright-report/` and `test-results/`. Live checks and screenshots are under `test-results/live-demo/`.
+The Playwright harness creates and removes an isolated local database, serves the production build over HTTPS, and tests all three fictional journeys with a deterministic worker. It covers progress after reload, retry, persisted scope review, and tenant isolation; it does not evaluate real AI quality. The worker verifies its S3 bucket on startup, so the harness needs object storage: it uses the MinIO from `.env.example` when reachable, otherwise it starts a tiny in-process stub (`tests/browser/support/s3-stub.ts`) that implements only HeadBucket and CreateBucket and answers 501 NotImplemented to everything else, so Docker is not required. Overrides: `BROWSER_TEST_S3_ENDPOINT` (use that endpoint as-is; optionally `BROWSER_TEST_S3_BUCKET`, `BROWSER_TEST_S3_ACCESS_KEY_ID`, `BROWSER_TEST_S3_SECRET_ACCESS_KEY` for the worker), `BROWSER_TEST_S3_STUB=1` (force the stub) or `=0` (forbid it). Local evidence is saved under ignored `playwright-report/` and `test-results/`. Live checks and screenshots are under `test-results/live-demo/`.
 
 For an explicitly authorized audit of the live demo (https://sap-web-965411321011.europe-west1.run.app):
 
