@@ -128,7 +128,7 @@ async function runOnce(fixture: Fixture, deps: { pool: Pool; provider: string; m
     state = current.state;
   };
   // A private runner (not the production singleton) so issue messages are recorded in the eval transcript only.
-  const stage = deps.fake ? scriptedStage(fixture, () => state) : createStageRunner(parseEnvironment(), { issueDetail: true }) as typeof runStage;
+  const stage = deps.fake ? scriptedStage(fixture, () => state) : createStageRunner(parseEnvironment(), { issueDetail: true, captureRaw: true }) as typeof runStage;
 
   const transcript: Transcript = { schemaVersion: 1, caseId: fixture.caseId, provider: deps.provider, model: deps.model,
     startedAt: new Date().toISOString(), turns: [],

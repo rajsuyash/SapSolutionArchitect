@@ -36,7 +36,13 @@ export type StageMetrics = { stage: Stage; provider: Provider; model: string; in
   /** True when this stage's requests carried `thinking: {type: "disabled"}` (AI_NO_THINKING_STAGES, DeepInfra only). */
   thinkingDisabled?: boolean;
   /** To-Be only: provider calls and tokens per request kind (the outline call and the per-step calls, repairs included). */
-  substages?: Partial<Record<Substage, { calls: number; inputTokens: number; outputTokens: number }>> };
+  substages?: Partial<Record<Substage, { calls: number; inputTokens: number; outputTokens: number }>>;
+  /** Eval only (Options.captureRaw): the raw payload of each To-Be call that failed validation, as capped JSON text. Never set in production. */
+  rawFailures?: RawFailure[] };
+export type RawFailure = { substage: Substage; key: string; attempt: number; json: string; truncated: boolean };
+/** Caps for Options.captureRaw: the first failures are the informative ones. */
+const RAW_FAILURE_MAX_ENTRIES = 8;
+const RAW_FAILURE_MAX_CHARS = 20000;
 export class AIStageError extends Error {
   constructor(public readonly code: Code, public readonly metrics: StageMetrics) {
     super(code); this.name = "AIStageError";
@@ -51,7 +57,9 @@ const INTERVIEW_MAX_TOKENS = 16000;
 const DESIGN_STAGES: ReadonlySet<Stage> = new Set<Stage>(["to_be"]);
 /** issueDetail: eval harness only. Adds the schema's own message (never the received value) to interview_turn issues
  * recorded in metrics; the issues sent back to the model and the production default are unchanged. */
-type Options = { fetch?: typeof fetch; sapCatalogDir?: string; issueDetail?: boolean };
+type Options = { fetch?: typeof fetch; sapCatalogDir?: string; issueDetail?: boolean;
+  /** Eval harness only, synthetic fixtures only: keep the raw payloads of failed To-Be calls in metrics.rawFailures. */
+  captureRaw?: boolean };
 
 /** Some models answer a chat turn with the tool payload as a JSON text block and stop with end_turn instead of calling
  * the tool. When there is no tool call at all, accept exactly that: one text block holding one JSON object. The payload
@@ -306,6 +314,12 @@ export function createStageRunner(config: Config, options: Options = {}) {
           invalid: () => fail("AI_INVALID_OUTPUT"),
           record: (issues) => { metrics.validationErrors.push(...issues); metrics.attemptIssues!.push(issues); },
           warn: (issues) => { metrics.warnings = [...(metrics.warnings ?? []), ...issues]; },
+          ...(options.captureRaw && { rawFailure: (substage: Substage, key: string, payload: unknown) => {
+            const failures = metrics.rawFailures ??= [];
+            if (failures.length >= RAW_FAILURE_MAX_ENTRIES) return;
+            const json = JSON.stringify(payload) ?? "undefined";
+            failures.push({ substage, key, attempt: failures.filter(item => item.substage === substage && item.key === key).length + 1, json: json.slice(0, RAW_FAILURE_MAX_CHARS), truncated: json.length > RAW_FAILURE_MAX_CHARS });
+          } }),
           ask: async (substage, request, group) => {
             const key = substage === "to_be_registers" ? `to_be_registers:${group}` : substage;
             const kind = kinds[key as keyof typeof kinds];

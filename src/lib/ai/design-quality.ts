@@ -79,13 +79,30 @@ export type DetailedDesign = z.infer<typeof DetailedDesignSchema>;
 type Issue = { code: string; path: string; detail?: string };
 const MAX_DRAFT_ERRORS = 20;
 const SAFE_NAME = /^[A-Za-z][A-Za-z0-9_]{0,40}$/;
+/** What kind of mistake a zod issue is, without any model-supplied value: expected/received TYPE names, the schema's own bounds,
+ * or the offending key names (safe identifiers only). Never reads issue.input and never echoes issue.message beyond the
+ * `received <type>` token zod puts there. */
+function issueKind(issue: z.core.$ZodIssue): string {
+  switch (issue.code) {
+    case "invalid_type": {
+      const received = /received ([a-z]+)/.exec(issue.message)?.[1] ?? "unknown";
+      return `expected ${String(issue.expected).slice(0, 20)}, received ${received}`;
+    }
+    case "unrecognized_keys": return issue.keys.slice(0, 5).map(key => SAFE_NAME.test(key) ? key : "<unsafe_key>").join(", ");
+    case "too_small": return `${String(issue.origin)} at least ${String(issue.minimum)}`;
+    case "too_big": return `${String(issue.origin)} at most ${String(issue.maximum)}`;
+    case "invalid_format": return String(issue.format).slice(0, 20);
+    case "invalid_value": return `one of ${issue.values.length} allowed values`;
+    default: return "";
+  }
+}
+
 /** Locate a strict-parse failure for the repair loop: real path, issue code and
  * key names/expected types only. Model-supplied values are never echoed. */
 export function draftIssues(issues: z.core.$ZodIssue[]): Issue[] {
   return issues.slice(0, MAX_DRAFT_ERRORS).map(issue => {
     const path = ["draft", ...issue.path.filter(part => typeof part === "number" || (typeof part === "string" && SAFE_NAME.test(part)))].join(".");
-    const extra = issue.code === "unrecognized_keys" ? issue.keys.slice(0, 5).map(key => SAFE_NAME.test(key) ? key : "<unsafe_key>").join(", ")
-      : issue.code === "invalid_type" ? `expected ${String(issue.expected).slice(0, 20)}` : "";
+    const extra = issueKind(issue);
     return { code: "INVALID_DRAFT", path: path.slice(0, 200), detail: `${issue.code}${extra ? `: ${extra}` : ""}`.slice(0, 200) };
   });
 }

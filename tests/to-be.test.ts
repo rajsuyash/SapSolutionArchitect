@@ -201,7 +201,9 @@ describe("trusted SAP references in generation", () => {
     const h = harness(() => response(designCiting("STANDARD")), () => 1000, dir);
     const result = await h.generate(withRelease());
     const sent = JSON.parse(h.sent[0]!.messages[0]!.content);
-    expect(sent.references).toEqual([expect.objectContaining({ id: "REF-SYN", status: "VERIFIED", fitType: "STANDARD", objects: ["Synthetic object"] })]);
+    // The outline sees the compact slice only: no evidence quotes or limitations (the step call receives the full entry).
+    expect(sent.references).toEqual([{ id: "REF-SYN", fitType: "STANDARD", capability: "Synthetic capability", objects: ["Synthetic object"] }]);
+    expect(JSON.parse(h.sent[1]!.messages[0]!.content).references).toEqual([expect.objectContaining({ id: "REF-SYN", status: "VERIFIED", evidence: expect.any(String) })]);
     expect(sent.approvedDecisions).toEqual([]);
     expect(h.sent).toHaveLength(4); // outline + 3 steps
     expect(result.payload.evaluation.errors).toEqual([]);

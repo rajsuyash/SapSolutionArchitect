@@ -164,13 +164,24 @@ describe("actionable draft errors", () => {
     (draft as Record<string, unknown>)["x".repeat(500) + " <script>"] = 1;
     const errors = draftErrors(input, draft);
     expect(errors.length).toBeLessThanOrEqual(20);
-    expect(errors).toContainEqual({ code: "INVALID_DRAFT", path: "draft.steps.0.sequence", detail: "invalid_type: expected number" });
+    expect(errors).toContainEqual({ code: "INVALID_DRAFT", path: "draft.steps.0.sequence", detail: "invalid_type: expected number, received string" });
     expect(errors.every(item => item.path.length <= 200 && (item.detail?.length ?? 0) <= 200)).toBe(true);
     expect(JSON.stringify(errors)).not.toContain("<script>");
   });
 
+  it("names the kind of each strict-parse failure (type, bound, enum) without echoing any value", () => {
+    const { input, draft } = fixture();
+    const step = draft.steps[0] as Record<string, unknown>;
+    step.requirementIds = "SECRET-VALUE-1"; step.actions = []; step.implementation = { kind: "SECRET-KIND", detail: "d", referenceIds: [] };
+    const errors = draftErrors(input, draft);
+    expect(errors).toContainEqual({ code: "INVALID_DRAFT", path: "draft.steps.0.requirementIds", detail: "invalid_type: expected array, received string" });
+    expect(errors).toContainEqual({ code: "INVALID_DRAFT", path: "draft.steps.0.actions", detail: "too_small: array at least 1" });
+    expect(errors.some(item => item.path === "draft.steps.0.implementation.kind" && item.detail?.startsWith("invalid_value: one of"))).toBe(true);
+    expect(JSON.stringify(errors)).not.toContain("SECRET");
+  });
+
   it("keeps a bare INVALID_DRAFT error for a non-object draft", () => {
-    expect(draftErrors(rentalContext, "nope")).toEqual([{ code: "INVALID_DRAFT", path: "draft", detail: "invalid_type: expected object" }]);
+    expect(draftErrors(rentalContext, "nope")).toEqual([{ code: "INVALID_DRAFT", path: "draft", detail: "invalid_type: expected object, received string" }]);
   });
 });
 

@@ -52,7 +52,10 @@ export const TranscriptSchema = z.object({
     attempts: count, validationErrors: count, inputTokens: count, outputTokens: count,
     /** Absent in older transcripts. Provider stop reasons, validation issue codes+paths (no model values) and tokens per To-Be request kind. */
     latencyMs: count.optional(), stopReasons: z.array(z.string()).optional(),
-    issues: z.array(z.object({ attempt: count, path: z.string(), code: z.string() })).optional(),
+    issues: z.array(z.object({ attempt: count, path: z.string(), code: z.string(), detail: z.string().optional() })).optional(),
+    /** Server-side repairs applied to accepted calls (REPAIRED_* codes and paths), and the capped raw payloads of calls that failed validation. */
+    warnings: z.array(z.object({ path: z.string(), code: z.string() })).optional(),
+    rawFailures: z.array(z.object({ substage: z.string(), key: z.string(), attempt: count, json: z.string(), truncated: z.boolean() })).optional(),
     substages: z.record(z.string(), z.object({ calls: count, inputTokens: count, outputTokens: count })).optional(),
     requirements: z.array(z.object({ id: z.string(), statement: z.string(), evidence: z.string().optional() })),
     design: z.object({ steps: z.array(StepRecordSchema) }).nullable(),

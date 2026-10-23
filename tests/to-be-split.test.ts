@@ -425,3 +425,47 @@ describe("output ceilings and truncation", () => {
     expect(retry).toContain("cut off");
   });
 });
+
+describe("model slips in tool inputs", () => {
+  const notes = (result: Awaited<ReturnType<ReturnType<typeof harness>["run"]>>) => (result.metrics.warnings ?? []).map(w => `${w.code}@${w.path}`);
+  it("accepts an outline whose list fields arrive as JSON strings or a bare id, without a repair call, and records the repairs", async () => {
+    const stringy = { ...split.outline, coverage: JSON.stringify(split.outline.coverage), openQuestions: JSON.stringify(split.outline.openQuestions),
+      conflictDecisions: JSON.stringify(split.outline.conflictDecisions),
+      steps: split.outline.steps.map((step, i) => i === 0 && step.requirementIds.length === 1 ? { ...step, requirementIds: step.requirementIds[0] } : step) };
+    const h = harness({ outline: () => stringy });
+    const result = await h.run();
+    expect(h.outlineCalls).toHaveLength(1);
+    expect(result.payload.design).toEqual(rentalDraftV2);
+    expect(notes(result)).toEqual(expect.arrayContaining(["REPAIRED_STRINGIFIED_JSON@outline.coverage", "REPAIRED_STRINGIFIED_JSON@outline.conflictDecisions",
+      "REPAIRED_STRINGIFIED_JSON@outline.openQuestions"]));
+  });
+  it("accepts a step and a register group whose nested fields arrive as JSON strings", async () => {
+    const h = harness({ step: (id, n) => id === STEP_IDS[0] && n === 1 ? { ...split.details[id], actions: JSON.stringify(split.details[id]!.actions), effects: JSON.stringify(split.details[id]!.effects) } : split.details[id],
+      registers: group => group === "decisions" ? { keyDesignDecisions: JSON.stringify(rentalRegisterGroups.decisions.keyDesignDecisions) } : rentalRegisterGroups[group] });
+    const result = await h.run();
+    expect(h.stepCount[STEP_IDS[0]!]).toBe(1); expect(h.registerCount.decisions).toBe(1);
+    expect(notes(result)).toEqual(expect.arrayContaining([`REPAIRED_STRINGIFIED_JSON@draft.steps.0.actions`, "REPAIRED_STRINGIFIED_JSON@draft.keyDesignDecisions"]));
+  });
+  it("tells the repair request where each problem is and what kind it is, with no model text", async () => {
+    const h = harness({ outline: n => n === 1 ? { ...split.outline, coverage: "private-model-prose", steps: split.outline.steps.map((step, i) => i === 0 ? { ...step, requirementIds: [] } : step) } : split.outline });
+    await h.run();
+    const first = h.outlineCalls[0]!.messages[0]!.content, repair = JSON.parse(h.outlineCalls[1]!.messages[0]!.content) as { repairNote: string; validationErrors: { path: string; detail: string }[] };
+    expect(first).not.toContain("repairNote");
+    expect(repair.validationErrors).toEqual(expect.arrayContaining([{ code: "INVALID_DRAFT", path: "outline.coverage", detail: "invalid_type: expected array, received string" }]));
+    expect(repair.repairNote).toContain("outline.coverage: expected an array, got a string");
+    expect(repair.repairNote).toContain("outline.steps.0.requirementIds: array at least 1");
+    expect(JSON.stringify(repair)).not.toContain("private-model-prose");
+  });
+  it("keeps raw failed payloads only when the eval asks for them, capped, and never in production metrics", async () => {
+    const bad = { ...split.outline, coverage: "x".repeat(30000) };
+    const eval_ = harness({ outline: () => bad });
+    const failed = await createStageRunner(settings(), { fetch: eval_.fetch, captureRaw: true })("to_be", fixture()).then(() => null, e => e);
+    expect(failed.code).toBe("AI_INVALID_OUTPUT");
+    expect(failed.metrics.rawFailures).toHaveLength(2);
+    expect(failed.metrics.rawFailures[0]).toMatchObject({ substage: "to_be_outline", key: "outline", attempt: 1, truncated: true });
+    expect(failed.metrics.rawFailures[0].json.length).toBe(20000); expect(failed.metrics.rawFailures[1].attempt).toBe(2);
+    const prod = harness({ outline: () => bad });
+    const failedProd = await prod.run().then(() => null, e => e);
+    expect(failedProd.metrics.rawFailures).toBeUndefined();
+  });
+});

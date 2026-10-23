@@ -6,6 +6,7 @@ import { REGISTER_GROUPS, REGISTER_GROUP_NAMES, RegisterGroupSchemas, groupOf, t
 import type { ValidationIssue } from "./problem-analysis";
 import { repairOutlineShape } from "./outline-repair";
 import { noCatalogNote } from "../sap-releases";
+import { normalizeToolInput } from "./tool-input-normalizer";
 import { toBeContext, validateToBeOutput, type ToBeInput, type ToBeOutput } from "./to-be";
 
 /** Skeleton-then-expansion To-Be generation. A slow model cannot emit a whole design inside the stage budget, so the model
@@ -44,7 +45,21 @@ const TRUNCATION_NOTE = "Your previous answer was cut off because it reached the
 /** Tells the model, in every call, when no verified catalog backs this product and release. */
 const catalogNote = (input: ToBeInput, references: DesignContext["references"]) =>
   references.length ? {} : { catalogNote: noCatalogNote(input.targetProduct, input.discovery.targetRelease) };
-const truncationNote = (errors: readonly ValidationIssue[]) => errors.some(error => error.code === OUTPUT_TRUNCATED) ? { repairNote: TRUNCATION_NOTE } : {};
+const MAX_NOTE_ISSUES = 30;
+const article = (word: string) => `${/^[aeiou]/.test(word) ? "an" : "a"} ${word}`;
+/** One plain-language line per issue: where, and what kind of mistake. Codes and type names only, never anything the model wrote. */
+const describeIssue = ({ path, code, detail }: ValidationIssue): string => {
+  const kind = detail && /^invalid_type: expected ([a-z]+), received ([a-z]+)$/.exec(detail);
+  return `${path}: ${kind ? `expected ${article(kind[1]!)}, got ${article(kind[2]!)}` : detail ? detail.replace(/^[a-z_]+: /, "") || code : code}`;
+};
+/** Added to a repair request: the paths and the kind of each issue (so the model can fix them) and, after a cut-off answer, how to shorten. */
+const repairNotes = (errors: readonly ValidationIssue[]) => {
+  if (!errors.length) return {};
+  const lines = errors.filter(error => error.code !== OUTPUT_TRUNCATED).slice(0, MAX_NOTE_ISSUES).map(describeIssue);
+  const parts = [...(lines.length ? [`Fix exactly these fields of your previous answer: ${lines.join("; ")}.`] : []),
+    ...(errors.some(error => error.code === OUTPUT_TRUNCATED) ? [TRUNCATION_NOTE] : [])];
+  return parts.length ? { repairNote: parts.join(" ") } : {};
+};
 
 const PLACEHOLDER = "(filled in by the step call)";
 const MAX_ERRORS = 30;
@@ -73,12 +88,13 @@ function skeleton(outline: Outline): DetailedDesign {
 
 export function validateOutline(input: ToBeInput, references: DesignContext["references"], raw: unknown):
   { success: true; outline: Outline; warnings: ValidationIssue[] } | { success: false; errors: ValidationIssue[] } {
-  const repaired = repairOutlineShape(input.discovery, new Set(references.map(reference => reference.id)), raw);
+  const normalized = normalizeToolInput(OutlineSchema, raw, "outline");
+  const repaired = repairOutlineShape(input.discovery, new Set(references.map(reference => reference.id)), normalized.value);
   const parsed = OutlineSchema.safeParse(repaired.value);
   if (!parsed.success) return { success: false, errors: rePath(draftIssues(parsed.error.issues), "draft", "outline") };
   const evaluation = evaluateDesign(toBeContext(input, references), skeleton(parsed.data));
   if (!evaluation.structurallyValid) return { success: false, errors: rePath(evaluation.errors, "draft", "outline").slice(0, MAX_ERRORS) };
-  return { success: true, outline: parsed.data, warnings: repaired.warnings };
+  return { success: true, outline: parsed.data, warnings: [...normalized.warnings, ...repaired.warnings] };
 }
 
 /** Join the outline and the step bodies into a DetailedDesign. Parallel step calls cannot coordinate ids, so a business-rule or
@@ -135,6 +151,19 @@ export function attributeErrors(errors: ValidationIssue[], design: DetailedDesig
   return { byStep, byGroup, global };
 }
 
+const OUTLINE_REFERENCE_OBJECTS = 8;
+const OUTLINE_OBJECT_CHARS = 100;
+/** The outline picks references by id and fit class; it needs the capability and a few object names to recognise a match, not the limitations
+ * and evidence quotes (about 600 characters each). The step call that cites a reference receives it in full. */
+export const outlineReference = ({ id, fitType, capability, objects }: DesignContext["references"][number]) =>
+  ({ id, fitType, capability, objects: objects?.slice(0, OUTLINE_REFERENCE_OBJECTS).map(object => object.slice(0, OUTLINE_OBJECT_CHARS)) });
+
+/** Outline model input: the discovery as saved, the decision register, and the catalog as a compact id/fit/capability/objects slice. */
+export function outlineRequest(input: ToBeInput, references: DesignContext["references"], validationErrors: ValidationIssue[]) {
+  return { input, approvedDecisions: [] as never[], references: references.map(outlineReference),
+    validationErrors, ...catalogNote(input, references), ...repairNotes(validationErrors) };
+}
+
 /** Per-step model input: the frozen outline plus only this step's requirements, the sources they quote, the references it cites. */
 export function stepRequest(input: ToBeInput, references: DesignContext["references"], outline: Outline, step: OutlineStep, validationErrors: ValidationIssue[]) {
   const { discovery } = input;
@@ -156,7 +185,7 @@ export function stepRequest(input: ToBeInput, references: DesignContext["referen
     conflicts: discovery.conflicts.filter(conflict => conflict.sourceIds.some(sourceId => sourceIds.has(sourceId))),
     inputOpenQuestions: discovery.openQuestions,
     references: references.filter(reference => step.implementation.referenceIds.includes(reference.id)),
-    approvedDecisions: [], validationErrors, ...catalogNote(input, references), ...truncationNote(validationErrors),
+    approvedDecisions: [], validationErrors, ...catalogNote(input, references), ...repairNotes(validationErrors),
   };
 }
 
@@ -171,7 +200,7 @@ export function registerRequest(input: ToBeInput, references: DesignContext["ref
     outline: { processName: outline.processName, steps: outline.steps, coverage: outline.coverage, openQuestions: outline.openQuestions },
     requirements: discovery.requirements.map(r => ({ id: r.id, asIsStepId: r.asIsStepId, critical: r.critical, kind: r.kind, statement: r.statement })),
     references: references.map(({ id, fitType, capability, objects }) => ({ id, fitType, capability, objects })),
-    inputOpenQuestions: discovery.openQuestions, validationErrors, ...catalogNote(input, references), ...truncationNote(validationErrors),
+    inputOpenQuestions: discovery.openQuestions, validationErrors, ...catalogNote(input, references), ...repairNotes(validationErrors),
   };
 }
 
@@ -194,19 +223,20 @@ export type DesignDeps = {
   invalid: () => Error;
   /** Record the issues of one failed attempt in the stage metrics. */
   record: (issues: ValidationIssue[]) => void;
-  /** Record the deterministic repairs the server applied to an accepted outline (warnings, not errors). */
+  /** Record the deterministic repairs the server applied to an accepted call (warnings, not errors). */
   warn?: (issues: ValidationIssue[]) => void;
+  /** Eval only: the raw payload of a call that failed validation, with the call it answered. */
+  rawFailure?: (substage: Substage, key: string, payload: unknown) => void;
   parallelism: number;
 };
 
 export async function runDesign(input: ToBeInput, references: DesignContext["references"], deps: DesignDeps): Promise<ToBeOutput> {
-  const base = { input, approvedDecisions: [] as never[], references };
   let outlineRepairs = 0;
   const requestOutline = async (errors: ValidationIssue[]) => {
-    const raw = await deps.ask("to_be_outline", { ...base, validationErrors: errors, ...catalogNote(input, references), ...truncationNote(errors) });
+    const raw = await deps.ask("to_be_outline", outlineRequest(input, references, errors));
     const result = raw === TRUNCATED ? { success: false as const, errors: [{ path: "to_be_outline", code: OUTPUT_TRUNCATED }] }
       : validateOutline(input, references, raw);
-    if (!result.success) deps.record(result.errors);
+    if (!result.success) { deps.record(result.errors); if (raw !== TRUNCATED) deps.rawFailure?.("to_be_outline", "outline", raw); }
     else if (result.warnings.length) deps.warn?.(result.warnings);
     return result;
   };
@@ -229,8 +259,10 @@ export async function runDesign(input: ToBeInput, references: DesignContext["ref
       let validationErrors = errors.get(stepId) ?? [];
       for (;;) {
         const raw = await deps.ask("to_be_step", stepRequest(input, references, current, current.steps[index]!, validationErrors));
-        const parsed = StepDetailSchema.safeParse(raw);
-        if (parsed.success) { details.set(stepId, parsed.data); return; }
+        const normalized = normalizeToolInput(StepDetailSchema, raw, `draft.steps.${index}`);
+        const parsed = StepDetailSchema.safeParse(normalized.value);
+        if (parsed.success) { details.set(stepId, parsed.data); if (normalized.warnings.length) deps.warn?.(normalized.warnings); return; }
+        if (raw !== TRUNCATED && raw !== null) deps.rawFailure?.("to_be_step", stepId, raw);
         validationErrors = raw === TRUNCATED ? [{ path: `draft.steps.${index}`, code: OUTPUT_TRUNCATED }] : raw === null ? [{ path: `draft.steps.${index}`, code: "NO_TOOL_PAYLOAD" }]
           : rePath(draftIssues(parsed.error.issues), "draft", `draft.steps.${index}`);
         deps.record(validationErrors);
@@ -241,8 +273,14 @@ export async function runDesign(input: ToBeInput, references: DesignContext["ref
       let validationErrors = errors.get(registerKey(group)) ?? [];
       for (;;) {
         const raw = await deps.ask("to_be_registers", registerRequest(input, references, current, group, validationErrors), group);
-        const parsed = RegisterGroupSchemas[group].safeParse(raw);
-        if (parsed.success) { registers.set(group, parsed.data satisfies RegisterPayloads[RegisterGroup]); return; }
+        const normalized = normalizeToolInput(RegisterGroupSchemas[group], raw, "draft");
+        const parsed = RegisterGroupSchemas[group].safeParse(normalized.value);
+        if (parsed.success) {
+          registers.set(group, parsed.data satisfies RegisterPayloads[RegisterGroup]);
+          if (normalized.warnings.length) deps.warn?.(normalized.warnings);
+          return;
+        }
+        if (raw !== TRUNCATED && raw !== null) deps.rawFailure?.("to_be_registers", group, raw);
         validationErrors = raw === TRUNCATED ? [{ path: "draft", code: OUTPUT_TRUNCATED }] : raw === null ? [{ path: "draft", code: "NO_TOOL_PAYLOAD" }] : draftIssues(parsed.error.issues);
         deps.record(validationErrors);
         markRetry(registerKey(group));

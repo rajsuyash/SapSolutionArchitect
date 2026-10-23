@@ -26,4 +26,16 @@ describe("toBeRun", () => {
     expect(toBeSummary(toBeRun(failed), "AI_INVALID_OUTPUT")).toBe(
       "To-Be AI_INVALID_OUTPUT: 2 calls 92s; stop reasons max_tokensx1 nonex1; top errors OUTPUT_TRUNCATEDx2; substages outline 2c 64624in/16000out");
   });
+  it("carries the issue detail, repair warnings and raw failed payloads into the transcript", () => {
+    const diag: StageMetrics = { ...failed, attemptIssues: [[{ path: "outline", code: "INVALID_DRAFT", detail: "invalid_type: expected array, received string" }]],
+      warnings: [{ path: "outline.steps", code: "REPAIRED_STRINGIFIED_JSON" }],
+      rawFailures: [{ substage: "to_be_outline", key: "outline", attempt: 1, json: '{"coverage":"[]"}', truncated: false }] };
+    const run = toBeRun(diag);
+    expect(run.issues).toEqual([{ attempt: 1, path: "outline", code: "INVALID_DRAFT", detail: "invalid_type: expected array, received string" }]);
+    const toBe = { attempted: true, structurallyValid: false, errorCode: "AI_INVALID_OUTPUT", requirements: [], design: null, ...run };
+    const parsed = TranscriptSchema.parse({ schemaVersion: 1, caseId: "c", provider: "p", model: "m", startedAt: "t", turns: [],
+      readiness: { reached: false, atTurn: null, forcedCompletion: false, directEdits: 0, blockers: [] }, toBe, aborted: null });
+    expect(parsed.toBe!.rawFailures).toEqual(diag.rawFailures); expect(parsed.toBe!.warnings).toEqual(run.warnings);
+    expect(parsed.toBe!.issues![0]!.detail).toContain("received string");
+  });
 });

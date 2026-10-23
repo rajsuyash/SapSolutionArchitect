@@ -1,10 +1,13 @@
-import type { StageMetrics } from "./ai/runStage";
+import type { RawFailure, StageMetrics } from "./ai/runStage";
 
 /** What the eval transcript keeps of a To-Be generation, on success and on failure. Codes and paths only, never model values. */
 export type ToBeRun = {
   attempts: number; validationErrors: number; inputTokens: number; outputTokens: number; latencyMs: number;
   stopReasons: string[];
-  issues: { attempt: number; path: string; code: string }[];
+  issues: { attempt: number; path: string; code: string; detail?: string }[];
+  warnings: { path: string; code: string }[];
+  /** Eval runs only (synthetic fixtures): capped raw payloads of failed calls. Empty unless the runner was built with captureRaw. */
+  rawFailures: RawFailure[];
   substages: Record<string, { calls: number; inputTokens: number; outputTokens: number }>;
 };
 
@@ -17,7 +20,9 @@ export function toBeRun(m: StageMetrics | undefined): ToBeRun {
     attempts: m?.attempts ?? 0, validationErrors: m?.validationErrors.length ?? 0, inputTokens: m?.inputTokens ?? 0,
     outputTokens: m?.outputTokens ?? 0, latencyMs: m?.latencyMs ?? 0,
     stopReasons: (m?.stopReasons ?? []).map(reason => reason ?? "none"),
-    issues: groups.flatMap((group, i) => group.map(({ path, code }) => ({ attempt: i + 1, path, code }))).slice(0, MAX_ISSUES),
+    issues: groups.flatMap((group, i) => group.map(({ path, code, detail }) => ({ attempt: i + 1, path, code, ...(detail && { detail }) }))).slice(0, MAX_ISSUES),
+    warnings: (m?.warnings ?? []).map(({ path, code }) => ({ path, code })).slice(0, MAX_ISSUES),
+    rawFailures: m?.rawFailures ?? [],
     substages: Object.fromEntries(Object.entries(m?.substages ?? {}).map(([name, v]) => [name, { ...v! }])),
   };
 }

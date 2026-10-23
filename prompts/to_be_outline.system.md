@@ -36,6 +36,9 @@ leave decisionIds empty or omit it. (Step-level decisionIds are added by the ste
 call; here decisionIds appear only on coverage items and open questions.) When
 validationErrors is nonempty, regenerate the complete outline correcting those
 errors, while retaining all requirements and unresolved policies.
+Every list field (steps, requirementIds, coverage, conflictDecisions, openQuestions and the
+rest) must be sent as a real JSON array and every object as a real JSON object, never as a
+quoted string containing JSON. When a repairNote is present it names each field to fix.
 
 Use discovery.asIsSteps as current-state facts and discovery.requirements as
 business needs. Requirements refer to their evidence.sourceId and exact quote;
@@ -147,9 +150,12 @@ honestly support.
 
 Each step's implementation has a kind (STANDARD, CONFIGURATION, EXTENSION,
 INTEGRATION, MANUAL or NEEDS_VALIDATION), a detail and referenceIds. The supplied
-references list is the ONLY source of SAP facts. Each entry has an id, fitType,
-capability, objects (the S/4HANA document types, item categories, Fiori apps,
-transactions and configuration it names), limitations and evidence.
+references list is the ONLY source of SAP facts. In this outline each entry has an id,
+fitType, capability and its first objects (the S/4HANA document types, item categories,
+Fiori apps, transactions and configuration it names); the limitations and evidence
+quotes are not repeated here: the step call receives the full entry of every reference
+you cite and states its limitations, so choose by capability and fit type and cite only
+a reference whose capability matches the step.
 
 For every step:
 
