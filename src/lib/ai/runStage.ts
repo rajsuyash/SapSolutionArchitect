@@ -50,7 +50,7 @@ export class AIStageError extends Error {
   }
 }
 type Config = Pick<Environment, "NODE_ENV" | "AI_PROVIDER" | "ANTHROPIC_API_KEY" | "DEEPINFRA_API_KEY" | "OPENROUTER_API_KEY" | "AI_REASONING_EFFORT" | "AI_MODEL" | "AI_MODEL_DESIGN" | "AI_MAX_INPUT_TOKENS" | "AI_MAX_CONCURRENCY" | "AI_CHAT_CONCURRENCY" | "AI_FAULT_INJECTION"
-  | "AI_NO_THINKING_STAGES" | "AI_STAGE_BUDGET_SECONDS" | "AI_CALL_TIMEOUT_SECONDS" | "AI_DESIGN_CALL_TIMEOUT_SECONDS" | "AI_DESIGN_PARALLELISM" | "AI_TO_BE_OUTLINE_REPAIRS" | "AI_TO_BE_PART_REPAIRS" | "AI_TO_BE_OUTLINE_MAX_TOKENS" | "AI_TO_BE_STEP_MAX_TOKENS" | "AI_TO_BE_REGISTERS_MAX_TOKENS"> & Partial<Pick<Environment, "AI_TO_BE_REVIEW">>;
+  | "AI_NO_THINKING_STAGES" | "AI_STAGE_BUDGET_SECONDS" | "AI_CALL_TIMEOUT_SECONDS" | "AI_DESIGN_CALL_TIMEOUT_SECONDS" | "AI_DESIGN_PARALLELISM" | "AI_TO_BE_OUTLINE_REPAIRS" | "AI_TO_BE_PART_REPAIRS" | "AI_TO_BE_OUTLINE_MAX_TOKENS" | "AI_TO_BE_STEP_MAX_TOKENS" | "AI_TO_BE_REGISTERS_MAX_TOKENS"> & Partial<Pick<Environment, "AI_TO_BE_REVIEW" | "AI_TO_BE_FIX_MAX_PARTS">>;
 const SDK_TIMEOUT_MARGIN_MS = 5000;
 /** OpenRouter has no count_tokens endpoint: input size is estimated locally. 3.5 chars/token is deliberately below the ~4 of English prose
  * (JSON, SAP codes and non-English text tokenize worse), so the AI_MAX_INPUT_TOKENS guard errs towards refusing. Not a measured count. */
@@ -128,6 +128,7 @@ export function createStageRunner(config: Config, options: Options = {}) {
     !Number.isSafeInteger(config.AI_CHAT_CONCURRENCY) || config.AI_CHAT_CONCURRENCY < 1 ||
     !Number.isSafeInteger(config.AI_MAX_INPUT_TOKENS) || config.AI_MAX_INPUT_TOKENS < 1) throw new Error("Invalid AI limits");
   const reviewOn = config.AI_TO_BE_REVIEW !== "off";
+  const fixOn = (config.AI_TO_BE_FIX_MAX_PARTS ?? 8) > 0;
   const provider: Provider = config.NODE_ENV === "production" && config.AI_PROVIDER === "stub" ? "anthropic" : config.AI_PROVIDER;
   // Slow models (MiMo: ~20-40 tokens/s) need larger values; the operator sets them, never the provider name.
   const callTimeout = config.AI_CALL_TIMEOUT_SECONDS * 1000;
@@ -175,7 +176,7 @@ export function createStageRunner(config: Config, options: Options = {}) {
     const model = isDesign ? config.AI_MODEL_DESIGN ?? config.AI_MODEL : config.AI_MODEL;
     const metrics: StageMetrics = { stage, provider, model, inputTokens: 0, outputTokens: 0,
       latencyMs: 0, attempts: 0, validationErrors: [], attemptIssues: [], stopReasons: [], textFallbacks: 0,
-      thinkingDisabled: reasoningOff || noThinking.has(stage) || (stage === "to_be" && TO_BE_SUBSTAGES.filter(substage => reviewOn || substage !== "to_be_review").every(substage => noThinking.has(substage))) };
+      thinkingDisabled: reasoningOff || noThinking.has(stage) || (stage === "to_be" && TO_BE_SUBSTAGES.filter(substage => (reviewOn || substage !== "to_be_review") && (fixOn || substage !== "to_be_fix")).every(substage => noThinking.has(substage))) };
     const fail = (code: Code) => new AIStageError(code, metrics);
     const deadline = new AbortController();
     const timer = setTimeout(() => deadline.abort(fail("AI_TIMEOUT")), stageBudget);
@@ -354,15 +355,17 @@ export function createStageRunner(config: Config, options: Options = {}) {
           maxPartRepairs: config.AI_TO_BE_PART_REPAIRS,
           remainingBudget: () => Math.max(0, 1 - (Date.now() - started) / stageBudget),
           review: reviewOn,
+          maxFixParts: config.AI_TO_BE_FIX_MAX_PARTS ?? 8,
           invalid: () => fail("AI_INVALID_OUTPUT"),
           record: (issues) => { metrics.validationErrors.push(...issues); metrics.attemptIssues!.push(issues); },
           warn: (issues) => { metrics.warnings = [...(metrics.warnings ?? []), ...issues]; },
           ...(options.captureRaw && { rawFailure: keepRaw }),
           ask: async (substage, request, group, askOptions) => {
-            // A patch call is an outline call: it is counted under the to_be_outline substage.
-            const key = substage === "to_be_registers" ? `to_be_registers:${group}` : group === "patch" ? "to_be_outline_patch" : substage;
+            // A patch call uses the outline patch tool; a fix call (substage to_be_fix) uses the tool of the part it repairs: a register group, the outline patch, or a step.
+            const key = group === "patch" ? "to_be_outline_patch" : substage === "to_be_registers" || (substage === "to_be_fix" && group) ? `to_be_registers:${group}`
+              : substage === "to_be_fix" ? "to_be_step" : substage;
             const kind = kinds[key as keyof typeof kinds];
-            const rawKeyOf = substage === "to_be_registers" ? String(group) : substage === "to_be_step" ? (request as { step: { id: string } }).step.id : substage === "to_be_review" ? "review" : group === "patch" ? "outline-patch" : "outline";
+            const rawKeyOf = group && group !== "patch" ? String(group) : substage === "to_be_step" || (substage === "to_be_fix" && !group) ? (request as { step: { id: string } }).step.id : substage === "to_be_review" ? "review" : group === "patch" ? "outline-patch" : "outline";
             const output = await generate({ system: kind.system, user: JSON.stringify(request), tool: tools[key]!, maxTokens: kind.maxTokens,
               // A thinking retry (one last call for a step that kept failing) sends the request without thinking-disabled; an operator's AI_REASONING_EFFORT=none still wins.
               guard: true, thinkingOff: reasoningOff || (!askOptions?.thinking && (noThinking.has(substage) || noThinking.has("to_be") || expansionThinkingOff(substage))),

@@ -8,8 +8,21 @@ export type RegisterContext = {
   referenceIds: ReadonlySet<string>; companyContext: readonly { fieldId: string; value: string }[]; takenIds: ReadonlySet<string>;
   /** The design's steps, for the checks that compare a register with step content (version 3). */
   steps?: readonly StepFacts[];
+  /** What each catalog reference evidences (its capability and object names), for the check that a row confirmed in the catalog is backed by what it cites. */
+  referenceTexts?: ReadonlyMap<string, string>;
 };
 export type Report = (code: string, path: string, detail?: string) => void;
 
 export const norm = (value: string) => value.toLowerCase().replace(/\s+/g, " ").replace(/[.\s]+$/, "").trim();
 export const overlaps = (a: string, b: string) => !!a && !!b && (a.includes(b) || b.includes(a));
+
+const WEAK_WORDS = new Set(["type", "types", "code", "codes", "document", "documents", "number", "numbers", "range", "ranges", "reason", "status", "configuration", "standard", "default", "other", "with", "from", "that", "this", "per"]);
+/** The content words of a text reduced to their first five letters (so "orders" meets "order"); generic words of SAP configuration are dropped. */
+export const stems = (value: string) => new Set(norm(value).split(/[^a-z0-9]+/).filter(word => word.length >= 4 && !WEAK_WORDS.has(word)).map(word => word.slice(0, 5)));
+/** True when `text` mentions at least one content word of `subject`. A subject with no content words proves nothing and reports `whenEmpty`. */
+export const mentionsSubject = (subject: string, text: string, whenEmpty: boolean) => {
+  const wanted = stems(subject);
+  if (!wanted.size) return whenEmpty;
+  const have = stems(text);
+  return [...wanted].some(stem => have.has(stem));
+};

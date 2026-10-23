@@ -120,6 +120,24 @@ describe("company-context coverage", () => {
   });
 });
 
+describe("a KPI value the answers hold but the row calls 'not provided' (KPI_VALUE_IGNORED)", () => {
+  const answers = ctx(answered(["kpi_baselines", "Days sales outstanding 62 days\nOn-time delivery 91%"], ["kpi_targets", "Days sales outstanding 45 days"]));
+  const row = (over: Record<string, unknown>) => ({ id: "KPI-9", name: "Days sales outstanding", baseline: "not provided", target: "Days sales outstanding 45 days", measuredFrom: "Billing documents",
+    referenceIds: [], needsValidation: true, validationReason: "App to be confirmed", requirementIds: [], contextFieldIds: ["kpi_targets"], stepIds: ["TB-3"], ...over });
+  const blockers = (over: Record<string, unknown>, context = answers) => evaluateDesign(context, design(draft => { draft.kpis = [row(over)]; })).blockers.map(item => `${item.code}@${item.path}`);
+  it("is a blocker (not an error) when the answer has a valued line about this measure", () => {
+    expect(blockers({})).toContain("KPI_VALUE_IGNORED@draft.kpis.0");
+    expect(evaluateDesign(answers, design(draft => { draft.kpis = [row({})]; })).errors).toEqual([]);
+    expect(blockers({ baseline: "not provided", target: "not provided" })).toContain("KPI_VALUE_IGNORED@draft.kpis.0");
+  });
+  it("is silent when the value is copied, when no line is about this measure, when the line has no figure, or when the question was not answered", () => {
+    expect(blockers({ baseline: "Days sales outstanding 62 days" })).not.toContain("KPI_VALUE_IGNORED@draft.kpis.0");
+    expect(blockers({ name: "Dispute turnaround", measuredFrom: "Dispute log" })).not.toContain("KPI_VALUE_IGNORED@draft.kpis.0");
+    expect(blockers({}, ctx(answered(["kpi_baselines", "Days sales outstanding tracked monthly"], ["kpi_targets", "Days sales outstanding 45 days"])))).not.toContain("KPI_VALUE_IGNORED@draft.kpis.0"); // the baseline line has no figure
+    expect(blockers({}, ctx())).not.toContain("KPI_VALUE_IGNORED@draft.kpis.0");
+  });
+});
+
 describe("unknown SAP objects", () => {
   it("flags an identifier outside the catalog in a step or a register, at its path, naming the token only", () => {
     const step = evaluateDesign(ctx(), design(draft => { draft.steps[1]!.effects.financial = "Post to the ledger with movement type 777."; }));

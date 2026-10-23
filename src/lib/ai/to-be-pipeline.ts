@@ -12,7 +12,8 @@ import { normalizeToolInput } from "./tool-input-normalizer";
 import { repairRegisterGroup, repairStepBody } from "./part-repair";
 import { toBeContext, validateToBeOutput, type ToBeInput, type ToBeOutput } from "./to-be";
 import { extractSapCodes, textFields } from "./design-text-lint";
-import { ReviewSchema, compactDesign, partKey, repairNote, routeFindings, reviewBlockers, type Part, type RoutedFinding } from "./to-be-review";
+import { ReviewSchema, compactDesign, partKey, repairNote, routeFindings, reviewBlockers, type Part, type RoutedFinding, type ReviewOutcome } from "./to-be-review";
+import { collectTargets, explainBlocker, findingLine, fixNote, newStepNote, partPath } from "./to-be-fix";
 
 /** Skeleton-then-expansion To-Be generation. A slow model cannot emit a whole design inside the stage budget, so the model
  * first returns an outline (steps, traceability, coverage, questions), then one small call per step fills in the operational
@@ -21,7 +22,7 @@ import { ReviewSchema, compactDesign, partKey, repairNote, routeFindings, review
  * (actors, output documents, rule ids) and run once the steps are in. The assembled result is a schemaVersion 3 DetailedDesign,
  * validated by the same checks as a one-shot design. */
 
-export type Substage = "to_be_outline" | "to_be_step" | "to_be_registers" | "to_be_review";
+export type Substage = "to_be_outline" | "to_be_step" | "to_be_registers" | "to_be_review" | "to_be_fix";
 
 export const OutlineSchema = z.strictObject({
   schemaVersion: z.literal(1), processName: text,
@@ -146,6 +147,12 @@ function outlineDigest(outline: unknown, errors: readonly ValidationIssue[]) {
 export function outlinePatchRequest(input: ToBeInput, references: DesignContext["references"], outline: unknown, validationErrors: ValidationIssue[]) {
   return { input, approvedDecisions: [] as never[], references: references.map(outlineReference), outline: outlineDigest(outline, validationErrors), validationErrors,
     ...catalogNote(input, references), repairNote: patchNotes(validationErrors, outline, input, references) };
+}
+
+/** The fix pass asks for a patch that adds the step(s) the design lacks. Unlike a repair patch it carries the whole last outline: the model has to see what exists to add to it. */
+export function fixPatchRequest(input: ToBeInput, references: DesignContext["references"], outline: unknown, lines: readonly string[]) {
+  return { input, approvedDecisions: [] as never[], references: references.map(outlineReference), outline, validationErrors: [] as ValidationIssue[],
+    ...catalogNote(input, references), repairNote: newStepNote(lines) };
 }
 
 const PLACEHOLDER = "(filled in by the step call)";
@@ -364,6 +371,8 @@ export type DesignDeps = {
   remainingBudget?: () => number;
   /** Run the consistency pass on a valid design (AI_TO_BE_REVIEW). Default false here; the stage runner turns it on unless the operator switched it off. */
   review?: boolean;
+  /** Most parts the fix pass may send back (AI_TO_BE_FIX_MAX_PARTS). Default 0 here (off); the stage runner passes the operator's value, default 8. */
+  maxFixParts?: number;
 };
 
 /** The first outline repair is always allowed; each further one only while more than this share of the stage budget remains. */
@@ -374,6 +383,9 @@ export const THINKING_RETRY_MIN_REMAINING = 0.25;
 export const REVIEW_MIN_REMAINING = 0.25;
 /** Step and register-group repairs one consistency pass may spend: one per affected part, at most this many parts. */
 export const MAX_REVIEW_REPAIRS = 6;
+/** The fix pass only starts while more than this share of the stage budget remains; adding a step through an outline patch needs more. */
+export const FIX_MIN_REMAINING = 0.25;
+export const FIX_PATCH_MIN_REMAINING = 0.4;
 export const outlineRepairAllowed = (done: number, max: number, remaining: number) =>
   done < max && (done === 0 || remaining > EXTRA_OUTLINE_REPAIR_MIN_REMAINING);
 
@@ -495,6 +507,31 @@ export async function runDesign(input: ToBeInput, references: DesignContext["ref
     await runPool(groups.filter(isLate).map(group => () => expandGroup(group)), deps.parallelism, task => task());
   };
 
+  /** One repair of one part: the note says what is open, the part's present answer travels with it. Resolves to the parsed answer, or undefined when the call failed, was cut off or did not parse.
+   * `fix` marks a call of the fix pass (substage to_be_fix), otherwise it belongs to the consistency pass. */
+  type Proposal = { part: Part; step?: StepDetail; group?: RegisterPayloads[RegisterGroup] };
+  const propose = async (part: Part, note: string, fix: boolean): Promise<Proposal | undefined> => {
+    const current = outline, tag = fix ? "fix" : "review";
+    try {
+      if (part.type === "step") {
+        const step = current.steps.find(candidate => candidate.id === part.stepId)!;
+        const raw = await deps.ask(fix ? "to_be_fix" : "to_be_step", stepRequest(input, references, current, step, [], { note, current: details.get(part.stepId) }));
+        const result = readStep(current, part.stepId, raw);
+        if (result.ok) { warnAll(...result.warnings); return { part, step: result.value }; }
+        if (raw !== TRUNCATED && raw !== null) deps.rawFailure?.(fix ? "to_be_fix" : "to_be_step", `${part.stepId}-${tag}`, raw);
+      } else {
+        const steps = isLate(part.group) ? assemble(current, details).steps : undefined;
+        const raw = await deps.ask(fix ? "to_be_fix" : "to_be_registers", registerRequest(input, references, current, part.group, [], steps, { note, current: registers.get(part.group) }), part.group);
+        const result = readGroup(current, part.group, raw);
+        if (result.ok) { warnAll(...result.warnings); return { part, group: result.value }; }
+        if (raw !== TRUNCATED && raw !== null) deps.rawFailure?.(fix ? "to_be_fix" : "to_be_registers", `${part.group}-${tag}`, raw);
+      }
+    } catch { /* a failed repair leaves its findings open; the stage still has its design */ }
+    return undefined;
+  };
+  /** Parts the consistency pass already sent back once: the fix pass does not send their review findings again. */
+  const reviewTried = new Set<string>();
+
   /** The consistency pass. A valid design is read once as a whole; each finding that names a step or register group sends that part back once with the finding as its
    * repair note, and a repair is kept only if the whole design is still valid with it. Findings that name no part, parts the repair could not fix and findings beyond the
    * repair limit stay as review findings. The pass never fails the stage: a design that was valid before it is valid after it. */
@@ -519,27 +556,13 @@ export async function runDesign(input: ToBeInput, references: DesignContext["ref
     }
     const parts = [...byPart.values()].slice(0, MAX_REVIEW_REPAIRS);
     const current = outline;
-    const proposals = new Map<string, { part: Part; step?: StepDetail; group?: RegisterPayloads[RegisterGroup] }>();
+    const proposals = new Map<string, Proposal>();
     if ((deps.remainingBudget?.() ?? 1) > REVIEW_MIN_REMAINING) {
-      const attempt = async ({ part, findings: concerned }: { part: Part; findings: RoutedFinding[] }) => {
-        const note = repairNote(part, concerned);
-        try {
-          if (part.type === "step") {
-            const step = current.steps.find(candidate => candidate.id === part.stepId)!;
-            const raw = await deps.ask("to_be_step", stepRequest(input, references, current, step, [], { note, current: details.get(part.stepId) }));
-            const result = readStep(current, part.stepId, raw);
-            if (result.ok) { proposals.set(partKey(part), { part, step: result.value }); warnAll(...result.warnings); }
-            else if (raw !== TRUNCATED && raw !== null) deps.rawFailure?.("to_be_step", `${part.stepId}-review`, raw);
-          } else {
-            const steps = isLate(part.group) ? assemble(current, details).steps : undefined;
-            const raw = await deps.ask("to_be_registers", registerRequest(input, references, current, part.group, [], steps, { note, current: registers.get(part.group) }), part.group);
-            const result = readGroup(current, part.group, raw);
-            if (result.ok) { proposals.set(partKey(part), { part, group: result.value }); warnAll(...result.warnings); }
-            else if (raw !== TRUNCATED && raw !== null) deps.rawFailure?.("to_be_registers", `${part.group}-review`, raw);
-          }
-        } catch { /* a failed repair leaves its findings open; the stage still has its design */ }
-      };
-      await runPool(parts, deps.parallelism, attempt);
+      for (const { part } of parts) reviewTried.add(partKey(part));
+      await runPool(parts, deps.parallelism, async ({ part, findings: concerned }) => {
+        const proposal = await propose(part, repairNote(part, concerned), false);
+        if (proposal) proposals.set(partKey(part), proposal);
+      });
     }
     // Adopt each proposal on its own, and only when the whole design is still valid with it.
     let result = data, finalDesign = design;
@@ -569,11 +592,106 @@ export async function runDesign(input: ToBeInput, references: DesignContext["ref
     return { ...(final?.success ? final.data : result), reviewFindings: open.map(({ kind, paths, explanation, outcome, blockerPath }) => ({ kind, paths, explanation, outcome, blockerPath })) };
   };
 
+  /** The fix pass, part by part: every fixable heuristic blocker and every unresolved review finding that names a part goes back to that part in ONE call (all findings
+   * for the part in one note, at most `cap` parts). A repaired part is kept only if the whole design still validates, the blockers do not grow, and at least one of the
+   * part's findings no longer fires (the heuristic checks run again on the trial design; a review finding cannot be re-run, so it counts as cleared by a kept repair).
+   * Otherwise the original part and its blockers stay. */
+  const fixParts = async (start: ToBeOutput, cap: number): Promise<{ data: ToBeOutput; used: number }> => {
+    const { targets, routed } = collectTargets(start.design, start.evaluation.blockers, start.reviewFindings, reviewTried);
+    const chosen = targets.slice(0, cap);
+    if (!chosen.length) return { data: start, used: 0 };
+    const proposals = new Map<string, Proposal>();
+    await runPool(chosen, deps.parallelism, async ({ part, blockers, findingIndexes }) => {
+      const lines = [...blockers.map(blocker => explainBlocker(blocker, start.design, input)), ...findingIndexes.map(i => findingLine(start.reviewFindings![i]!))];
+      const proposal = await propose(part, fixNote(part, lines), true);
+      if (proposal) proposals.set(partKey(part), proposal);
+    });
+    let data = start, findings = start.reviewFindings;
+    const adopted = new Set<string>();
+    for (const target of chosen) {
+      const { part } = target, proposal = proposals.get(partKey(part)), path = partPath(part, start.design);
+      if (!proposal) { deps.warn?.([{ code: "FIX_NO_PROPOSAL", path }]); continue; }
+      const priorStep = part.type === "step" ? details.get(part.stepId) : undefined, priorGroup = part.type === "group" ? registers.get(part.group) : undefined;
+      if (proposal.step && part.type === "step") details.set(part.stepId, proposal.step);
+      if (proposal.group && part.type === "group") registers.set(part.group, proposal.group);
+      const withPart = new Set([...adopted, partKey(part)]);
+      const trialFindings = findings?.map((finding, i): ReviewOutcome => finding.outcome === "UNRESOLVED" && routed[i]!.parts.length > 0 && routed[i]!.parts.every(item => withPart.has(partKey(item)))
+        ? { ...finding, outcome: "REPAIRED" } : finding);
+      const validated = validateToBeOutput(input, assemble(outline, details, registers), references, reviewBlockers(trialFindings));
+      const stillOpen = (blocker: { code: string; path: string }) => validated.success && validated.data.evaluation.blockers.some(item => item.code === blocker.code && item.path === blocker.path);
+      const cleared = target.blockers.filter(blocker => !stillOpen(blocker)).length
+        + (trialFindings ?? []).filter((finding, i) => finding.outcome === "REPAIRED" && findings![i]!.outcome === "UNRESOLVED").length;
+      if (validated.success && cleared > 0 && validated.data.evaluation.blockers.length <= data.evaluation.blockers.length) {
+        adopted.add(partKey(part)); findings = trialFindings;
+        data = { ...validated.data, ...(findings && { reviewFindings: findings }) };
+        deps.warn?.([{ code: "FIX_APPLIED", path }]);
+      } else {
+        if (part.type === "step" && priorStep) details.set(part.stepId, priorStep);
+        if (part.type === "group" && priorGroup) registers.set(part.group, priorGroup);
+        deps.warn?.([{ code: "FIX_REJECTED", path }]);
+      }
+    }
+    return { data, used: chosen.length };
+  };
+
+  /** A finding that needs a step the design lacks: ONE outline patch, then only the new or changed steps are expanded again. Returns the design with the findings marked
+   * repaired, or undefined when the patch, an expansion or the whole design's validation failed (the caller restores its snapshot). */
+  const addSteps = async (data: ToBeOutput, indexes: readonly number[]): Promise<ToBeOutput | undefined> => {
+    if (lastShaped === undefined) return undefined;
+    const raw = await deps.ask("to_be_fix", fixPatchRequest(input, references, lastShaped, indexes.map(i => findingLine(data.reviewFindings![i]!))), "patch");
+    if (raw === TRUNCATED || raw === null) return undefined;
+    const parsed = OutlinePatchSchema.safeParse(normalizeToolInput(OutlinePatchSchema, raw, "outline.patch").value);
+    if (!parsed.success) return undefined;
+    const patched = validateOutline(input, references, applyOutlinePatch(lastShaped, parsed.data as OutlinePatch));
+    if (!patched.success) return undefined;
+    const before = new Map(outline.steps.map(step => [step.id, JSON.stringify(step)]));
+    const changed = patched.outline.steps.filter(step => before.get(step.id) !== JSON.stringify(step));
+    const expanded = new Map<string, StepDetail>();
+    await runPool(changed, deps.parallelism, async step => {
+      const answer = await deps.ask("to_be_fix", stepRequest(input, references, patched.outline, step, []));
+      const result = readStep(patched.outline, step.id, answer);
+      if (result.ok) { expanded.set(step.id, result.value); warnAll(...result.warnings); }
+    });
+    if (expanded.size !== changed.length) return undefined;
+    for (const stepId of [...details.keys()]) if (!patched.outline.steps.some(step => step.id === stepId)) details.delete(stepId);
+    for (const [stepId, detail] of expanded) details.set(stepId, detail);
+    outline = patched.outline; lastShaped = patched.shaped;
+    const findings = data.reviewFindings!.map((finding, i): ReviewOutcome => indexes.includes(i) ? { ...finding, outcome: "REPAIRED" } : finding);
+    const validated = validateToBeOutput(input, assemble(outline, details, registers), references, reviewBlockers(findings));
+    return validated.success ? { ...validated.data, reviewFindings: findings } : undefined;
+  };
+
+  const fixed = async (start: ToBeOutput): Promise<ToBeOutput> => {
+    const cap = deps.maxFixParts ?? 0, remaining = () => deps.remainingBudget?.() ?? 1;
+    if (cap <= 0) return start;
+    const first = collectTargets(start.design, start.evaluation.blockers, start.reviewFindings, reviewTried);
+    if (!first.targets.length && !first.newStep.length) return start;
+    if (remaining() <= FIX_MIN_REMAINING) { deps.warn?.([{ code: "FIX_SKIPPED_BUDGET", path: "to_be_fix" }]); return start; }
+    const { data: afterParts, used } = await fixParts(start, cap);
+    // Findings that need a new step cannot be fixed per part. They are only kept as findings unless the budget allows a patch, and the patch is only kept if it leaves fewer blockers.
+    const missing = collectTargets(afterParts.design, afterParts.evaluation.blockers, afterParts.reviewFindings, reviewTried).newStep;
+    if (!missing.length) return afterParts;
+    if (remaining() <= FIX_PATCH_MIN_REMAINING) { deps.warn?.([{ code: "FIX_PATCH_SKIPPED_BUDGET", path: "to_be_fix" }]); return afterParts; }
+    const snapshot = { outline, lastShaped, details: new Map(details), registers: new Map(registers) };
+    const patched = await addSteps(afterParts, missing).catch(() => undefined);
+    // The steps it added may leave blockers of their own (a new step with no objective, role or test): the same part-by-part pass clears them with what is left of the cap.
+    const settled = patched && await fixParts(patched, Math.max(0, cap - used));
+    if (settled && settled.data.evaluation.blockers.length < afterParts.evaluation.blockers.length) {
+      deps.warn?.([{ code: "FIX_PATCH_APPLIED", path: "to_be_fix" }]);
+      return settled.data;
+    }
+    outline = snapshot.outline; lastShaped = snapshot.lastShaped;
+    details.clear(); for (const [stepId, detail] of snapshot.details) details.set(stepId, detail);
+    registers.clear(); for (const [group, value] of snapshot.registers) registers.set(group, value);
+    deps.warn?.([{ code: "FIX_PATCH_REJECTED", path: "to_be_fix" }]);
+    return afterParts;
+  };
+
   await expand(outline.steps.map(step => step.id), REGISTER_GROUP_NAMES, new Map());
   for (let round = 0; ; round++) {
     const design = assemble(outline, details, registers);
     const result = validateToBeOutput(input, design, references);
-    if (result.success) return reviewed(result.data, design);
+    if (result.success) return fixed(await reviewed(result.data, design));
     deps.record(result.errors);
     if (round >= 1) throw deps.invalid();
     const { byStep, byGroup, global } = attributeErrors(result.errors, design);

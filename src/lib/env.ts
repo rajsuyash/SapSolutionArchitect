@@ -23,7 +23,7 @@ const modelPrices = z.preprocess((value) => {
 export const STAGE_NAMES = ["problem_analysis", "to_be", "interview_turn", "extraction_turn"] as const;
 /** The To-Be stage runs as an outline call, one call per step, eight register calls and a consistency review of the finished design; each kind can have
  * reasoning switched off on its own ("to_be" covers all). They are request kinds inside one stage, so they are not in STAGE_NAMES. */
-export const TO_BE_SUBSTAGES = ["to_be_outline", "to_be_step", "to_be_registers", "to_be_review"] as const;
+export const TO_BE_SUBSTAGES = ["to_be_outline", "to_be_step", "to_be_registers", "to_be_review", "to_be_fix"] as const;
 // Comma-separated stage or To-Be substage names; blank or unset means none. Unknown names are rejected.
 const stageList = z.preprocess((value) => typeof value === "string"
   ? value.split(",").map((name) => name.trim()).filter(Boolean) : value, z.array(z.enum([...STAGE_NAMES, ...TO_BE_SUBSTAGES])).default([]));
@@ -59,6 +59,9 @@ const schema = z.object({
   // Consistency review: after a valid design is assembled, one call reads the whole of it and lists contradictions, missing links, unresolved codes and gaps; each finding that
   // names a step or register group sends that part back once. "off" skips the call. It also runs only while more than a quarter of AI_STAGE_BUDGET_SECONDS remains.
   AI_TO_BE_REVIEW: z.preprocess(blankToUndefined, z.enum(["on", "off"]).default("on")),
+  // Fix pass: after the review, every fixable heuristic blocker and unresolved review finding that names a step or register group sends that part back once (all findings for
+  // the part in one call), at most this many parts (0 = off). It only runs while more than a quarter of the stage budget remains; adding a step through an outline patch needs 40%.
+  AI_TO_BE_FIX_MAX_PARTS: whole(8, 0, 20),
   // Output-token ceilings (max_tokens) of the three To-Be request kinds. Reasoning tokens count against them, so a model that
   // thinks needs room above the visible JSON (outline ~3k, step ~3k, register group ~3.5k tokens without reasoning).
   AI_TO_BE_OUTLINE_MAX_TOKENS: whole(16000, 1000, 64000),

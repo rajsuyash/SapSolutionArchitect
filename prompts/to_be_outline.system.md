@@ -300,6 +300,10 @@ Further mechanical rules (each is also checked, none is optional):
 - Ids you create (steps, open questions) are 1 to 64 characters of letters, digits,
   underscore or hyphen, and unique across all steps and open questions. No list of
   ids may repeat an id. Every text value is non-empty.
+- Cite only ids that exist. A step, open question or decision id written inside a rationale,
+  question or other text must be an id in this outline or the decision register, spelled
+  exactly as it is there (ETO-05, not ETO-5); an id that does not exist is rejected
+  (DANGLING_ID_REFERENCE). Describe a thing in words instead of citing an id you have not created.
 - Step ids are hierarchical by process area and scenario so a reader can place a step
   from its id: AREA-S-N, where AREA is a short upper-case code for the process area or
   value stream (two to five letters, taken from the process, for example the first

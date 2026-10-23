@@ -2,7 +2,7 @@ import { z } from "zod";
 
 import { FIT_TYPES, STEP_TYPES, id, ids, list, phase, text, texts } from "./design-primitives";
 import { checkRegisters, RegistersShape } from "./design-registers";
-import { internalTermHits, textFields } from "./design-text-lint";
+import { danglingIdHits, designIds, internalTermHits, textFields } from "./design-text-lint";
 import { lintSapObjects } from "./sap-object-lint";
 
 export { id, ids, list, text, FIT_TYPES, STEP_TYPES };
@@ -146,6 +146,11 @@ export function evaluateDesign(input: unknown, value: unknown): DesignEvaluation
   for (const hit of lintSapObjects(draft, context.references)) error("UNKNOWN_SAP_OBJECT", hit.path, `${hit.kind} ${hit.token}`);
   // The generator's working vocabulary in client text is a review finding, never a reason to reject the design.
   for (const hit of internalTermHits(draft)) block("INTERNAL_TERM", hit.path, hit.term);
+  // An id the text cites that follows this design's own id pattern but names nothing is a structural error: the part that cites it is sent back to be repaired.
+  const ownIds = [...designIds(draft), ...(context.decisionRegister ?? []).map(item => item.id)];
+  const knownIds = new Set([...ownIds, ...context.requirements.map(item => item.id), ...context.asIsSteps.map(item => item.id), ...context.sources.map(item => item.id),
+    ...context.conflicts.map(item => item.id), ...context.approvedDecisions.map(item => item.id), ...context.references.map(item => item.id), ...(context.companyContext ?? []).map(item => item.fieldId)]);
+  for (const hit of danglingIdHits(draft, ownIds, knownIds)) error("DANGLING_ID_REFERENCE", hit.path, `${hit.token} does not exist in this design`);
   const unique = (values: string[], path: string, code: string) => {
     if (new Set(values).size !== values.length) error(code, path);
   };
@@ -312,6 +317,7 @@ export function evaluateDesign(input: unknown, value: unknown): DesignEvaluation
     stepIds: new Set(steps.keys()), referenceIds: new Set(references.keys()), companyContext: context.companyContext ?? [],
     steps: draft.steps.map(step => ({ id: step.id, actor: step.actor, outputDocuments: step.outputDocuments, stepType: step.stepType, phase: step.phase, texts: textFields(step),
       interimProcess: step.interimProcess, businessRuleIds: step.businessRules.map(rule => rule.id) })),
+    referenceTexts: new Map(context.references.map(item => [item.id, [item.capability ?? "", ...(item.objects ?? [])].join(" ")])),
     takenIds: new Set([...steps.keys(), ...draft.steps.flatMap(step => [...step.businessRules.map(rule => rule.id), ...step.acceptanceTests.map(test => test.id)]),
       ...draft.openQuestions.map(question => question.id)]),
   }, error, block);

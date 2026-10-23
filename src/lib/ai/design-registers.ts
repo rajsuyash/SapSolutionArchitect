@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { FIT_TYPES, basis, id, ids, list, text, trace } from "./design-primitives";
-import { norm, overlaps, type RegisterContext, type Report, type Row } from "./design-register-types";
+import { mentionsSubject, norm, overlaps, type RegisterContext, type Report, type Row } from "./design-register-types";
 import {
   ConfigurationItemSchema, ControlMappingSchema, DocumentStatusModelSchema, EndToEndTestSchema, ObjectiveSchema, ReportRowSchema, RoleSchema,
   PeriodEndActivitySchema, ScopeStatementSchema, SodAssessmentSchema, checkVersion3, fitGapExtension, interfaceExtension, kpiExtension, masterDataExtension, orgExtension,
@@ -173,7 +173,7 @@ export function checkRegisters(draft: Draft, ctx: RegisterContext, error: Report
     else if (segments(retained).some(part => !names.some(name => overlaps(part, name)))) error("RETAINED_SYSTEM_UNCOVERED", "draft.interfaces");
   }
 
-  const kpis = rows("kpis") as (Row & { baseline: string; target: string })[];
+  const kpis = rows("kpis") as (Row & { baseline: string; target: string; name: string; measuredFrom: string })[];
   const baselines = known.get("kpi_baselines"), targets = known.get("kpi_targets");
   kpis.forEach((row, i) => {
     traced("kpis", row, i);
@@ -182,6 +182,12 @@ export function checkRegisters(draft: Draft, ctx: RegisterContext, error: Report
     for (const [value, source] of [[row.baseline, baselines], [row.target, targets]] as const) {
       const claimed = norm(value);
       if (claimed !== NOT_PROVIDED && (source === undefined || !norm(source).includes(claimed))) error("KPI_VALUE_NOT_VERBATIM", path);
+    }
+    // "not provided" while the answer has a line about this measure is a value the design ignored (a review finding, fixable by the KPI call).
+    for (const [value, source] of [[row.baseline, baselines], [row.target, targets]] as const) {
+      if (norm(value) === NOT_PROVIDED && source !== undefined && segments(source).some(part => part !== NOT_PROVIDED && /\d/.test(part) && mentionsSubject(`${row.name} ${row.measuredFrom}`, part, false))) {
+        block("KPI_VALUE_IGNORED", path); break;
+      }
     }
   });
   if (targets !== undefined) {

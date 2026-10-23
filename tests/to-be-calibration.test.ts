@@ -23,7 +23,8 @@ describe("validators against the hand-written expert control (pump-o2c, the inpu
     const result = validateToBeOutput(expert.input, expert.design, expert.references);
     expect(result.success).toBe(false);
     if (!result.success) expect(codes(result.errors)).toEqual(
-      ["AS_IS_DISPOSITION_CONFLICT", "AS_IS_TRACE_MISMATCH", "CRITICAL_REQUIREMENT_UNTESTED", "SAP_APPLICABILITY_UNVERIFIED"]);
+      // DANGLING_ID_REFERENCE: the control's step text cites GAP-04, -06, -08 and -10, rows its register does not carry.
+      ["AS_IS_DISPOSITION_CONFLICT", "AS_IS_TRACE_MISMATCH", "CRITICAL_REQUIREMENT_UNTESTED", "DANGLING_ID_REFERENCE", "SAP_APPLICABILITY_UNVERIFIED"]);
   });
 
   /** The control claims STANDARD/CONFIGURATION for two steps while citing no reference. With no catalog that claim is unevidenced,
@@ -54,8 +55,12 @@ describe("validators against the hand-written expert control (pump-o2c, the inpu
     const result = validateToBeOutput(expert.input, design, expert.references);
     expect(result.success).toBe(false);
     if (result.success) return;
-    expect(result.errors.map(e => e.code)).toEqual(["CRITICAL_REQUIREMENT_UNTESTED", "CRITICAL_REQUIREMENT_UNTESTED"]);
-    const { byStep } = attributeErrors(result.errors, design);
+    // The four dangling GAP-nn citations (see above) are the other errors; the genuine defect is the untested critical requirements.
+    expect(result.errors.filter(e => e.code === "DANGLING_ID_REFERENCE")).toHaveLength(4);
+    const untested = result.errors.filter(e => e.code === "CRITICAL_REQUIREMENT_UNTESTED");
+    expect(untested).toHaveLength(2);
+    expect(result.errors).toHaveLength(6);
+    const { byStep } = attributeErrors(untested, design);
     expect([...byStep.keys()].sort()).toEqual(["O2C-ORD-030", "O2C-QTE-010", "O2C-RPT-110"]); // steps that list rq_otif / rq_dso without a test citing it
   });
 

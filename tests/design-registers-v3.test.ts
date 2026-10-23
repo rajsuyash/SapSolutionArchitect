@@ -174,6 +174,21 @@ describe("document status models and configuration catalogue (checklists 10, 11,
     expect(codes(design(draft => { Object.assign(item(draft), { status: "CONFIRMED_IN_CATALOG", referenceIds: ["REF-OBJ"], note: null }); }), { ...rentalContext, references: [reference] })).toEqual([]);
     expect(codes(design(draft => { item(draft).note = null; }))).toEqual(["VALIDATION_REASON_MISSING@draft.configurationCatalogue.0"]);
   });
+  it("a confirmation counts only when a cited reference mentions the item: otherwise CONFIG_CONFIRMATION_UNSUPPORTED (a blocker, not an error)", () => {
+    const found = (name: string, references: unknown[] = [reference]) => {
+      const draft = design(d => { Object.assign(d.configurationCatalogue![0]!, { name, status: "CONFIRMED_IN_CATALOG", referenceIds: ["REF-OBJ"], note: null }); });
+      const result = evaluateDesign({ ...rentalContext, references: references as DesignContext["references"] }, draft);
+      return { errors: result.errors, unsupported: result.blockers.some(item => item.code === "CONFIG_CONFIRMATION_UNSUPPORTED" && item.path === "draft.configurationCatalogue.0") };
+    };
+    expect(found("Hire order")).toEqual({ errors: [], unsupported: false });                // the capability "Hire order handling" names it
+    expect(found("Hire orders document type")).toEqual({ errors: [], unsupported: false }); // a plural and generic words still meet the capability
+    expect(found("Credit memo reason")).toEqual({ errors: [], unsupported: true });         // the reference is about hire orders, not credit memos
+    expect(found("Hire order", [{ ...reference, capability: "Invoice handling", objects: ["VF01"] }])).toEqual({ errors: [], unsupported: true });
+    expect(found("Hire order", [{ ...reference, capability: undefined as never, objects: ["Hire order type ZHO"] }])).toEqual({ errors: [], unsupported: false }); // an object name counts
+    expect(found("Type")).toEqual({ errors: [], unsupported: false });                      // a name of generic words proves nothing either way
+    // Items that do not claim a confirmation are not judged.
+    expect(evaluateDesign(rentalContext, rentalDraftV3).blockers.some(item => item.code === "CONFIG_CONFIRMATION_UNSUPPORTED")).toBe(false);
+  });
   it("an SAP object named in the catalogue must be in the curated catalog", () => {
     expect(evaluateDesign(rentalContext, design(draft => { draft.configurationCatalogue![0]!.purpose = "Use Fiori app F9999 to create it."; })).errors)
       .toEqual([{ code: "UNKNOWN_SAP_OBJECT", path: "draft.configurationCatalogue.0.purpose", detail: "FIORI_APP F9999" }]);

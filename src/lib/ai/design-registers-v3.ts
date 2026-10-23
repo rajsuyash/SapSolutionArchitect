@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { FIRST_PHASE, basis, id, ids, text, trace } from "./design-primitives";
-import { norm, overlaps, type RegisterContext, type Report, type Row } from "./design-register-types";
+import { mentionsSubject, norm, overlaps, type RegisterContext, type Report, type Row } from "./design-register-types";
 import { extractSapCodes, mentionsCode, textFields } from "./design-text-lint";
 
 /** The registers and row fields a schemaVersion 3 design adds to version 2: scope and objectives, document status models and a
@@ -177,6 +177,9 @@ export function checkVersion3(kit: V3Kit): void {
     known3("UNKNOWN_REFERENCE", path, row.referenceIds, ctx.referenceIds);
     dup(row.referenceIds ?? [], path, "DUPLICATE_TRACE");
     if (row.status === "CONFIRMED_IN_CATALOG" && !row.referenceIds?.length) error("CONFIG_CONFIRMATION_MISSING", path);
+    // A confirmation counts only when a cited reference's capability or objects mention the row's subject (ids that do not exist are errors above).
+    else if (row.status === "CONFIRMED_IN_CATALOG" && ctx.referenceTexts && row.referenceIds?.every(ref => ctx.referenceIds.has(ref))
+      && !row.referenceIds.some(ref => mentionsSubject(row.name, ctx.referenceTexts!.get(ref) ?? "", true))) block("CONFIG_CONFIRMATION_UNSUPPORTED", path);
     if (row.status !== "CONFIRMED_IN_CATALOG" && !row.note) error("VALIDATION_REASON_MISSING", path);
   });
   models.forEach((model, i) => {

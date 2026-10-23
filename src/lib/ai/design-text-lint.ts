@@ -61,3 +61,32 @@ export function internalTermHits(design: unknown): InternalTermHit[] {
   }
   return hits;
 }
+
+// --- ids the text cites that the design does not have ---------------------------------------------------------------------------
+
+/** An id-shaped token: upper-case segments joined by hyphens and ending in a number (ETO-OQ-4, TB-12, ETO-5-1-BR-2). */
+const ID_TOKEN = /(?<![A-Za-z0-9_-])[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)*-\d+(?![A-Za-z0-9_-])/g;
+const idFamily = (id: string) => /-\d+$/.test(id) ? id.replace(/\d+$/, "#") : undefined;
+/** Every string under an `id` key, at any depth: the ids a design gives its own steps, rules, tests, questions and register rows. */
+export function* designIds(value: unknown): Generator<string> {
+  if (Array.isArray(value)) for (const item of value) yield* designIds(item);
+  else if (value && typeof value === "object") {
+    for (const [key, item] of Object.entries(value)) { if (key === "id" && typeof item === "string") yield item; else yield* designIds(item); }
+  }
+}
+export type DanglingIdHit = { path: string; token: string };
+/** Tokens in free text that look like one of this design's own id families (same prefix, a number) but name nothing that exists. Only a family the design itself
+ * uses counts, so SAP codes and release names never match. `own` are the design's ids, `known` every id that may legitimately be cited (own plus the input's). */
+export function danglingIdHits(design: unknown, own: Iterable<string>, known: ReadonlySet<string>): DanglingIdHit[] {
+  const families = new Set([...own].flatMap(id => idFamily(id) ?? []));
+  const seen = new Set<string>(), hits: DanglingIdHit[] = [];
+  for (const [path, value] of strings(design, "draft")) {
+    const parts = path.split(".");
+    const root = parts.slice(0, /^\d+$/.test(parts[2] ?? "") ? 3 : 2).join(".");
+    for (const [token] of value.matchAll(ID_TOKEN)) {
+      const family = idFamily(token), key = `${root}:${token}`;
+      if (family && families.has(family) && !known.has(token) && !seen.has(key) && hits.length < 25) { seen.add(key); hits.push({ path: root, token }); }
+    }
+  }
+  return hits;
+}

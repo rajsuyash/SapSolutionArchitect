@@ -175,6 +175,9 @@ their requirementIds empty.
   document that carries the posting. When the step posts nothing, write "None: " and the reason. Never write a G/L account number, a tax rate or a posting rule
   that no source, reference or companyContext gives. When the policy is open, write "Pending " followed by the open question or decision id and what it must
   decide; then the step holds the posting until it is answered. effects.financial still describes the business effect; the entry is the accounting side of it.
+- Cite only ids that exist. A step, business rule, acceptance test, open question or decision id written inside any text
+  must be an id of the outline, of your own rules and tests, or of the decision register, spelled exactly as it is there; an id that does not
+  exist is rejected (DANGLING_ID_REFERENCE). To refer to something you have no id for, describe it in words.
 - Codes. Name a movement type, document type, condition type, reason code or organisation code (plant, company code, storage location, sales or purchasing
   organisation) only when a reference, companyContext or a source gives it. The registers list every code you use (the configuration catalogue and the
   organisation structure), and a code that no register defines is raised as a finding against this step. A thing the business has not named by code is

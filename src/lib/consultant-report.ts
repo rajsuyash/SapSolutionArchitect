@@ -60,7 +60,7 @@ export const REVIEW_PASS_FINDINGS: Record<string, string> = {
 };
 /** Category of the findings that come from completeness and consistency checks. The design is valid and delivered; a person confirms or fixes each one. */
 export const REVIEW_FINDINGS_CATEGORY = "Review findings";
-/** Plain-English explanation of each heuristic finding (design-registers-v3.ts `block`). The model is not asked to repair these. */
+/** Plain-English explanation of each heuristic finding (design-registers-v3.ts `block`). The fix pass (to-be-fix.ts) sends the part back once; what it could not clear is listed here. */
 export const REVIEW_FINDINGS: Record<string, string> = {
   OBJECTIVE_STEP_UNMAPPED: "A To-Be step is not listed under any objective, so it is unclear which goal it serves.",
   OBJECTIVE_CONTEXT_UNCOVERED: "An answered desired outcome, KPI target or constraint is not cited by any objective.",
@@ -76,6 +76,8 @@ export const REVIEW_FINDINGS: Record<string, string> = {
   ORG_CODE_NOT_IN_CONTEXT: "An organisational unit is marked as having a confirmed code, but that code does not appear in the company-context answers.",
   INTERFACE_STEP_UNCOVERED: "An integration step is not listed by any interface, so its system boundary has no interface entry.",
   PERIOD_END_MISSING: "No period-end activity is listed, so it is unclear what the scope adds to the period close.",
+  CONFIG_CONFIRMATION_UNSUPPORTED: "A configuration item is marked as confirmed in the SAP catalog, but no catalog reference it cites mentions it.",
+  KPI_VALUE_IGNORED: "A KPI shows a baseline or target as not provided, although the company-context answers give a value for this measure.",
   INTERNAL_TERM: "Text meant for the client uses a working term of the generation process (for example \"outline\" or \"register call\"). Reword it in business language.",
   ...REVIEW_PASS_FINDINGS,
 };

@@ -14,7 +14,7 @@ import { fixture, withCompanyContext } from "./support/to-be-input";
 import { registerGroupOf, splitDesign, stepIdOf, toolOf, toolResponse, type RequestBody } from "./support/to-be-split";
 
 const local = parseEnv(readFileSync(new URL("../.env.example", import.meta.url), "utf8"));
-const settings = (overrides: Record<string, string> = {}) => parseEnvironment({ ...local, NODE_ENV: "test", AI_TO_BE_REVIEW: "off",
+const settings = (overrides: Record<string, string> = {}) => parseEnvironment({ ...local, NODE_ENV: "test", AI_TO_BE_REVIEW: "off", AI_TO_BE_FIX_MAX_PARTS: "0",
   AI_PROVIDER: "anthropic", ANTHROPIC_API_KEY: "synthetic-split-key", ...overrides });
 const split = splitDesign(rentalDraft);
 const STEP_IDS = rentalDraft.steps.map(step => step.id);
@@ -891,6 +891,63 @@ describe("consistency review through the stage runner", () => {
     expect(h.reviewCalls[0]!.tool_choice).toEqual({ type: "auto", disable_parallel_tool_use: true });
     const sent = JSON.parse(h.reviewCalls[0]!.messages[0]!.content) as { design: { steps: unknown[] } };
     expect(sent.design.steps).toHaveLength(STEP_IDS.length);
+  });
+  it("AI_TO_BE_FIX_MAX_PARTS defaults to 8, accepts 0 to 20 and a blank, and to_be_fix is a reasoning-switch name", () => {
+    const base = { ...local, NODE_ENV: "test" };
+    expect(parseEnvironment(base).AI_TO_BE_FIX_MAX_PARTS).toBe(8);
+    expect(parseEnvironment({ ...base, AI_TO_BE_FIX_MAX_PARTS: "0" }).AI_TO_BE_FIX_MAX_PARTS).toBe(0);
+    expect(parseEnvironment({ ...base, AI_TO_BE_FIX_MAX_PARTS: " " }).AI_TO_BE_FIX_MAX_PARTS).toBe(8);
+    for (const bad of ["21", "-1", "x"]) expect(() => parseEnvironment({ ...base, AI_TO_BE_FIX_MAX_PARTS: bad })).toThrow("AI_TO_BE_FIX_MAX_PARTS");
+    expect(parseEnvironment({ ...base, AI_NO_THINKING_STAGES: "to_be_fix" }).AI_NO_THINKING_STAGES).toEqual(["to_be_fix"]);
+  });
+  it("the fix pass sends a blocker's part back under the to_be_fix substage with that part's own tool, and reports its calls", async () => {
+    const unmapped = { ...rentalRegisterGroups.scope, objectives: rentalRegisterGroups.scope.objectives.map(row => row.id === "OBJ-2" ? { ...row, stepIds: ["TB-2"] } : row) };
+    const dirty = { ...split.details["TB-2"]!, addedValue: "The register call fills this field." };
+    const h = harness({ overrides: { AI_TO_BE_FIX_MAX_PARTS: "8" },
+      registers: (group, nth) => group === "scope" && nth === 1 ? unmapped : rentalRegisterGroups[group],
+      step: (id, nth) => id === "TB-2" && nth === 1 ? dirty : split.details[id] });
+    const result = await h.run();
+    expect(h.registerCount.scope).toBe(2);
+    expect(h.stepCount["TB-2"]).toBe(2);
+    expect(result.metrics.substages).toMatchObject({ to_be_fix: { calls: 2, inputTokens: 200, outputTokens: 400 } });
+    expect(result.payload.design).toEqual(rentalDraftV3);
+    expect(result.payload.evaluation.blockers.map(item => item.code)).not.toEqual(expect.arrayContaining(["OBJECTIVE_STEP_UNMAPPED"]));
+    expect(result.payload.evaluation.blockers.map(item => item.code)).not.toContain("INTERNAL_TERM");
+    const repair = JSON.parse(h.registerCalls[h.registerCalls.length - 1]!.body.messages[0]!.content) as { repairNote: string; currentAnswer: unknown };
+    expect(repair.repairNote).toContain("not served by any objective");
+    expect(repair.currentAnswer).toEqual(unmapped);
+  });
+  it("a finding that needs a new step takes the outline-patch tool under to_be_fix, and only the new step is expanded", async () => {
+    const newStep = { id: "TB-4", sequence: 4, title: "Receive returned goods", purpose: "Book the receipt of returned items.", asIsStepIds: [], requirementIds: [], enablesStepIds: ["TB-2"],
+      implementation: { kind: "MANUAL", referenceIds: [] } };
+    const base = split.details["TB-3"]!;
+    const tb4 = { ...base, businessRules: base.businessRules.map(rule => ({ ...rule, id: `${rule.id}-RECEIPT` })), outputDocuments: ["Goods receipt note"], inputDocuments: ["Return note"],
+      acceptanceTests: base.acceptanceTests.map(test => ({ ...test, id: `${test.id}-RECEIPT`, requirementIds: [] })) };
+    const g = rentalRegisterGroups;
+    const covered: Partial<Record<RegisterGroup, unknown>> = {
+      scope: { ...g.scope, objectives: g.scope.objectives.map(row => row.id === "OBJ-2" ? { ...row, stepIds: ["TB-3", "TB-4"] } : row) },
+      reporting: { ...g.reporting, endToEndTests: g.reporting.endToEndTests.map(row => ({ ...row, stepIds: [...row.stepIds, "TB-4"] })) },
+      governance: { ...g.governance, roles: g.governance.roles.map(role => role.id === "ROLE-3" ? { ...role, stepIds: ["TB-3", "TB-4"] } : role) } };
+    const h = harness({ overrides: { AI_TO_BE_REVIEW: "on", AI_TO_BE_FIX_MAX_PARTS: "8" },
+      review: () => ({ findings: [{ kind: "COVERAGE_GAP", paths: ["R-99"], explanation: "No step owns the goods receipt." }] }),
+      patch: () => ({ steps: [newStep] }), step: id => id === "TB-4" ? tb4 : split.details[id],
+      registers: (group, nth) => nth > 1 && covered[group] ? covered[group] : g[group] });
+    const result = await h.run();
+    expect(h.patchCalls).toHaveLength(1);
+    expect(h.stepCount).toEqual({ "TB-1": 1, "TB-2": 1, "TB-3": 1, "TB-4": 1 });
+    expect(result.payload.design.steps.map(step => step.id)).toEqual(["TB-1", "TB-2", "TB-3", "TB-4"]);
+    expect(result.payload.reviewFindings).toEqual([expect.objectContaining({ kind: "COVERAGE_GAP", outcome: "REPAIRED" })]);
+    // outline patch + new step + scope, reporting and governance groups
+    expect(result.metrics.substages).toMatchObject({ to_be_fix: { calls: 5 } });
+    expect(result.metrics.substages!.to_be_outline!.calls).toBe(1);
+  });
+  it("AI_TO_BE_FIX_MAX_PARTS=0 makes no fix call and reports no to_be_fix substage", async () => {
+    const unmapped = { ...rentalRegisterGroups.scope, objectives: rentalRegisterGroups.scope.objectives.map(row => row.id === "OBJ-2" ? { ...row, stepIds: ["TB-2"] } : row) };
+    const h = harness({ overrides: { AI_TO_BE_FIX_MAX_PARTS: "0" }, registers: group => group === "scope" ? unmapped : rentalRegisterGroups[group] });
+    const result = await h.run();
+    expect(h.registerCount.scope).toBe(1);
+    expect(result.metrics.substages).not.toHaveProperty("to_be_fix");
+    expect(result.payload.evaluation.blockers.map(item => item.code)).toContain("OBJECTIVE_STEP_UNMAPPED");
   });
   it("AI_TO_BE_REVIEW=off makes no review call", async () => {
     const h = harness({ overrides: { AI_TO_BE_REVIEW: "off" } });
