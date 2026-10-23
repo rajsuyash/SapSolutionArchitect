@@ -3,6 +3,7 @@
 import { z } from "zod";
 import { DetailedDesignSchema, type DetailedDesign, type TrustedReference } from "./ai/design-quality";
 import type { DiscoveryInput } from "./discovery";
+import { WORKSPACE_FIELDS } from "./workspace-fields";
 
 /** What the server stores plus the context needed to read it. Never contains provider metrics, sources text or secrets. */
 export type ReportData = {
@@ -32,6 +33,10 @@ const FIT_LABELS: Record<string, string> = { STANDARD: "Standard SAP", CONFIGURA
   INTEGRATION: "Integration", MANUAL: "Manual process", LICENSE_DEPENDENT: "Licence-dependent", NEEDS_VALIDATION: "Needs SAP validation" };
 const DISPOSITION_LABELS = { IMPLEMENTED: "Implemented in the To-Be design", DEFERRED: "Deferred (approved decision)", REJECTED: "Rejected (approved decision)",
   CONDITIONAL: "Conditional on an open decision (partly designed)" } as const;
+const FIT_CLASS_LABELS: Record<string, string> = { STANDARD: "Standard", CONFIGURATION: "Configuration", KEY_USER_EXTENSION: "Key-user extension",
+  SIDE_BY_SIDE_BTP: "Side-by-side (BTP)", CLASSIC_RICEFW: "Classic custom development (RICEFW)", MANUAL_WORKAROUND: "Manual workaround" };
+const DIRECTION_LABELS: Record<string, string> = { INBOUND: "Into SAP", OUTBOUND: "From SAP", BIDIRECTIONAL: "Both ways" };
+const contextLabel = (fieldId: string) => WORKSPACE_FIELDS.find(field => field.id === fieldId)?.label ?? "Company context";
 const KIND_LABELS: Record<string, string> = { PAIN_POINT: "Pain point", TO_BE_REQUIREMENT: "Future requirement", CONTROL: "Control" };
 const BLOCKERS: Record<string, { category: string; label: string }> = {
   TARGET_RELEASE_MISSING: { category: "Target release", label: "The target SAP release has not been decided." },
@@ -70,6 +75,19 @@ export type ComparisonRow = {
 export type TraceRow = { id: string; label: string; kindLabel: string; statement: string; critical: boolean; asIs: string; disposition: string;
   rationale: string; steps: string[]; rules: string[]; tests: string[] };
 export type Register = { id: string; text: string; owner: string; affects: string; state: string };
+/** Solution-design registers of a schemaVersion 2 design, already labelled. Null for a version 1 design. */
+export type SolutionView = {
+  decisions: { id: string; topic: string; options: string; recommendation: string; rationale: string; affects: string; owner: string; status: string; basis: string }[];
+  fitGap: { requirementId: string; requirement: string; statement: string; classification: string; ricefwType: string; justification: string; sap: string; steps: string; stepTitles: string[] }[];
+  orgStructure: { id: string; unitType: string; proposal: string; source: string; openPoint: string }[];
+  masterData: { id: string; object: string; owner: string; keyFields: string; migrationSource: string; steps: string }[];
+  interfaces: { id: string; system: string; direction: string; trigger: string; payload: string; apiCandidate: string; errorOwner: string; steps: string; scope: string }[];
+  kpis: { id: string; name: string; baseline: string; target: string; measuredFrom: string; steps: string }[];
+  dataMigration: { id: string; sequence: number; object: string; source: string; approach: string; risk: string }[];
+  cutover: { id: string; sequence: number; activity: string; owner: string; risk: string }[];
+  /** One entry per register row that traces to requirements, for the traceability export. */
+  traces: { kind: string; label: string; summary: string; requirementIds: string[]; stepTitles: string[] }[];
+};
 export type ReportModel = ReturnType<typeof buildReport>;
 
 /** Builds every label, count and trace once, so the page and the exports cannot disagree. */
@@ -158,6 +176,55 @@ export function buildReport(data: ReportData) {
     return notes.map((note, index) => ({ id: `${view.step.id}-${index + 1}`, text: note.text, owner: "SAP consultant", affects: view.heading, state: note.state }));
   });
 
+  const solution = ((): SolutionView | null => {
+    if (design.schemaVersion !== 2) return null;
+    const requirementRefs = (list: string[]) => list.map(item => requirementLabels[item] ?? "Unknown requirement").join(", ");
+    const contextRefs = (list: string[]) => list.map(contextLabel).join(", ");
+    const stepList = (list: string[]) => list.flatMap(item => { const step = design.steps.find(candidate => candidate.id === item); return step ? [stepTitle(step)] : []; });
+    const sap = (row: { referenceIds: string[]; needsValidation: boolean; validationReason: string | null }) =>
+      [...row.referenceIds.map(item => { const view = refView(item); return `${view.capability} [${view.id}]`; }),
+        ...(row.needsValidation ? [`Needs SAP validation: ${row.validationReason ?? "no reason recorded"}`] : [])].join("; ") || "-";
+    const result: SolutionView = {
+      decisions: (design.keyDesignDecisions ?? []).map(row => ({ id: row.id, topic: row.topic, recommendation: row.recommendation, rationale: row.rationale,
+        options: row.options.map(option => `${option.name} (${FIT_LABELS[option.fitType] ?? option.fitType}). Pros: ${option.pros} Cons: ${option.cons}`).join("\n"),
+        affects: stepList(row.impactedStepIds).join("; "), owner: row.owner, status: "Proposed, not approved",
+        basis: [requirementRefs(row.requirementIds), contextRefs(row.contextFieldIds)].filter(Boolean).join("; ") || "-" })),
+      fitGap: (design.fitGap ?? []).map(row => ({ requirementId: row.requirementId, requirement: requirementLabels[row.requirementId] ?? "Unknown requirement",
+        statement: discovery.requirements.find(item => item.id === row.requirementId)?.statement ?? "", classification: FIT_CLASS_LABELS[row.classification] ?? row.classification,
+        ricefwType: row.ricefwType ?? "-", justification: row.justification, sap: sap(row), steps: stepList(row.stepIds).join("; "), stepTitles: stepList(row.stepIds) })),
+      orgStructure: (design.orgStructure ?? []).map(row => ({ id: row.id, unitType: row.unitType, proposal: row.proposal,
+        source: [contextRefs(row.contextFieldIds), requirementRefs(row.requirementIds), stepList(row.stepIds).join("; ")].filter(Boolean).join("; ") || "-",
+        openPoint: row.openPoint ?? "-" })),
+      masterData: (design.masterDataPrerequisites ?? []).map(row => ({ id: row.id, object: row.object, owner: row.owner, keyFields: row.keyFields.join(", "),
+        migrationSource: row.migrationSource, steps: stepList(row.stepIds).join("; ") || "-" })),
+      interfaces: (design.interfaces ?? []).map(row => ({ id: row.id, system: row.counterpartSystem, direction: DIRECTION_LABELS[row.direction] ?? row.direction,
+        trigger: row.triggerFrequency, payload: row.payload, apiCandidate: sap(row), errorOwner: row.errorOwner, steps: stepList(row.stepIds).join("; ") || "-",
+        scope: row.outOfScopeReason ? `Out of scope: ${row.outOfScopeReason}` : "In scope" })),
+      kpis: (design.kpis ?? []).map(row => ({ id: row.id, name: row.name, baseline: row.baseline, target: row.target,
+        measuredFrom: `${row.measuredFrom} (${sap(row)})`, steps: stepList(row.stepIds).join("; ") || "-" })),
+      dataMigration: [...(design.dataMigration ?? [])].sort((a, b) => a.sequence - b.sequence)
+        .map(row => ({ id: row.id, sequence: row.sequence, object: row.object, source: row.source, approach: row.approach, risk: row.risk })),
+      cutover: [...(design.cutover ?? [])].sort((a, b) => a.sequence - b.sequence)
+        .map(row => ({ id: row.id, sequence: row.sequence, activity: row.activity, owner: row.owner, risk: row.risk })),
+      traces: [],
+    };
+    const trace = (kind: string, label: string, summary: string, requirementIds: string[], stepIds: string[]) =>
+      requirementIds.length ? [{ kind, label, summary, requirementIds, stepTitles: stepList(stepIds) }] : [];
+    result.traces = [
+      ...(design.keyDesignDecisions ?? []).flatMap(row => trace("Key design decision", row.id, `${row.topic}: recommend ${row.recommendation}. ${row.rationale}`, row.requirementIds, row.impactedStepIds)),
+      ...(design.orgStructure ?? []).flatMap(row => trace("Organisation structure", row.id, `${row.unitType}: ${row.proposal}`, row.requirementIds, row.stepIds)),
+      ...(design.masterDataPrerequisites ?? []).flatMap(row => trace("Master data", row.id, `${row.object} (${row.owner})`, row.requirementIds, row.stepIds)),
+      ...(design.interfaces ?? []).flatMap(row => trace("Interface", row.id, `${row.counterpartSystem}, ${DIRECTION_LABELS[row.direction]}: ${row.payload}`, row.requirementIds, row.stepIds)),
+      ...(design.kpis ?? []).flatMap(row => trace("KPI", row.id, `${row.name}: baseline ${row.baseline}, target ${row.target}`, row.requirementIds, row.stepIds)),
+      ...(design.dataMigration ?? []).flatMap(row => trace("Data migration", row.id, `${row.object}: ${row.approach}`, row.requirementIds, row.stepIds)),
+      ...(design.cutover ?? []).flatMap(row => trace("Cutover", row.id, row.activity, row.requirementIds, row.stepIds)),
+    ];
+    const flagged = [...(design.fitGap ?? []), ...(design.kpis ?? []), ...(design.interfaces ?? [])].filter(row => row.needsValidation);
+    sapPoints.push(...flagged.map((row, index) => ({ id: `register-${index + 1}`, text: row.validationReason ?? "Validate against the target release.",
+      owner: "SAP consultant", affects: "Solution-design registers", state: "Not validated" })));
+    return result;
+  })();
+
   const coverageCount = (kind: keyof typeof DISPOSITION_LABELS) => design.coverage.filter(item => item.disposition === kind).length;
   return {
     data, requirementLabels, status, statusCopy: STATUS_COPY[status], blockers, blockersByCategory: byCategory,
@@ -170,7 +237,7 @@ export function buildReport(data: ReportData) {
       tests: design.steps.reduce((sum, step) => sum + step.acceptanceTests.length, 0), requirements: discovery.requirements.length,
       implemented: coverageCount("IMPLEMENTED"), deferred: coverageCount("DEFERRED"), rejected: coverageCount("REJECTED"),
       openQuestions: questions.length, conflicts: conflicts.length },
-    comparison, steps: stepViews, traceability, registers: { questions, conflicts, sapPoints },
+    comparison, steps: stepViews, traceability, registers: { questions, conflicts, sapPoints }, solution,
     sources: discovery.sources,
   };
 }

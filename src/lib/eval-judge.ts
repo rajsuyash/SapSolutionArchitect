@@ -5,6 +5,7 @@
 // finished To-Be (never the generator's prompt or identity), and must cite a specific element for every credit.
 import type Anthropic from "@anthropic-ai/sdk";
 import { z } from "zod";
+import { WORKSPACE_FIELDS } from "./workspace-fields";
 
 export const JUDGE_MODEL = "deepseek-ai/DeepSeek-V4-Pro-0813";
 /** USD per million tokens, DeepInfra public model list, measured 2026-10-22. */
@@ -159,6 +160,8 @@ export function buildCaseBrief(rawCase: unknown) {
   return {
     caseId: c.caseId, company: c.company, problem: c.project.problemStatement,
     desiredOutcome: catalog.desired_outcome ?? "", desiredControlsAndConstraints: catalog.desired_controls ?? "",
+    // The company-context answers the business gave, so the judge can check the registers (KPIs, interfaces, org units) against them.
+    companyContext: WORKSPACE_FIELDS.flatMap(field => catalog[field.id] ? [{ fieldId: field.id, label: field.label, value: catalog[field.id]! }] : []),
     asIsSteps: c.steps.map(s => ({ id: `as_is_${s.n}`, name: s.name, system: s.system })),
     requirements: c.requirements.map(r => ({ id: `rq_${r.key}`, asIsStepId: `as_is_${r.stepN}`, kind: r.kind, critical: r.critical, statement: r.statement })),
   };
@@ -182,7 +185,8 @@ export function buildSystemPrompt(rubric: readonly Criterion[]): string {
     "Evidence rules:",
     "- Grade only what is written. Do not give credit for intent, for things the case implies but the plan does not say, or for length.",
     "- Generic phrases such as 'handled in SAP standard', 'improves efficiency' or 'per standard' are not specifics: FAIL for any criterion that demands specifics.",
-    "- The design has no dedicated field for some artefacts (document control, RICEFW list, role catalogue, gap register, interface list, KPIs). Such a criterion is satisfied only if the text of the design actually contains it.",
+    "- The design has no dedicated field for some artefacts (document control, role catalogue). Such a criterion is satisfied only if the text of the design actually contains it.",
+    "- A design with schemaVersion 2 also carries solution-design registers: keyDesignDecisions (options, recommendation, owner), fitGap (clean-core class and RICEFW type per requirement), orgStructure, masterDataPrerequisites, interfaces, kpis, dataMigration and cutover. Read them as the decision log, gap and RICEFW register, interface list, KPI list and migration/cutover plan. A schemaVersion 1 design has none of them.",
     "- Values marked 'business to provide' or held in an open decision with an owner are correctly flagged uncertainty; invented thresholds, rates or accounting rules are not.",
     "- For PASS and PARTIAL, `citation` must name the strongest specific element: stepId.field (for example O2C-ORD-030.effects.financial), or a rule, test, open-question or requirement id from the design. A PASS or PARTIAL whose citation names no real element id is rejected and scored FAIL.",
     "- For FAIL, `citation` names where the content should be or says design-wide, and `reason` says what is missing.",
@@ -212,6 +216,11 @@ export function citableIds(tobe: ToBe): Set<string> {
     for (const test of list(step.acceptanceTests)) add(test.id);
   }
   for (const q of list(design.openQuestions)) add(q.id);
+  for (const key of ["keyDesignDecisions", "orgStructure", "masterDataPrerequisites", "interfaces", "kpis", "dataMigration", "cutover"]) {
+    add(key);
+    for (const row of list(design[key])) add(row.id);
+  }
+  add("fitGap");
   for (const c of list(design.coverage)) add(c.requirementId);
   for (const r of tobe.requirements) add(r.id);
   return ids;
@@ -361,6 +370,8 @@ export function degradeDesign(design: Record<string, unknown>): Record<string, u
   }));
   copy.coverage = (copy.coverage ?? []).map(c => ({ ...c, rationale: "Covered.", decisionId: null }));
   copy.openQuestions = [];
+  // A weak plan has no registers; a version 2 flag without them would only be inconsistent.
+  for (const key of ["keyDesignDecisions", "fitGap", "orgStructure", "masterDataPrerequisites", "interfaces", "kpis", "dataMigration", "cutover"]) delete copy[key];
   copy.processName = "To-Be process (weak control)";
   return copy;
 }

@@ -78,6 +78,28 @@ export function renderMarkdown(source: ReportModel): string {
   add("## Traceability matrix", table(["Requirement", "Type", "Statement", "Current step", "Disposition", "Rationale", "To-Be steps", "Rules", "Tests"],
     model.traceability.map(trace => row(trace.label, `${trace.kindLabel}${trace.critical ? " (critical)" : ""}`, trace.statement, trace.asIs, trace.disposition,
       trace.rationale, trace.steps.join("; "), trace.rules.join("; "), trace.tests.join(", ")))));
+  if (model.solution) {
+    const { solution } = model;
+    const section = (title: string, head: string[], rows: (string | number)[][]) =>
+      add(`### ${title}`, rows.length ? table(head, rows.map(cells => row(...cells))) : "None recorded.");
+    add("## Solution design registers", "Proposals for consultant review; none has been approved. Every SAP object named comes from the curated catalog or is marked as needing validation.");
+    section("Key design decisions", ["Id", "Topic", "Options", "Recommendation", "Rationale", "Affects", "Based on", "Owner", "Status"],
+      solution.decisions.map(item => [item.id, item.topic, item.options, item.recommendation, item.rationale, item.affects, item.basis, item.owner, item.status]));
+    section("Fit-gap (clean core)", ["Requirement", "Statement", "Classification", "RICEFW type", "Justification", "SAP basis", "To-Be steps"],
+      solution.fitGap.map(item => [item.requirement, item.statement, item.classification, item.ricefwType, item.justification, item.sap, item.steps || "-"]));
+    section("Organisation structure", ["Id", "Unit type", "Proposal", "Source", "Open point"],
+      solution.orgStructure.map(item => [item.id, item.unitType, item.proposal, item.source, item.openPoint]));
+    section("Master-data prerequisites", ["Id", "Object", "Owner", "Key fields and settings", "Migration source", "Used by"],
+      solution.masterData.map(item => [item.id, item.object, item.owner, item.keyFields, item.migrationSource, item.steps]));
+    section("Interfaces", ["Id", "System", "Direction", "Trigger and frequency", "Payload", "API candidate", "Error owner", "Used by", "Scope"],
+      solution.interfaces.map(item => [item.id, item.system, item.direction, item.trigger, item.payload, item.apiCandidate, item.errorOwner, item.steps, item.scope]));
+    section("KPIs", ["Id", "KPI", "Baseline", "Target", "Measured from", "Produced by"],
+      solution.kpis.map(item => [item.id, item.name, item.baseline, item.target, item.measuredFrom, item.steps]));
+    section("Data migration", ["Sequence", "Id", "Object", "Source", "Approach", "Risk"],
+      solution.dataMigration.map(item => [item.sequence, item.id, item.object, item.source, item.approach, item.risk]));
+    section("Cutover", ["Sequence", "Id", "Activity", "Owner", "Risk"],
+      solution.cutover.map(item => [item.sequence, item.id, item.activity, item.owner, item.risk]));
+  }
   add("## Registers", "### Open decisions and questions", registerTable(model.registers.questions), "### Source conflicts", registerTable(model.registers.conflicts),
     "### SAP validation points", registerTable(model.registers.sapPoints));
   return out.join("\n").replace(/\n{3,}/g, "\n\n").trimEnd() + "\n";
@@ -93,5 +115,15 @@ export function renderTraceabilityCsv(model: ReportModel): string {
   const head = ["Requirement", "Type", "Critical", "Statement", "Current step", "Disposition", "Rationale", "To-Be steps", "Rules", "Tests"];
   const lines = model.traceability.map(trace => [trace.label, trace.kindLabel, trace.critical ? "Yes" : "No", trace.statement, trace.asIs,
     trace.disposition, trace.rationale, trace.steps.join("; "), trace.rules.join("; "), trace.tests.join("; ")]);
-  return [head, ...lines].map(line => line.map(csvCell).join(",")).join("\r\n") + "\r\n";
+  // Fit-gap rows and every register row that cites requirements follow the requirement rows in the same columns.
+  const solution = model.solution ? [
+    ...model.solution.fitGap.map(item => {
+      const trace = model.traceability.find(candidate => candidate.id === item.requirementId);
+      return [item.requirement, `Fit-gap: ${item.classification}${item.ricefwType === "-" ? "" : ` (${item.ricefwType})`}`, trace?.critical ? "Yes" : "No", item.statement,
+        trace?.asIs ?? "", item.classification, item.justification, item.stepTitles.join("; "), "", ""];
+    }),
+    ...model.solution.traces.map(item => [item.requirementIds.map(id => model.requirementLabels[id] ?? "Unknown requirement").join("; "), item.kind, "", item.summary,
+      "", `Proposed (${item.label})`, "", item.stepTitles.join("; "), "", ""]),
+  ] : [];
+  return [head, ...lines, ...solution].map(line => line.map(csvCell).join(",")).join("\r\n") + "\r\n";
 }

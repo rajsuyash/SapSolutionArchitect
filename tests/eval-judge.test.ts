@@ -6,10 +6,11 @@ import engineering from "../fixtures/eval/engineering-mto.json";
 import pump from "../fixtures/eval/pump-o2c.json";
 import strongControl from "../fixtures/eval/controls/pump-o2c.strong.json";
 import { DetailedDesignSchema } from "../src/lib/ai/design-quality";
+import { rentalDraftV2 } from "../fixtures/ai/to-be/rental-registers";
 import { ScoringCaseSchema } from "../src/lib/eval-score";
 import { STEP_KEYS, WORKSPACE_FIELDS } from "../src/lib/workspace-fields";
 import {
-  aggregateRuns, buildCaseBrief, calibrate, CHECKLIST_TEXT, costUsd, degradeDesign, gradeRun, isGrounded, JUDGE_TOOL, JudgeError, judgeOnce,
+  aggregateRuns, buildCaseBrief, buildSystemPrompt, buildUserPrompt, calibrate, citableIds, CHECKLIST_TEXT, costUsd, degradeDesign, gradeRun, isGrounded, JUDGE_TOOL, JudgeError, judgeOnce,
   loadToBe, median, parseRubric, RUBRIC, scoreGraded, validateJudgeOutput, type Criterion, type Graded, type JudgeClient, type JudgeMessage, type ToBe,
 } from "../src/lib/eval-judge";
 
@@ -352,5 +353,30 @@ describe("judgeOnce", () => {
     const result = await judgeOnce(client, tiny, brief, tobe);
     expect(result.graded[0]).toMatchObject({ verdict: "FAIL", flags: ["unjustified"] });
     expect(result.score.total).toBe(33.33);
+  });
+});
+
+describe("solution-design registers reach the judge", () => {
+  const v2 = loadToBe({ design: rentalDraftV2 });
+  it("sends the registers inside the design and the company context inside the case brief", () => {
+    const brief = buildCaseBrief(pump);
+    expect(brief.companyContext.map(item => item.fieldId)).toEqual(expect.arrayContaining(["operating_scale", "retained_systems", "kpi_baselines", "kpi_targets"]));
+    expect(brief.companyContext.find(item => item.fieldId === "kpi_targets")!.value).toBe((pump.answerBank.catalog as Record<string, string>).kpi_targets);
+    const sent = JSON.parse(buildUserPrompt(brief, v2));
+    expect(Object.keys(sent.toBeDesign)).toEqual(expect.arrayContaining(["keyDesignDecisions", "fitGap", "orgStructure", "masterDataPrerequisites", "interfaces", "kpis", "dataMigration", "cutover"]));
+    expect(sent.case.companyContext).toHaveLength(brief.companyContext.length);
+  });
+  it("lets a verdict cite a register row, and tells the judge how to read the registers without touching the rubric", () => {
+    const ids = citableIds(v2);
+    for (const id of ["KDD-1", "ORG-1", "MD-1", "MIG-1", "CUT-1", "fitGap", "interfaces", "kpis"]) expect(isGrounded(`see ${id}`, ids)).toBe(true);
+    expect(buildSystemPrompt(RUBRIC)).toContain("schemaVersion 2");
+    expect(buildSystemPrompt(RUBRIC)).toContain("fitGap");
+    expect(RUBRIC).toHaveLength(43);
+  });
+  it("the weak control drops the registers of a version 2 plan; a version 1 plan is untouched", () => {
+    const weak = degradeDesign(v2.design);
+    for (const key of ["keyDesignDecisions", "fitGap", "orgStructure", "masterDataPrerequisites", "interfaces", "kpis", "dataMigration", "cutover"]) expect(weak).not.toHaveProperty(key);
+    expect(v2.design).toHaveProperty("fitGap");
+    expect(() => DetailedDesignSchema.parse(weak)).not.toThrow();
   });
 });

@@ -118,3 +118,54 @@ describe("consultant report exports", () => {
     expect(text).toContain("Returns processing [REF-1]");
   });
 });
+
+describe("solution-design registers in the report (schemaVersion 2)", () => {
+  const trace = { requirementIds: ["R1"], contextFieldIds: ["retained_systems"], stepIds: ["TB-1"] };
+  const v2 = DetailedDesignSchema.parse({ ...design, schemaVersion: 2,
+    keyDesignDecisions: [{ id: "KDD-1", topic: "Where the return date is enforced", options: [
+      { name: "Block in the return step", pros: "Immediate | clear", cons: "Needs a custom check", fitType: "EXTENSION" },
+      { name: "Report on late returns", pros: "No build", cons: "Does not prevent wrong invoices", fitType: "MANUAL" }],
+    recommendation: "Block in the return step", rationale: "R1 is critical.", impactedStepIds: ["TB-1"], requirementIds: ["R1"], contextFieldIds: ["constraints"],
+    owner: "Stores lead", status: "PROPOSED" }],
+    fitGap: [{ requirementId: "R1", classification: "CLASSIC_RICEFW", ricefwType: "ENHANCEMENT", justification: "No key-user hook covers it | validated?", stepIds: ["TB-1"],
+      referenceIds: ["REF-1"], needsValidation: false, validationReason: null }],
+    orgStructure: [{ id: "ORG-1", unitType: "Plant", proposal: "One depot plant", openPoint: null, ...trace }],
+    masterDataPrerequisites: [{ id: "MD-1", object: "Asset", owner: "Stores", keyFields: ["status", "plant"], migrationSource: "Asset spreadsheet", ...trace }],
+    interfaces: [{ id: "IF-1", counterpartSystem: "Dispatch app", direction: "INBOUND", triggerFrequency: "On each return", payload: "Return date", errorOwner: "Stores lead",
+      outOfScopeReason: null, referenceIds: [], needsValidation: true, validationReason: "Confirm the API", ...trace }],
+    kpis: [{ id: "KPI-1", name: "Invoices corrected after return", baseline: "not provided", target: "under 2%", measuredFrom: "Billing document",
+      referenceIds: [], needsValidation: true, validationReason: "Pick the app", ...trace }],
+    dataMigration: [{ id: "MIG-1", object: "Assets", source: "Spreadsheet", approach: "Load and reconcile", sequence: 1, risk: "Duplicates", ...trace }],
+    cutover: [{ id: "CUT-1", activity: "Freeze returns, load, release", sequence: 1, owner: "Project lead", risk: "Late returns", ...trace }] });
+  const model = buildReport({ ...data, design: v2 });
+  const markdown = renderMarkdown(model);
+
+  it("renders every register as a table with labels, not internal codes", () => {
+    for (const expected of ["## Solution design registers", "### Key design decisions", "### Fit-gap (clean core)", "### Organisation structure", "### Master-data prerequisites",
+      "### Interfaces", "### KPIs", "### Data migration", "### Cutover", "Proposed, not approved", "Classic custom development (RICEFW)", "ENHANCEMENT",
+      "Returns processing [REF-1]", "Into SAP", "Needs SAP validation: Confirm the API", "Requirement 1", "Retained and non-SAP systems and integrations",
+      "Block in the return step (Extension). Pros: Immediate \\| clear Cons: Needs a custom check"]) expect(markdown).toContain(expected);
+    expect(markdown).not.toContain("CLASSIC_RICEFW");
+    expect(markdown).not.toMatch(/\bPROPOSED\b/);
+  });
+  it("adds fit-gap and register rows to the traceability CSV in the same columns", () => {
+    const lines = renderTraceabilityCsv(model).trimEnd().split("\r\n");
+    expect(lines).toHaveLength(1 + 1 + 1 + 7); // header, requirement, fit-gap, then the seven registers that cite R1
+    expect(lines[2]).toContain("Fit-gap: Classic custom development (RICEFW) (ENHANCEMENT)");
+    expect(lines.slice(3).map(line => line.split(",")[1])).toEqual(["Key design decision", "Organisation structure", "Master data", "Interface", "KPI", "Data migration", "Cutover"]);
+  });
+  it("lists register rows that need SAP validation among the SAP validation points", () => {
+    expect(model.registers.sapPoints.map(item => item.text)).toEqual(expect.arrayContaining(["Confirm the API", "Pick the app"]));
+  });
+  it("a version 1 design renders exactly as before: no registers, no extra CSV rows", () => {
+    const v1 = buildReport(data);
+    expect(v1.solution).toBeNull();
+    expect(renderMarkdown(v1)).not.toContain("Solution design registers");
+    expect(renderTraceabilityCsv(v1).trimEnd().split("\r\n")).toHaveLength(2);
+  });
+  it("stored results of either version re-parse", () => {
+    const stored = (value: unknown) => ({ design: value, evaluation: { blockers: [] }, unresolvedInputQuestions: [], sourceRevision: 1, snapshotId: "s" });
+    expect(parseStoredToBe(stored(design)).design.schemaVersion).toBe(1);
+    expect(parseStoredToBe(stored(v2)).design.schemaVersion).toBe(2);
+  });
+});
