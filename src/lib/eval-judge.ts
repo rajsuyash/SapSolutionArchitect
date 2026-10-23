@@ -8,6 +8,42 @@ import { z } from "zod";
 import { WORKSPACE_FIELDS } from "./workspace-fields";
 
 export const JUDGE_MODEL = "deepseek-ai/DeepSeek-V4-Pro-0813";
+/** Judge used when the generator is DeepSeek, Xiaomi or unknown-but-not-Qwen. Measured 2026-10-23: a same-family judge inflated scores by 10 to 20 points. */
+export const QWEN_JUDGE_MODEL = "Qwen/Qwen3.8-Max";
+
+// --- judge independence --------------------------------------------------------------------------------------
+
+export const MODEL_FAMILIES = ["deepseek", "qwen", "xiaomi", "moonshot", "zai", "openai", "anthropic"] as const;
+export type ModelFamily = (typeof MODEL_FAMILIES)[number] | "unknown";
+const FAMILY_PATTERNS: readonly [Exclude<ModelFamily, "unknown">, RegExp][] = [
+  ["deepseek", /deepseek/i], ["qwen", /qwen|qwq/i], ["xiaomi", /xiaomi|mimo/i], ["moonshot", /moonshot|kimi/i],
+  ["zai", /(?:^|[/_-])z-?ai(?:-org)?(?:[/_-]|$)|zhipu|glm/i], ["openai", /openai|(?:^|[/_-])gpt[-\d]/i], ["anthropic", /anthropic|claude/i],
+];
+/** The model family behind an id or vendor path (DeepInfra, OpenRouter and native ids alike), or "unknown". */
+export function modelFamily(modelId: string | null | undefined): ModelFamily {
+  const id = (modelId ?? "").trim();
+  return FAMILY_PATTERNS.find(([, pattern]) => pattern.test(id))?.[0] ?? "unknown";
+}
+/** The default judge for a generator: a different family, Qwen unless the generator is Qwen or MiMo (then DeepSeek). */
+export function defaultJudgeModel(generatorModel: string | null | undefined): string {
+  const family = modelFamily(generatorModel);
+  return family === "qwen" || family === "xiaomi" ? JUDGE_MODEL : QWEN_JUDGE_MODEL;
+}
+export type Independence = {
+  status: "INDEPENDENT" | "NOT_INDEPENDENT" | "UNVERIFIED"; judgeFamily: ModelFamily; generatorFamily: ModelFamily | null; generatorModel: string | null; note: string;
+};
+/** A judge of the generator's own family inflates scores, so such a judgement is never reported as independent. `generatorModel` null = hand-written control. */
+export function assessIndependence(judgeModel: string, generatorModel: string | null | undefined): Independence {
+  const judgeFamily = modelFamily(judgeModel);
+  if (!generatorModel) return { status: "UNVERIFIED", judgeFamily, generatorFamily: null, generatorModel: null,
+    note: "The generator model is not known (a bare design file or a hand-written control), so independence cannot be verified." };
+  const generatorFamily = modelFamily(generatorModel);
+  if (judgeFamily === "unknown" || generatorFamily === "unknown") return { status: "UNVERIFIED", judgeFamily, generatorFamily, generatorModel,
+    note: "A model family could not be derived from the model id, so independence cannot be verified." };
+  return judgeFamily === generatorFamily
+    ? { status: "NOT_INDEPENDENT", judgeFamily, generatorFamily, generatorModel, note: `Judge and generator are both ${judgeFamily}: same-family judges inflated scores by 10 to 20 points when measured.` }
+    : { status: "INDEPENDENT", judgeFamily, generatorFamily, generatorModel, note: `Judge family ${judgeFamily} differs from generator family ${generatorFamily}.` };
+}
 /** USD per million tokens, DeepInfra public model list, measured 2026-10-22. */
 export const JUDGE_PRICE_PER_MTOK = { input: 1.3, output: 2.6 } as const;
 export const DEFAULT_RUNS = 3;
@@ -19,6 +55,13 @@ export const MIN_CALIBRATION_GAP = 20;
 export const VERDICTS = ["PASS", "PARTIAL", "FAIL", "NA"] as const;
 export type Verdict = (typeof VERDICTS)[number];
 const VERDICT_SCORE = { PASS: 1, PARTIAL: 0.5, FAIL: 0 } as const;
+
+/** The header line of a judgement report: both families and the verdict, loud when the judge is not independent. */
+export function independenceLine(judgeModel: string, ind: Independence): string {
+  const generator = ind.generatorModel ? `generator ${ind.generatorModel} (family ${ind.generatorFamily})` : "generator not recorded";
+  const verdict = ind.status === "INDEPENDENT" ? "INDEPENDENT" : ind.status === "NOT_INDEPENDENT" ? "**NOT INDEPENDENT: do not read this score as a quality measure.**" : "independence UNVERIFIED";
+  return `Judge ${judgeModel} (family ${ind.judgeFamily}), ${generator}: ${verdict} ${ind.note}`;
+}
 
 // --- rubric --------------------------------------------------------------------------------------------------
 
@@ -131,7 +174,9 @@ const DesignLooseSchema = z.looseObject({
 });
 const RequirementSchema = z.object({ id: z.string(), statement: z.string(), critical: z.boolean().optional() });
 /** `derived` is what the server builds without a model (document control, As-Is narratives, RICEFW list, actor-role matrix); see to-be-derived.ts. */
-export type ToBe = { design: Record<string, unknown>; requirements: z.infer<typeof RequirementSchema>[]; derived?: Record<string, unknown> };
+export type ToBe = { design: Record<string, unknown>; requirements: z.infer<typeof RequirementSchema>[]; derived?: Record<string, unknown>;
+  /** The model that generated the design, when the file records it (an eval run transcript does). */
+  generator?: { provider: string | null; model: string } };
 
 /** Accepts an eval run file ({transcript}), a bare transcript ({toBe}), {design, requirements?} or a bare design. */
 export function loadToBe(raw: unknown): ToBe {
@@ -145,7 +190,8 @@ export function loadToBe(raw: unknown): ToBe {
   if (!parsed.success && typeof toBe.errorCode === "string" && !toBe.design) throw new Error(`No design to judge: the run's To-Be was not valid (${toBe.errorCode})`);
   if (!parsed.success) throw new Error("No To-Be design found: expected an eval run file, a transcript, {design, requirements} or a design object");
   const derived = toBe.derived ?? root.derived;
-  return { design: design as Record<string, unknown>, requirements: z.array(RequirementSchema).parse(requirements), ...(derived && typeof derived === "object" ? { derived: derived as Record<string, unknown> } : {}) };
+  const generator = typeof transcript.model === "string" && transcript.model ? { provider: typeof transcript.provider === "string" ? transcript.provider : null, model: transcript.model } : undefined;
+  return { ...(generator && { generator }), design: design as Record<string, unknown>, requirements: z.array(RequirementSchema).parse(requirements), ...(derived && typeof derived === "object" ? { derived: derived as Record<string, unknown> } : {}) };
 }
 
 const CaseSchema = z.looseObject({
@@ -191,9 +237,9 @@ export function buildSystemPrompt(rubric: readonly Criterion[]): string {
     "- Grade only what is written. Do not give credit for intent, for things the case implies but the plan does not say, or for length.",
     "- Generic phrases such as 'handled in SAP standard', 'improves efficiency' or 'per standard' are not specifics: FAIL for any criterion that demands specifics.",
     "- Some artefacts have no field in the design itself. Such a criterion is satisfied only if the text of the design or of `derivedSections` actually contains it.",
-    "- `derivedSections` is written by the application from the saved discovery revision, not by the author of the design, and is part of the document under review: documentControl (version, date, source revision with digests, reviewer roles, sign-off table; sign-off is always HUMAN_REVIEW_REQUIRED and never approved), asIsNarratives (the client's own words per To-Be step, apart from the To-Be), eliminatedAsIs, ricefwList (every fit-gap row that needs something built or connected, with type, linked steps and rationale) and actorRoles (each step's actor next to the role-catalogue rows that cover it), and reviewFindings (completeness and consistency gaps the application itself detected and shows in the report; a design that discloses a gap this way is being honest about it, so do not mark that gap as hidden, but it is still a gap in the content). Cite its ids (RICEFW-1, an As-Is step id, a step id) like any other element. A design without `derivedSections` was judged from an older run: grade those criteria on the design alone.",
+    "- `derivedSections` is written by the application from the saved discovery revision, not by the author of the design, and is part of the document under review: documentControl (version, date, source revision with digests, reviewer roles, sign-off table; sign-off is always HUMAN_REVIEW_REQUIRED and never approved), asIsNarratives (the client's own words per To-Be step, apart from the To-Be), eliminatedAsIs, ricefwList (every fit-gap row that needs something built or connected, every step realised as an extension or integration, and every report or KPI realised with custom analytics, each with type, linked steps and rationale) and actorRoles (each step's actor next to the role-catalogue rows that cover it), and reviewFindings (completeness and consistency gaps the application itself detected and shows in the report; a design that discloses a gap this way is being honest about it, so do not mark that gap as hidden, but it is still a gap in the content). Cite its ids (RICEFW-1, an As-Is step id, a step id) like any other element. A design without `derivedSections` was judged from an older run: grade those criteria on the design alone.",
     "- A design with schemaVersion 2 also carries solution-design registers: keyDesignDecisions (options, recommendation, owner), fitGap (clean-core class and RICEFW type per requirement), orgStructure, masterDataPrerequisites, interfaces, kpis, dataMigration and cutover. Read them as the decision log, gap and RICEFW register, interface list, KPI list and migration/cutover plan. A schemaVersion 1 design has none of them.",
-    "- A design with schemaVersion 3 adds: step stepType, phase and interimProcess; objectives and scopeStatements (objectives and in/out of scope); documentStatusModels (statuses, transitions per step, edit and lock rules); configurationCatalogue (document types, reason codes, pricing elements, number ranges, each CONFIRMED_IN_CATALOG, BUSINESS_TO_PROVIDE or NEEDS_VALIDATION with an owner); roles (role catalogue), sodAssessments (segregation of duties) and controlMappings (each discovery control to a rule, workflow, authorization or report); reports; endToEndTests (one scenario per value stream); and on the older registers: orgStructure.parentId, masterDataPrerequisites.creationChannel and governance, interfaces.failureHandling (how a failed message is seen, alerted, rerun and kept from posting twice), kpis.owner and producingStepId, fitGap.mitigationType, owner and status (the gap register).",
+    "- A design with schemaVersion 3 adds: step stepType, phase and interimProcess; objectives and scopeStatements (objectives and in/out of scope); documentStatusModels (statuses, transitions per step, edit and lock rules); configurationCatalogue (document types, reason codes, pricing elements, number ranges, each CONFIRMED_IN_CATALOG, BUSINESS_TO_PROVIDE or NEEDS_VALIDATION with an owner); roles (role catalogue), sodAssessments (segregation of duties) and controlMappings (each discovery control to a rule, workflow, authorization or report); reports; endToEndTests (one scenario per value stream); periodEndActivities (activity, sequence, owner, steps); steps carry effects.accountingEntry (the posting in account categories, or None with a reason); and on the older registers: orgStructure.parentId, orgStructure.code, codeStatus (CODE_CONFIRMED or BUSINESS_TO_PROVIDE) and owner, interfaces.systemOfRecord, masterDataPrerequisites.creationChannel and governance, interfaces.failureHandling (how a failed message is seen, alerted, rerun and kept from posting twice), kpis.owner and producingStepId, fitGap.mitigationType, owner and status (the gap register).",
     "- case.sapCatalog.verifiedReferences is how many verified SAP references the author had. When it is 0 there was no verified SAP catalog for the target product and release, so NEEDS_VALIDATION realizations that name the SAP object to validate are correct: do not penalise them for being unverified.",
     "- Values marked 'business to provide' or held in an open decision with an owner are correctly flagged uncertainty; invented thresholds, rates or accounting rules are not.",
     "- For PASS and PARTIAL, `citation` must name the strongest specific element: stepId.field (for example O2C-ORD-030.effects.financial), or a rule, test, open-question or requirement id from the design. A PASS or PARTIAL whose citation names no real element id is rejected and scored FAIL.",
@@ -213,7 +259,7 @@ export function buildUserPrompt(brief: CaseBrief, tobe: ToBe, issues: Issue[] = 
 // --- validation and grading ----------------------------------------------------------------------------------
 
 /** Every element id a citation may legitimately point at. */
-const V3_REGISTERS = ["objectives", "scopeStatements", "documentStatusModels", "configurationCatalogue", "roles", "sodAssessments", "controlMappings", "reports", "endToEndTests"] as const;
+const V3_REGISTERS = ["objectives", "scopeStatements", "documentStatusModels", "configurationCatalogue", "roles", "sodAssessments", "controlMappings", "reports", "endToEndTests", "periodEndActivities"] as const;
 export function citableIds(tobe: ToBe): Set<string> {
   const ids = new Set<string>(["processName", "coverage", "openQuestions", "eliminatedAsIsSteps", "conflictDecisions", "steps"]);
   const add = (value: unknown) => { if (typeof value === "string" && value) ids.add(value); };

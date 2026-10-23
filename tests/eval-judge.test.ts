@@ -1,4 +1,7 @@
-import { readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import pharma from "../fixtures/eval/pharma-p2p.json";
 import services from "../fixtures/eval/services-r2r.json";
@@ -12,7 +15,7 @@ import { fixture as rentalInput } from "./support/to-be-input";
 import { ScoringCaseSchema } from "../src/lib/eval-score";
 import { STEP_KEYS, WORKSPACE_FIELDS } from "../src/lib/workspace-fields";
 import {
-  aggregateRuns, buildCaseBrief, buildSystemPrompt, buildUserPrompt, calibrate, citableIds, CHECKLIST_TEXT, costUsd, degradeDesign, gradeRun, isGrounded, JUDGE_TOOL, JudgeError, judgeOnce,
+  aggregateRuns, assessIndependence, buildCaseBrief, buildSystemPrompt, buildUserPrompt, calibrate, citableIds, CHECKLIST_TEXT, costUsd, defaultJudgeModel, degradeDesign, gradeRun, independenceLine, modelFamily, isGrounded, JUDGE_TOOL, JudgeError, judgeOnce,
   loadToBe, median, parseRubric, RUBRIC, scoreGraded, validateJudgeOutput, type Criterion, type Graded, type JudgeClient, type JudgeMessage, type ToBe,
 } from "../src/lib/eval-judge";
 
@@ -430,6 +433,64 @@ describe("server-built sections reach the judge", () => {
   });
   it("the weak control drops the version 3 registers too", () => {
     const weak = degradeDesign(withDerived.design);
-    for (const key of ["objectives", "scopeStatements", "documentStatusModels", "configurationCatalogue", "roles", "sodAssessments", "controlMappings", "reports", "endToEndTests"]) expect(weak, key).not.toHaveProperty(key);
+    for (const key of ["objectives", "scopeStatements", "documentStatusModels", "configurationCatalogue", "roles", "sodAssessments", "controlMappings", "reports", "endToEndTests", "periodEndActivities"]) expect(weak, key).not.toHaveProperty(key);
+  });
+});
+
+describe("judge independence", () => {
+  it("derives the model family from ids of every provider spelling", () => {
+    const cases: [string, string][] = [["deepseek-ai/DeepSeek-V4.1-Flash", "deepseek"], ["deepseek/deepseek-v4.1-flash-1017", "deepseek"], ["Qwen/Qwen3.8-Max", "qwen"],
+      ["XiaomiMiMo/MiMo-V2.6-Flash", "xiaomi"], ["moonshotai/Kimi-K3", "moonshot"], ["zai-org/GLM-5", "zai"], ["z-ai/glm-5", "zai"], ["openai/gpt-5.2", "openai"],
+      ["claude-sonnet-5-5", "anthropic"], ["anthropic/claude-opus-5", "anthropic"], ["some-lab/unlisted-model", "unknown"], ["", "unknown"]];
+    for (const [id, family] of cases) expect(modelFamily(id), id).toBe(family);
+    expect(modelFamily(null)).toBe("unknown");
+  });
+  it("picks an independent default judge: Qwen for DeepSeek and others, DeepSeek for Qwen and MiMo", () => {
+    expect(defaultJudgeModel("deepseek-ai/DeepSeek-V4.1-Flash")).toBe("Qwen/Qwen3.8-Max");
+    expect(defaultJudgeModel("claude-sonnet-5-5")).toBe("Qwen/Qwen3.8-Max");
+    expect(defaultJudgeModel(undefined)).toBe("Qwen/Qwen3.8-Max");
+    expect(defaultJudgeModel("Qwen/Qwen3.8-Max")).toBe("deepseek-ai/DeepSeek-V4-Pro-0813");
+    expect(defaultJudgeModel("XiaomiMiMo/MiMo-V2.6-Flash")).toBe("deepseek-ai/DeepSeek-V4-Pro-0813");
+    for (const generator of ["deepseek-ai/DeepSeek-V4.1-Flash", "Qwen/Qwen3.8-Max", "XiaomiMiMo/MiMo-V2.6-Flash", "moonshotai/Kimi-K3", "zai-org/GLM-5", "openai/gpt-5.2", "claude-sonnet-5-5"]) {
+      expect(assessIndependence(defaultJudgeModel(generator), generator).status, generator).toBe("INDEPENDENT");
+    }
+  });
+  it("marks a same-family judge NOT_INDEPENDENT and an unknown family UNVERIFIED, with both families in the header line", () => {
+    const same = assessIndependence("deepseek-ai/DeepSeek-V4-Pro-0813", "deepseek-ai/DeepSeek-V4.1-Flash");
+    expect(same).toMatchObject({ status: "NOT_INDEPENDENT", judgeFamily: "deepseek", generatorFamily: "deepseek" });
+    expect(independenceLine("deepseek-ai/DeepSeek-V4-Pro-0813", same)).toMatch(/family deepseek\).*family deepseek\): \*\*NOT INDEPENDENT/);
+    expect(assessIndependence("Qwen/Qwen3.8-Max", null).status).toBe("UNVERIFIED");
+    expect(assessIndependence("Qwen/Qwen3.8-Max", "some-lab/unlisted-model").status).toBe("UNVERIFIED");
+    const ok = assessIndependence("Qwen/Qwen3.8-Max", "deepseek-ai/DeepSeek-V4.1-Flash");
+    expect(independenceLine("Qwen/Qwen3.8-Max", ok)).toContain("family qwen");
+    expect(independenceLine("Qwen/Qwen3.8-Max", ok)).toContain("family deepseek");
+    expect(independenceLine("Qwen/Qwen3.8-Max", ok)).not.toContain("NOT INDEPENDENT");
+  });
+  it("loadToBe reads the generator model from a run transcript", () => {
+    expect(loadToBe({ transcript: { provider: "deepinfra", model: "deepseek-ai/DeepSeek-V4.1-Flash", toBe: { design: rentalDraftV3, requirements: [] } } }).generator)
+      .toEqual({ provider: "deepinfra", model: "deepseek-ai/DeepSeek-V4.1-Flash" });
+    expect(loadToBe({ design: rentalDraftV3 })).not.toHaveProperty("generator");
+  });
+  describe("the script", () => {
+    const dir = mkdtempSync(join(tmpdir(), "judge-independence-"));
+    const run = join(dir, "run.json");
+    writeFileSync(run, JSON.stringify({ transcript: { provider: "deepinfra", model: "deepseek-ai/DeepSeek-V4.1-Flash", toBe: { design: rentalDraftV3, requirements: [] } } }));
+    const script = (...args: string[]) => spawnSync(process.execPath, ["--import", "tsx", "scripts/eval-judge.ts", ...args], { encoding: "utf8", env: { ...process.env, DEEPINFRA_API_KEY: "", OPENROUTER_API_KEY: "" } });
+    it("refuses a judge of the generator's family before it needs a key", () => {
+      const refused = script("--run", run, "--model", "deepseek-ai/DeepSeek-V4-Pro-0813");
+      expect(refused.status).toBe(2);
+      expect(refused.stderr).toContain("refusing a same-family judge");
+    });
+    it("with --allow-same-family gets past the guard (and then stops for want of a key) and warns", () => {
+      const allowed = script("--run", run, "--model", "deepseek-ai/DeepSeek-V4-Pro-0813", "--allow-same-family");
+      expect(allowed.stderr).toContain("DEEPINFRA_API_KEY is not set");
+      expect(allowed.stderr).toContain("NOT INDEPENDENT");
+    });
+    it("picks an independent judge by itself", () => {
+      const auto = script("--run", run);
+      expect(auto.stderr).not.toContain("refusing");
+      expect(auto.stderr).toContain("DEEPINFRA_API_KEY is not set");
+      rmSync(dir, { recursive: true, force: true });
+    });
   });
 });

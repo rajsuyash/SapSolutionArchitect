@@ -4,14 +4,16 @@
 //   node --import tsx scripts/eval-judge.ts --case fixtures/eval/pump-o2c.json (--run <eval run.json> | --tobe <design.json>) [--runs 3]
 //   node --import tsx scripts/eval-judge.ts --calibrate [--case fixtures/eval/pump-o2c.json] [--runs 3]
 //
+// The judge is chosen automatically as a model family other than the generator's (Qwen3.8-Max for a DeepSeek generator, DeepSeek-V4-Pro for Qwen or MiMo); the generator comes from the run file's
+// transcript or --generator-model. A --model of the generator's own family is refused unless --allow-same-family, and then the reports say NOT INDEPENDENT. Judge and generator families go in the report header.
 // Needs the provider's key in the environment (DEEPINFRA_API_KEY, or OPENROUTER_API_KEY with --provider openrouter, which also needs --model; cost is still priced at JUDGE_PRICE_PER_MTOK) (this script never reads .env files). --calibrate judges the hand-written
 // STRONG control (fixtures/eval/controls/pump-o2c.strong.json) and a WEAK plan mechanically derived from it, and says whether the
 // judge separates them. Flags: --provider <deepinfra|openrouter> (default deepinfra) --model <id> --runs N --max-cost <usd, default 1.00> --spread-flag <0.5>.
 // Output: test-results/eval/judge-<timestamp>.json and .md (gitignored).
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import {
-  aggregateRuns, buildCaseBrief, calibrate, costUsd, DEFAULT_RUNS, DEFAULT_SPREAD_FLAG, degradeDesign, JUDGE_MODEL, JudgeError, judgeOnce, loadToBe,
-  RUBRIC, type Aggregate, type Calibration, type CaseBrief, type Graded, type ToBe, type Usage,
+  aggregateRuns, assessIndependence, buildCaseBrief, calibrate, costUsd, DEFAULT_RUNS, DEFAULT_SPREAD_FLAG, defaultJudgeModel, degradeDesign, independenceLine, JudgeError, judgeOnce, loadToBe,
+  RUBRIC, type Aggregate, type Calibration, type CaseBrief, type Graded, type Independence, type ToBe, type Usage,
 } from "../src/lib/eval-judge";
 import { createProviderClient } from "../src/lib/ai/provider";
 import { loadSapReferences } from "../src/lib/ai/sap-references";
@@ -31,7 +33,17 @@ async function main() {
     return;
   }
   const runs = Number(flag("runs") ?? DEFAULT_RUNS), maxCost = Number(flag("max-cost") ?? "1.00"), spreadFlag = Number(flag("spread-flag") ?? DEFAULT_SPREAD_FLAG);
-  const model = flag("model") ?? JUDGE_MODEL;
+  const source = flag("run") ?? flag("tobe");
+  if (!has("calibrate") && !source) throw new Error("give --run <eval run.json> or --tobe <design.json> (or --calibrate)");
+  // Calibration judges hand-written controls, so there is no generator whose family could matter.
+  const tobe = source && !has("calibrate") ? loadToBe(readJson(source)) : undefined;
+  const generatorModel = has("calibrate") ? null : flag("generator-model") ?? tobe?.generator?.model ?? null;
+  const model = flag("model") ?? defaultJudgeModel(generatorModel);
+  const independence = assessIndependence(model, generatorModel);
+  if (independence.status === "NOT_INDEPENDENT" && !has("allow-same-family")) {
+    throw new Error(`refusing a same-family judge: ${independence.note} Omit --model to pick an independent judge automatically, or pass --allow-same-family to run anyway (the report will say NOT INDEPENDENT).`);
+  }
+  if (independence.status !== "INDEPENDENT" && !has("calibrate")) console.warn(`WARNING: ${independenceLine(model, independence)}`);
   if (!Number.isInteger(runs) || runs < 1 || !(maxCost > 0)) throw new Error("--runs must be a positive integer and --max-cost a positive number");
   const judgeProvider = flag("provider") ?? "deepinfra";
   if (judgeProvider !== "deepinfra" && judgeProvider !== "openrouter") throw new Error("--provider must be deepinfra or openrouter");
@@ -73,19 +85,17 @@ async function main() {
       const weak = await judge("WEAK", weakTobe, brief);
       const calibration = calibrate(RUBRIC, strong.aggregate, weak.aggregate);
       const cost = costUsd(strong.usage.inputTokens + weak.usage.inputTokens, strong.usage.outputTokens + weak.usage.outputTokens);
-      writeFileSync(`${base}.json`, JSON.stringify({ kind: "calibration", model, runs, caseId: brief.caseId, calibration, strong, weak, cost }, null, 2));
-      writeFileSync(`${base}.md`, calibrationMarkdown(model, brief, calibration, strong, weak, cost));
+      writeFileSync(`${base}.json`, JSON.stringify({ kind: "calibration", model, independence, runs, caseId: brief.caseId, calibration, strong, weak, cost }, null, 2));
+      writeFileSync(`${base}.md`, calibrationMarkdown(model, independence, brief, calibration, strong, weak, cost));
       console.log(`${calibration.verdict}\nSTRONG ${calibration.strongTotal} (runs ${strong.aggregate.perRunTotals.join(", ")}) | WEAK ${calibration.weakTotal} (runs ${weak.aggregate.perRunTotals.join(", ")}) | cost $${cost}`);
       console.log(`Wrote ${base}.json and ${base}.md`);
       process.exitCode = calibration.usable ? 0 : 1;
       return;
     }
-    const source = flag("run") ?? flag("tobe");
-    if (!source) throw new Error("give --run <eval run.json> or --tobe <design.json> (or --calibrate)");
-    const result = await judge("TO-BE", loadToBe(readJson(source)), brief);
+    const result = await judge("TO-BE", tobe!, brief);
     const cost = costUsd(result.usage.inputTokens, result.usage.outputTokens);
-    writeFileSync(`${base}.json`, JSON.stringify({ kind: "judgement", model, runs, caseId: brief.caseId, source, result, cost }, null, 2));
-    writeFileSync(`${base}.md`, judgementMarkdown(model, brief, source, result, cost));
+    writeFileSync(`${base}.json`, JSON.stringify({ kind: "judgement", model, independence, runs, caseId: brief.caseId, source, result, cost }, null, 2));
+    writeFileSync(`${base}.md`, judgementMarkdown(model, independence, brief, source!, result, cost));
     console.log(`Total ${result.aggregate.total}/100 (spread ${result.aggregate.totalSpread}), ${result.aggregate.flagged.length} disputed, ${result.aggregate.unjustified.length} unjustified, cost $${cost}`);
     console.log(`Wrote ${base}.json and ${base}.md`);
   })();
@@ -104,11 +114,11 @@ function summaryLines(j: Judged): string[] {
     `- Verdicts without a real cited element (counted as FAIL): ${a.unjustified.map(u => `${u.id} x${u.runs}`).join(", ") || "none"}`,
     `- Tokens: ${j.usage.inputTokens} in / ${j.usage.outputTokens} out over ${j.usage.calls} calls; failed judgements: ${j.failures.length}${j.failures.length ? ` (${j.failures.join(" | ")})` : ""}`];
 }
-function judgementMarkdown(model: string, brief: CaseBrief, source: string, j: Judged, cost: number): string {
-  return [`# To-Be judgement: ${brief.caseId}`, "", `Judge ${model} (independent family), source \`${source}\`, cost $${cost}`, "", ...summaryLines(j), "", ...criteriaTable(j), ""].join("\n");
+function judgementMarkdown(model: string, independence: Independence, brief: CaseBrief, source: string, j: Judged, cost: number): string {
+  return [`# To-Be judgement: ${brief.caseId}`, "", independenceLine(model, independence), "", `Source \`${source}\`, cost $${cost}`, "", ...summaryLines(j), "", ...criteriaTable(j), ""].join("\n");
 }
-function calibrationMarkdown(model: string, brief: CaseBrief, cal: Calibration, strong: Judged, weak: Judged, cost: number): string {
-  return [`# Judge calibration: ${brief.caseId}`, "", `Judge ${model}. **${cal.verdict}**`, "",
+function calibrationMarkdown(model: string, independence: Independence, brief: CaseBrief, cal: Calibration, strong: Judged, weak: Judged, cost: number): string {
+  return [`# Judge calibration: ${brief.caseId}`, "", `Judge ${model} (family ${independence.judgeFamily}; the controls are hand-written, so no generator family applies). **${cal.verdict}**`, "",
     `| | total /100 | per run | spread |`, `|---|---|---|---|`,
     `| STRONG | ${cal.strongTotal} | ${strong.aggregate.perRunTotals.join(", ")} | ${cal.strongSpread} |`,
     `| WEAK | ${cal.weakTotal} | ${weak.aggregate.perRunTotals.join(", ")} | ${cal.weakSpread} |`,
