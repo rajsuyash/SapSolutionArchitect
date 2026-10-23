@@ -2533,6 +2533,952 @@
         "A search also surfaced sap.com partner pages for ETMnext (BearingPoint, equipment and tools rental) and BearingPoint Leasing and Rental; the sap.com partner page for ETMnext returned 'Access Denied' to the headless browser, so its supported editions are not evidenced.",
         "SAP's own 2023 Feature Scope Description contains no equipment-rental-out feature. Related but different: Field Logistics 'Supplier Owned Item logistics' manages the forward and return logistics of rental and third-party items received from suppliers (oil and gas style remote locations), and Real Estate (RE-FX) rental units are property rentals."
       ]
+    },
+    {
+      "id": "S4-2023-PP-PRODUCTION-ORDER-CREATE",
+      "capability": "Create a production order manually or by converting a planned order; new order starts CRTD and cannot run until released",
+      "fitType": "STANDARD",
+      "objects": [
+        "Create Production Order app",
+        "Create/Change Production Order (CO01/CO02)",
+        "Production order status CRTD (created)"
+      ],
+      "verification": "VERIFIED",
+      "evidence": [
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/fe39e10a9a864a8f8dc9537704f0fa13/5fad8a67280f4452bb300b9eb2f69954.html?version=2023.000",
+          "quote": "Production orders can be created manually without being previously requested. Alternatively, they can be automatically created by converting a planned order.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/fe39e10a9a864a8f8dc9537704f0fa13/5fad8a67280f4452bb300b9eb2f69954.html?version=2023.000",
+          "quote": "A newly created production order has the status CRTD (created) and cannot be executed until it has been released.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/21aead0c98bd4755abdacd91c99e3393/9fa5153c2a6b495f8b3a8d1cbc26bbb8.html?version=2023.000",
+          "quote": "transactions Create/Change Production Order (CO01/CO02) are sent",
+          "release": "2023"
+        }
+      ],
+      "limitations": [
+        "The CO01/CO02 transaction codes are evidenced only by a sentence on the MES-integration page, which names them; no 2023 page fetched here gives a CO01 how-to or the Fiori app ID of Create Production Order.",
+        "Order types, number ranges and production scheduling profiles are Customizing; none was read."
+      ]
+    },
+    {
+      "id": "S4-2023-PP-PLANNED-ORDER-CONVERSION",
+      "capability": "Convert MRP planned orders into production orders, individually or in a selection",
+      "fitType": "STANDARD",
+      "objects": [
+        "Convert Planned Order to Production Order",
+        "planned order"
+      ],
+      "verification": "VERIFIED",
+      "evidence": [
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/fe39e10a9a864a8f8dc9537704f0fa13/06f2408b99de44998809eae92e061b58.html?version=2023.000",
+          "quote": "Planned orders for materials that are to be produced in-house are converted to production orders.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/fe39e10a9a864a8f8dc9537704f0fa13/06f2408b99de44998809eae92e061b58.html?version=2023.000",
+          "quote": "Select individual planned orders that you want to convert to production orders.",
+          "release": "2023"
+        }
+      ],
+      "limitations": [
+        "Only planned orders that allow in-house processing can be selected (stated on the page).",
+        "Collective and partial conversion are separate topics in the Production Orders guide and were not read."
+      ]
+    },
+    {
+      "id": "S4-2023-PP-ORDER-RELEASE",
+      "capability": "Release a production order (or single operations) before confirmations, goods movements and shop floor papers are allowed",
+      "fitType": "STANDARD",
+      "objects": [
+        "Release Production Orders app",
+        "Order status CRTD, REL, PREL",
+        "Production Supervisor - Discrete Manufacturing role"
+      ],
+      "verification": "VERIFIED",
+      "evidence": [
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/21aead0c98bd4755abdacd91c99e3393/2f03b753128eb44ce10000000a174cb4.html?version=2023.000",
+          "quote": "A production order must be released, before it can be processed.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/21aead0c98bd4755abdacd91c99e3393/2f03b753128eb44ce10000000a174cb4.html?version=2023.000",
+          "quote": "Confirmations for the order cannot yet be executed.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/21aead0c98bd4755abdacd91c99e3393/73653beedd5241ed9ec3b4cee5229faa.html?version=2023.000",
+          "quote": "If you release at order header level, the production order and all its operations are released.",
+          "release": "2023"
+        }
+      ],
+      "limitations": [
+        "Automatic release on creation and collective release exist as separate topics; the Customizing switch (production scheduling profile) was read only as a pointer on the Create Production Order page."
+      ]
+    },
+    {
+      "id": "S4-2023-PP-ORDER-CONFIRMATION",
+      "capability": "Confirm production orders and operations: yield, scrap, rework, activities, backflush of components and optional automatic goods receipt",
+      "fitType": "CONFIGURATION",
+      "objects": [
+        "Confirmations (Production Orders, PP-SFC)",
+        "Entering Confirmations at Order Level",
+        "Production Order Confirmation Object Page (F2265)",
+        "Automatic goods receipt (control key of the operation)"
+      ],
+      "verification": "VERIFIED",
+      "evidence": [
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/21aead0c98bd4755abdacd91c99e3393/f503b753128eb44ce10000000a174cb4.html?version=2023.000",
+          "quote": "A confirmation documents the processing status of orders, operations, suboperations, and individual capacities.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/21aead0c98bd4755abdacd91c99e3393/f503b753128eb44ce10000000a174cb4.html?version=2023.000",
+          "quote": "Backflushing of material components",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/21aead0c98bd4755abdacd91c99e3393/8a87bf53f106b44ce10000000a174cb4.html?version=2023.000",
+          "quote": "you can specify that the system should automatically post the finished material to stock when the operation or phase is confirmed",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/21aead0c98bd4755abdacd91c99e3393/0d04b753128eb44ce10000000a174cb4.html?version=2023.000",
+          "quote": "As soon as you save a confirmation, the goods movements are also posted.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/21aead0c98bd4755abdacd91c99e3393/fabe6d57284f346ae10000000a4450e5.html?version=2023.000",
+          "quote": "With this app, you can display contextual information about the Production Order Confirmation business object for confirmations on order level.",
+          "release": "2023"
+        }
+      ],
+      "limitations": [
+        "Automatic goods receipt can be set on only one operation per order, normally the last (stated on the page); the control key is Customizing.",
+        "The Fiori app for operation-level confirmation (Confirm Production Operation) was not found on a 2023 on-premise help page and is not asserted.",
+        "F2265 is the display object page for confirmations, not an entry app."
+      ]
+    },
+    {
+      "id": "S4-2023-PP-GOODS-RECEIPT-ORDER",
+      "capability": "Goods receipt for a production order (manual goods receipt to order, or automatic on confirmation)",
+      "fitType": "STANDARD",
+      "objects": [
+        "Goods Receipt for Order (Inventory Management, Goods movement, Goods receipt, To order)",
+        "Delivery completed indicator"
+      ],
+      "verification": "VERIFIED",
+      "evidence": [
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/21aead0c98bd4755abdacd91c99e3393/f203b753128eb44ce10000000a174cb4.html?version=2023.000",
+          "quote": "The planned quantity of the production order is proposed.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/21aead0c98bd4755abdacd91c99e3393/f203b753128eb44ce10000000a174cb4.html?version=2023.000",
+          "quote": "If the production order is ready, set the indicator",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/21aead0c98bd4755abdacd91c99e3393/8a87bf53f106b44ce10000000a174cb4.html?version=2023.000",
+          "quote": "An automatic goods receipt can only be posted for one operation or phase per order.",
+          "release": "2023"
+        }
+      ],
+      "limitations": [
+        "The page names movement type 101 only in a prohibition (do not use it for unplanned receipt); the order-receipt movement type is not asserted from this page.",
+        "Automatic goods receipt is not recommended for process manufacturing (stated on the page)."
+      ]
+    },
+    {
+      "id": "S4-2023-PP-ROUTING",
+      "capability": "Routings (task lists) plan operations, work centres, material use and quality checks, and are the template for production orders and costing",
+      "fitType": "STANDARD",
+      "objects": [
+        "Routings (PP-BD-RTG)",
+        "Manage Routings app",
+        "Create Routing app",
+        "Change Routing app",
+        "Display Routing app"
+      ],
+      "verification": "VERIFIED",
+      "evidence": [
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/21aead0c98bd4755abdacd91c99e3393/3187b6535fe6b74ce10000000a174cb4.html?version=2023.000",
+          "quote": "routings are used as a template for production orders and run schedules as well as a basis for product costing",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/000598f44016404fa82337e65a45264c/3ee99c41fb3e4db9a64b88bb2557a47f.html?version=2023.000",
+          "quote": "A routing is a representation of the order in which your process works on your shop floor.",
+          "release": "2023"
+        }
+      ],
+      "limitations": [
+        "Routing selection rules, alternative sequences and shop floor routings (version-controlled, transaction MSFR4) are separate topics and were not read.",
+        "The Manage Routings page states that it uses the C_MASTERRECIPE view; this is an implementation note, not a behaviour claim."
+      ]
+    },
+    {
+      "id": "S4-2023-PP-WORK-CENTER",
+      "capability": "Work centres with capacities, scheduling data and costing data as master data for routings and production orders",
+      "fitType": "STANDARD",
+      "objects": [
+        "Create Work Center app",
+        "work center capacities",
+        "scheduling data (formulas, standard value key)"
+      ],
+      "verification": "VERIFIED",
+      "evidence": [
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/d74941cf210b44768dc074ce2f243890/03659e8e0c9d4f37afb3c5f3b37cabc3.html?version=2023.000",
+          "quote": "Work centers, together with bills of materials and routings, belong to the most important master data in production planning.",
+          "release": "2023"
+        }
+      ],
+      "limitations": [
+        "Work centre categories (machine, line, labour) decide the maintainable data; the page lists them but no Customizing was read.",
+        "Change and display apps for work centres were not read."
+      ]
+    },
+    {
+      "id": "S4-2023-PP-CAPACITY-EVALUATION",
+      "capability": "Capacity evaluation and planning: work centre load and overload, utilization monitoring, scheduling table and board",
+      "fitType": "CONFIGURATION",
+      "objects": [
+        "Manage Work Center Capacity",
+        "Capacity Scheduling Table",
+        "Capacity Scheduling Board",
+        "Monitor Capacity Utilization"
+      ],
+      "verification": "VERIFIED",
+      "evidence": [
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/21aead0c98bd4755abdacd91c99e3393/96592cfe7187429c9a69fda4e6976c50.html?version=2023.000",
+          "quote": "Capacity Evaluation: You can use capacity evaluations to analyze capacity loads in your company by adjusting the planning horizon and the area of responsibility.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/21aead0c98bd4755abdacd91c99e3393/74e3356c89914b1495667e7d1f76eb23.html?version=2023.000",
+          "quote": "With this app, you can visualize the capacities of work centers, and the load on work centers.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/21aead0c98bd4755abdacd91c99e3393/1b9f8c570c9b6b10e10000000a441470.html?version=2023.000",
+          "quote": "With this app, you can monitor the utilization of resources in a selected area of responsibility.",
+          "release": "2023"
+        }
+      ],
+      "limitations": [
+        "Prerequisites stated on the capacity planning page: formulas that generate capacity requirements, finite scheduling on the work centre capacity, and SAP liveCache for the Capacity Scheduling Table and Board apps.",
+        "Fiori app IDs were not read for these apps."
+      ]
+    },
+    {
+      "id": "S4-2023-PP-MRP-LIVE",
+      "capability": "Run the MRP planning run with MRP Live (transaction MD01N), by material, plant, MRP controller or across the supply chain",
+      "fitType": "CONFIGURATION",
+      "objects": [
+        "MRP Live (transaction MD01N)",
+        "PPH_MRP_DISPATCHER"
+      ],
+      "verification": "VERIFIED",
+      "evidence": [
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/fe39e10a9a864a8f8dc9537704f0fa13/bc5a76513feb1f66e10000000a441470.html?version=2023.000",
+          "quote": "Using MRP Live, you can benefit from improved performance and execute the planning run in much shorter cycles.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/fe39e10a9a864a8f8dc9537704f0fa13/bc5a76513feb1f66e10000000a441470.html?version=2023.000",
+          "quote": "The transaction MD01N is a copy of the transaction MD01.",
+          "release": "2023"
+        }
+      ],
+      "limitations": [
+        "Total requirements are not supported by MRP Live and must be cleaned up first; some materials are still planned by classic MRP depending on MRP parameters (stated on the page).",
+        "All MRP areas of a plant are planned; no selection of individual MRP areas.",
+        "Planning scope, lot sizing and MRP types are master data and Customizing; none was read."
+      ]
+    },
+    {
+      "id": "S4-2023-PP-MATERIAL-COVERAGE",
+      "capability": "Resolve shortages from the MRP cockpit: view stock/requirements, simulate proposed solutions, create planned orders or purchase requisitions",
+      "fitType": "STANDARD",
+      "objects": [
+        "Manage Material Coverage (F0251)",
+        "Manage Material Coverage (F0251A)",
+        "Monitor Material Coverage app"
+      ],
+      "verification": "VERIFIED",
+      "evidence": [
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/fe39e10a9a864a8f8dc9537704f0fa13/09cd1556d22c0033e10000000a44538d.html?version=2023.000",
+          "quote": "With this app, you can resolve any coverage issues for your materials based on the settings you made in the Monitor Material Coverage app.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/fe39e10a9a864a8f8dc9537704f0fa13/09cd1556d22c0033e10000000a44538d.html?version=2023.000",
+          "quote": "the system can propose different solutions. You can simulate the solution to preview its effects",
+          "release": "2023"
+        }
+      ],
+      "limitations": [
+        "No separate tile: the app is reached from Monitor Material Coverage, or from the Check Material Coverage tile for one material (stated on the page).",
+        "F0251A is the successor app and does not yet cover every aspect of F0251 (stated on the page)."
+      ]
+    },
+    {
+      "id": "S4-2023-PP-ORDER-MONITORING",
+      "capability": "Monitor and manage production orders with issues: delayed materials, missing components, operation and milestone status",
+      "fitType": "STANDARD",
+      "objects": [
+        "Manage Production Orders or Process Orders",
+        "Monitor Production Orders or Process Orders",
+        "Production Planner role SAP_BR_PRODN_PLNR"
+      ],
+      "verification": "VERIFIED",
+      "evidence": [
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/fe39e10a9a864a8f8dc9537704f0fa13/e2ce15560e1c792de10000000a44538d.html?version=2023.000",
+          "quote": "With this app, you can manage your production orders or process orders that have issues",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/fe39e10a9a864a8f8dc9537704f0fa13/e2ce15560e1c792de10000000a44538d.html?version=2023.000",
+          "quote": "You can view details regarding delayed materials, missing components, as well as the status of operations and milestones.",
+          "release": "2023"
+        }
+      ],
+      "limitations": [
+        "Orders must first be selected in Monitor Production Orders or Process Orders (stated on the page).",
+        "Fiori app IDs were not read for these two apps."
+      ]
+    },
+    {
+      "id": "S4-2023-PP-ORDER-SETTLEMENT",
+      "capability": "Settle the actual costs of a production order to a material account or another receiver such as a sales order",
+      "fitType": "CONFIGURATION",
+      "objects": [
+        "Order Settlement",
+        "Settlement profile",
+        "Settlement structure",
+        "Settlement rule"
+      ],
+      "verification": "VERIFIED",
+      "evidence": [
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/21aead0c98bd4755abdacd91c99e3393/4904b753128eb44ce10000000a174cb4.html?version=2023.000",
+          "quote": "When a production order is settled, the actual costs incurred for the order are settled to one or more receiver cost-objects",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/21aead0c98bd4755abdacd91c99e3393/4904b753128eb44ce10000000a174cb4.html?version=2023.000",
+          "quote": "If the costs for the production order are settled to a material account, the order is credited each time material is delivered to stock.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/21aead0c98bd4755abdacd91c99e3393/4f04b753128eb44ce10000000a174cb4.html?version=2023.000",
+          "quote": "Before you can settle a production order, you must maintain valid settlement parameters for the order.",
+          "release": "2023"
+        }
+      ],
+      "limitations": [
+        "The settlement transaction or Fiori app and variance calculation are not on the fetched pages; settlement parameters are Customizing (profile, structure) plus a rule per order.",
+        "Production variance handling in Actual Costing / Material Ledger was not read."
+      ]
+    },
+    {
+      "id": "S4-2023-PP-TECHNICAL-COMPLETION",
+      "capability": "Technically complete a production order: remove reservations, capacity requirements and MRP relevance while later postings stay possible",
+      "fitType": "STANDARD",
+      "objects": [
+        "Technically Completed (TECO)",
+        "Technical Completion of a Production Order"
+      ],
+      "verification": "VERIFIED",
+      "evidence": [
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/21aead0c98bd4755abdacd91c99e3393/2801b753128eb44ce10000000a174cb4.html?version=2023.000",
+          "quote": "Technical completion means ending a production order from a logistical viewpoint.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/21aead0c98bd4755abdacd91c99e3393/2801b753128eb44ce10000000a174cb4.html?version=2023.000",
+          "quote": "Reservations are deleted",
+          "release": "2023"
+        }
+      ],
+      "limitations": [
+        "Business closing is a separate step for process orders; for production orders no business-complete status was read.",
+        "After TECO, goods movements and confirmations can still be posted (stated on the page); the order cannot be changed."
+      ]
+    },
+    {
+      "id": "S4-2023-PP-MTO-ORDER-FOR-SALES-ORDER",
+      "capability": "Create a production order for a sales order item (make-to-order); material, quantities and dates are copied from the sales order",
+      "fitType": "CONFIGURATION",
+      "objects": [
+        "Creating a Production Order with a Sales Order",
+        "requirements type sales order stock"
+      ],
+      "verification": "VERIFIED",
+      "evidence": [
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/21aead0c98bd4755abdacd91c99e3393/ee00b753128eb44ce10000000a174cb4.html?version=2023.000",
+          "quote": "Material number, quantities, and dates are copied from the sales order.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/21aead0c98bd4755abdacd91c99e3393/ee00b753128eb44ce10000000a174cb4.html?version=2023.000",
+          "quote": "The item in the sales order must allow the requirements type sales order stock.",
+          "release": "2023"
+        }
+      ],
+      "limitations": [
+        "Changes are not copied automatically between the sales order and the production order, unlike assembly processing (stated on the page).",
+        "A sales order bill of materials and routing, if they exist, are copied to the order; the strategy group and requirements class set-up is Customizing and was not read."
+      ]
+    },
+    {
+      "id": "S4-2023-PP-ETO-ORDER-FOR-PROJECT",
+      "capability": "Create a production order assigned to a WBS element of a project with project stock (engineer-to-order)",
+      "fitType": "STANDARD",
+      "objects": [
+        "Create Production Order with Project (CO10)",
+        "WBS element",
+        "project stock"
+      ],
+      "verification": "VERIFIED",
+      "evidence": [
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/21aead0c98bd4755abdacd91c99e3393/5a9e81806ced41ef8f849b0e86d4f69d.html?version=2023.000",
+          "quote": "With this app, you can create a production order for project stock.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/21aead0c98bd4755abdacd91c99e3393/5a9e81806ced41ef8f849b0e86d4f69d.html?version=2023.000",
+          "quote": "The WBS element must belong to a project with project stock.",
+          "release": "2023"
+        }
+      ],
+      "limitations": [
+        "Settlement of the order costs to the WBS element and sales order billing are not covered by this page."
+      ]
+    },
+    {
+      "id": "S4-2023-QM-INSPECTION-PLAN",
+      "capability": "Create and manage inspection plans: header, inspection operations and inspection characteristics",
+      "fitType": "STANDARD",
+      "objects": [
+        "Manage Inspection Plans",
+        "Quality Planner role"
+      ],
+      "verification": "VERIFIED",
+      "evidence": [
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/2bc3ee8d1c83404e8cf62418640004f2/a231727866504392825de9bbf33f0ce2.html?version=2023.000",
+          "quote": "With this Fiori app, you can create and manage inspection plans and thus define the quality criteria",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/2bc3ee8d1c83404e8cf62418640004f2/a231727866504392825de9bbf33f0ce2.html?version=2023.000",
+          "quote": "Inspection characteristic, which determines the characteristic to be inspected for the materials",
+          "release": "2023"
+        }
+      ],
+      "limitations": [
+        "The page gives no Fiori app ID. Master inspection characteristics, sampling procedures and the material-to-plan assignment were not read.",
+        "Quality Engineer and Quality Technician see the app in display mode only unless the administrator permits editing (stated on the page)."
+      ]
+    },
+    {
+      "id": "S4-2023-QM-INSPECTION-LOT-PRODUCTION",
+      "capability": "Automatic inspection lot for a production order when the first operation is released, driven by the material's inspection settings",
+      "fitType": "CONFIGURATION",
+      "objects": [
+        "Inspection lot for production order (routing) or process order (master recipe)",
+        "Quality management view of the material master (inspection settings)"
+      ],
+      "verification": "VERIFIED",
+      "evidence": [
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/2bc3ee8d1c83404e8cf62418640004f2/6140b853dcfcb44ce10000000a174cb4.html?version=2023.000",
+          "quote": "In an inspection during production, the system creates an inspection lot for a production order.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/2bc3ee8d1c83404e8cf62418640004f2/6140b853dcfcb44ce10000000a174cb4.html?version=2023.000",
+          "quote": "If you have maintained the inspection settings for the material to be produced (in the Quality management view of the material master)",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/2bc3ee8d1c83404e8cf62418640004f2/6140b853dcfcb44ce10000000a174cb4.html?version=2023.000",
+          "quote": "When the first operation is released for a production order or process order",
+          "release": "2023"
+        }
+      ],
+      "limitations": [
+        "Inspection types must be active for the material; an inspection lot can also be created manually before the order is released (stated on the page).",
+        "Inspection lots for goods receipt, goods issue and repetitive manufacturing are other origins and were not read here."
+      ]
+    },
+    {
+      "id": "S4-2023-QM-MANAGE-INSPECTION-LOTS",
+      "capability": "Display and manage inspection lots (status filters, create a lot, record results and make usage decision from the worklist)",
+      "fitType": "STANDARD",
+      "objects": [
+        "Manage Inspection Lots (F2343)",
+        "Record Results action",
+        "Make Usage Decision action"
+      ],
+      "verification": "VERIFIED",
+      "evidence": [
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/2bc3ee8d1c83404e8cf62418640004f2/ecfae2574096f432e10000000a441470.html?version=2023.000",
+          "quote": "With this app, you can display and manage inspection lots.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/2bc3ee8d1c83404e8cf62418640004f2/ecfae2574096f432e10000000a441470.html?version=2023.000",
+          "quote": "Create a new inspection lot",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/2bc3ee8d1c83404e8cf62418640004f2/ecfae2574096f432e10000000a441470.html?version=2023.000",
+          "quote": "you can make usage decisions for inspection lots from the worklist page when you log in as a Quality Engineer.",
+          "release": "2023"
+        }
+      ],
+      "limitations": [
+        "Quality Technician records results and Quality Engineer makes usage decisions; a user with both roles gets both actions (stated on the page).",
+        "The page recommends the Make Usage Decision button over the Manage Usage Decisions smart link from this app."
+      ]
+    },
+    {
+      "id": "S4-2023-QM-RESULTS-RECORDING",
+      "capability": "Record inspection results per characteristic, operation, sample or inspection point, with defect recording and closing of characteristics",
+      "fitType": "STANDARD",
+      "objects": [
+        "Results Recording (QM-IM-RR)",
+        "Record defect data from results recording",
+        "Close inspection characteristics"
+      ],
+      "verification": "VERIFIED",
+      "evidence": [
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/2bc3ee8d1c83404e8cf62418640004f2/01c1b65334e6b54ce10000000a174cb4.html?version=2023.000",
+          "quote": "In the Results Recording component (QM-IM-RR), you record and process results for inspection characteristics.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/2bc3ee8d1c83404e8cf62418640004f2/01c1b65334e6b54ce10000000a174cb4.html?version=2023.000",
+          "quote": "Record defect data straight from the results recording function",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/2bc3ee8d1c83404e8cf62418640004f2/01c1b65334e6b54ce10000000a174cb4.html?version=2023.000",
+          "quote": "The inspection lot is the reference object in results recording.",
+          "release": "2023"
+        }
+      ],
+      "limitations": [
+        "The results-recording transaction code and Fiori entry app were not on the fetched component page (the Manage Inspection Lots worklist offers a Record Results action).",
+        "Prerequisites: inspection specifications assigned to the lot, characteristics created and sample calculation done (stated on the page)."
+      ]
+    },
+    {
+      "id": "S4-2023-QM-USAGE-DECISION",
+      "capability": "Make the usage decision for an inspection lot (single or several lots), post stock to stock types and trigger follow-up actions",
+      "fitType": "STANDARD",
+      "objects": [
+        "Record Usage Decision (QA11)",
+        "Manage Usage Decisions (F2345)",
+        "Usage decision code"
+      ],
+      "verification": "VERIFIED",
+      "evidence": [
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/2bc3ee8d1c83404e8cf62418640004f2/2b99ba53422bb54ce10000000a174cb4.html?version=2023.000",
+          "quote": "With this app, you can make the usage decision for an inspection lot directly after the inspection is completed.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/2bc3ee8d1c83404e8cf62418640004f2/85fae2574096f432e10000000a441470.html?version=2023.000",
+          "quote": "With this app, you can display inspection lots and manage usage decisions of each inspection lot.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/2bc3ee8d1c83404e8cf62418640004f2/c164ba53422bb54ce10000000a174cb4.html?version=2023.000",
+          "quote": "After inspection completion, the inspection results can no longer be changed.",
+          "release": "2023"
+        }
+      ],
+      "limitations": [
+        "A usage decision needs a released lot, results for the required characteristics, no blocking status and authorization (stated on the Record Usage Decision page).",
+        "Usage decision codes, catalogs and automatic follow-up actions are Customizing; none was read."
+      ]
+    },
+    {
+      "id": "S4-2023-QM-QUALITY-NOTIFICATION",
+      "capability": "Quality notifications for customer complaints, supplier complaints and internal problems, with items, causes, tasks, activities and QM orders",
+      "fitType": "CONFIGURATION",
+      "objects": [
+        "Customer complaint",
+        "Complaint against a supplier",
+        "Internal problem report",
+        "QM order"
+      ],
+      "verification": "VERIFIED",
+      "evidence": [
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/2bc3ee8d1c83404e8cf62418640004f2/1c78b8535c39b44ce10000000a174cb4.html?version=2023.000",
+          "quote": "Describes a business object's nonconformance with a quality requirement and contains a request to take appropriate action.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/2bc3ee8d1c83404e8cf62418640004f2/1c78b8535c39b44ce10000000a174cb4.html?version=2023.000",
+          "quote": "In addition to the standard notification types, you can also define your own user-specific notification types.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/2bc3ee8d1c83404e8cf62418640004f2/1c78b8535c39b44ce10000000a174cb4.html?version=2023.000",
+          "quote": "Record problem-related nonconformity costs in a QM order.",
+          "release": "2023"
+        }
+      ],
+      "limitations": [
+        "Notification types and catalogs are Customizing. The Fiori apps and transactions for notifications were not on the fetched page.",
+        "A notification can be activated from the usage decision (stated on the lot completion page)."
+      ]
+    },
+    {
+      "id": "S4-2023-QM-QUALITY-CERTIFICATE-OUTGOING",
+      "capability": "Outgoing quality certificates created for delivery items, inspection lots or batches, distributed to recipients and archived",
+      "fitType": "CONFIGURATION",
+      "objects": [
+        "Quality Certificates (QM-CA)",
+        "Certificate profile",
+        "Certificate Creation"
+      ],
+      "verification": "VERIFIED",
+      "evidence": [
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/2bc3ee8d1c83404e8cf62418640004f2/b46eb6531de6b64ce10000000a174cb4.html?version=2023.000",
+          "quote": "Generally, a quality certificate is created automatically or semi-automatically for a delivery item",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/2bc3ee8d1c83404e8cf62418640004f2/b46eb6531de6b64ce10000000a174cb4.html?version=2023.000",
+          "quote": "Automatically create certificates when materials are shipped",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/2bc3ee8d1c83404e8cf62418640004f2/9235b8535c39b44ce10000000a174cb4.html?version=2023.000",
+          "quote": "You must release a certificate profile to create a certificate.",
+          "release": "2023"
+        }
+      ],
+      "limitations": [
+        "Layout is defined by certificate profiles and SAPscript forms (stated on the page), so a form per customer is a build task.",
+        "Certificates can be sent by print, fax or EDI and archived with SAP ArchiveLink; output via the newer output management was not read."
+      ]
+    },
+    {
+      "id": "S4-2023-PS-PROJECT-STRUCTURE",
+      "capability": "Create and maintain projects with the Project Builder: project definition, WBS elements and networks in one transaction",
+      "fitType": "STANDARD",
+      "objects": [
+        "Project Builder",
+        "WBS element",
+        "project planning board"
+      ],
+      "verification": "VERIFIED",
+      "evidence": [
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/4dd8cb7b1c484b4b93af84d00f60fdb8/f276bb53707db44ce10000000a174cb4.html?version=2023.000",
+          "quote": "The Project Builder is a user-friendly method of accessing the Project System, which enables you to edit your projects quickly and efficiently.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/4dd8cb7b1c484b4b93af84d00f60fdb8/f276bb53707db44ce10000000a174cb4.html?version=2023.000",
+          "quote": "You can create, change or display all project structure data in one transaction.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/4dd8cb7b1c484b4b93af84d00f60fdb8/d072bb53707db44ce10000000a174cb4.html?version=2023.000",
+          "quote": "A WBS element describes either a certain task or a partial task that can be subdivided further.",
+          "release": "2023"
+        }
+      ],
+      "limitations": [
+        "The transaction code of the Project Builder was not on the fetched page. Project profiles and status management are Customizing.",
+        "Enterprise Projects (cloud-style project management) are a different object model and were not read."
+      ]
+    },
+    {
+      "id": "S4-2023-PS-BUDGET-AVAILABILITY-CONTROL",
+      "capability": "Project budgeting (original budget, supplement, return, transfer, release) and availability control with warnings or errors",
+      "fitType": "CONFIGURATION",
+      "objects": [
+        "Budget Management for Projects",
+        "Availability Control",
+        "budget profile",
+        "Original budget, Supplements, Returns, Transfers, Releases"
+      ],
+      "verification": "VERIFIED",
+      "evidence": [
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/4dd8cb7b1c484b4b93af84d00f60fdb8/328fd153370e4608e10000000a174cb4.html?version=2023.000",
+          "quote": "The budget is the approved cost structure for a project, and differs from the cost plan in that it is binding.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/4dd8cb7b1c484b4b93af84d00f60fdb8/358fd153370e4608e10000000a174cb4.html?version=2023.000",
+          "quote": "Availability control enables you to control costs actively by issuing warnings and error messages when costs are incurred.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/4dd8cb7b1c484b4b93af84d00f60fdb8/5513d553088f4308e10000000a174cb4.html?version=2023.000",
+          "quote": "In the budget profile you determine whether/how availability control is to be activated",
+          "release": "2023"
+        }
+      ],
+      "limitations": [
+        "Tolerance limits, availability control actions and activation type are Customizing in the budget profile (activation types 0, 1, 2 per the budget profile page).",
+        "Budget transactions (e.g. for original budget) were not on the fetched pages."
+      ]
+    },
+    {
+      "id": "S4-2023-PS-PROJECT-COST-REPORTING",
+      "capability": "Analyse actual and planned costs of a project and its WBS elements, networks and orders, with drill-down to cost line items",
+      "fitType": "STANDARD",
+      "objects": [
+        "Project Cost Overview",
+        "Project Cost Line Items",
+        "ACDOCP",
+        "ACDOCA"
+      ],
+      "verification": "VERIFIED",
+      "evidence": [
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/4dd8cb7b1c484b4b93af84d00f60fdb8/1448cfa991784030b1a4a39f425cfd1c.html?version=2023.000",
+          "quote": "With this app, you can analyse actual costs and planned costs of a project, its WBS elements, internal orders",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/4dd8cb7b1c484b4b93af84d00f60fdb8/1448cfa991784030b1a4a39f425cfd1c.html?version=2023.000",
+          "quote": "Navigate to the Project Cost Line Items application and expand and collapse the project structure",
+          "release": "2023"
+        }
+      ],
+      "limitations": [
+        "Only settlements from external senders are considered in the overview (stated on the page).",
+        "The Fiori app IDs were not on the fetched page. The older Project Cost Report is listed as deprecated in the table of contents and was not used."
+      ]
+    },
+    {
+      "id": "S4-2023-PS-SETTLEMENT",
+      "capability": "Settle project costs from WBS elements, networks and activities to receivers using settlement profile and settlement rule",
+      "fitType": "CONFIGURATION",
+      "objects": [
+        "Project Settlement",
+        "Settlement profile",
+        "Settlement rule",
+        "Results analysis key"
+      ],
+      "verification": "VERIFIED",
+      "evidence": [
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/4dd8cb7b1c484b4b93af84d00f60fdb8/f291d353c6244308e10000000a174cb4.html?version=2023.000",
+          "quote": "Settlement is the process where the actual costs incurred for a WBS element, network, or activity are allocated",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/4dd8cb7b1c484b4b93af84d00f60fdb8/f291d353c6244308e10000000a174cb4.html?version=2023.000",
+          "quote": "You must also maintain a settlement rule in each sender before you can settle a project.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/4dd8cb7b1c484b4b93af84d00f60fdb8/6ca7d05275820226e10000000a4450e5.html?version=2023.000",
+          "quote": "The settlement rule for the WBS element",
+          "release": "2023"
+        }
+      ],
+      "limitations": [
+        "A system status that allows settlement must be set on the objects (stated on the page). The settlement transaction was not on the fetched pages.",
+        "Settlement rules can be generated automatically from the strategy in the project profile (Generation of Settlement Rules page)."
+      ]
+    },
+    {
+      "id": "S4-2023-PS-RESULTS-ANALYSIS-WIP",
+      "capability": "Results analysis key on the WBS element controls valuation (work in process, reserves); the balance capable of capitalization is settled",
+      "fitType": "CONFIGURATION",
+      "objects": [
+        "Results analysis key",
+        "Settlement profile",
+        "Project Settlement"
+      ],
+      "verification": "VERIFIED",
+      "evidence": [
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/4dd8cb7b1c484b4b93af84d00f60fdb8/f291d353c6244308e10000000a174cb4.html?version=2023.000",
+          "quote": "Capitalize the balance from results analysis which is capable of capitalization in the balance sheet.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/4dd8cb7b1c484b4b93af84d00f60fdb8/6ca7d05275820226e10000000a4450e5.html?version=2023.000",
+          "quote": "This stipulates how valuation and results analysis take place.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/4dd8cb7b1c484b4b93af84d00f60fdb8/f291d353c6244308e10000000a174cb4.html?version=2023.000",
+          "quote": "If you only want to settle amounts from results analysis, you must maintain results analysis keys for the relevant objects.",
+          "release": "2023"
+        }
+      ],
+      "limitations": [
+        "The transaction or app that runs results analysis for projects, and the revenue recognition scenario in S/4HANA, were not on the fetched pages.",
+        "Results analysis methods and WIP / reserve accounts are Customizing and were not read."
+      ]
+    },
+    {
+      "id": "S4-2023-PS-ASSEMBLY-PROCESSING",
+      "capability": "Assemble-to-order with the Project System: a sales order item triggers a network, with the sales order or the project as cost object",
+      "fitType": "CONFIGURATION",
+      "objects": [
+        "Assembly Processing in the Project System",
+        "network",
+        "requirements classes 202 and 212",
+        "account assignment categories E and D"
+      ],
+      "verification": "VERIFIED",
+      "evidence": [
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/4dd8cb7b1c484b4b93af84d00f60fdb8/53cfb65334e6b54ce10000000a174cb4.html?version=2023.000",
+          "quote": "An assemble-to-order environment is one in which the product or service is assembled on receipt of the sales order.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/4dd8cb7b1c484b4b93af84d00f60fdb8/53cfb65334e6b54ce10000000a174cb4.html?version=2023.000",
+          "quote": "The order type used in the Project System is the network.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/4dd8cb7b1c484b4b93af84d00f60fdb8/47cfb65334e6b54ce10000000a174cb4.html?version=2023.000",
+          "quote": "In assembly processing the cost object is either the sales order or the project (WBS element).",
+          "release": "2023"
+        }
+      ],
+      "limitations": [
+        "The Account Assignment page says project stock could not yet be used with assembly processing 'at present (Release 4.5B)'; that statement is old and unverified for 2023, so confirm in the system before relying on either stock type.",
+        "Assembly processing uses the static procedure: one network per sales document item (stated on the page)."
+      ]
+    },
+    {
+      "id": "S4-2023-CO-SALES-ORDER-RESULTS-ANALYSIS",
+      "capability": "Results analysis per sales order item (make-to-order and engineer-to-order): capitalizable costs, reserves, inventory values, cost of sales",
+      "fitType": "CONFIGURATION",
+      "objects": [
+        "Results analysis on the sales order item",
+        "Product Cost by Sales Order",
+        "Schedule Manager"
+      ],
+      "verification": "VERIFIED",
+      "evidence": [
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/5e23dc8fe9be4fd496f8ab556667ea05/bae34252b9f86860e10000000a423f68.html?version=2023.000",
+          "quote": "You can perform results analysis for each sales order item to valuate the result of the sales order item.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/5e23dc8fe9be4fd496f8ab556667ea05/bae34252b9f86860e10000000a423f68.html?version=2023.000",
+          "quote": "Results analysis is performed on the sales order item.",
+          "release": "2023"
+        }
+      ],
+      "limitations": [
+        "The results analysis transaction and the period-end sequence were not on the fetched page; the page points to the Schedule Manager.",
+        "Applies to the Product Cost by Sales Order component and engineer-to-order with revenue-carrying internal orders."
+      ]
+    },
+    {
+      "id": "S4-2023-FI-AUTOMATIC-PAYMENT-PROGRAM",
+      "capability": "Automatic payment program for suppliers and customers: payment parameters, proposal, payment run (transaction F110), payment media and advices",
+      "fitType": "CONFIGURATION",
+      "objects": [
+        "Manage Automatic Payments (F0770)",
+        "Transaction F110",
+        "Revise Payment Proposals app",
+        "Manage Payment Media app"
+      ],
+      "verification": "VERIFIED",
+      "evidence": [
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/3cb1182b4a184bdd93f8d62e3f1f0741/45698054f87c033de10000000a441470.html?version=2023.000",
+          "quote": "Schedule payment proposals or schedule payments directly.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/3cb1182b4a184bdd93f8d62e3f1f0741/8a8cd1538cdf4608e10000000a174cb4.html?version=2023.000",
+          "quote": "The payment program is capable of processing both outgoing and incoming payments.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/3cb1182b4a184bdd93f8d62e3f1f0741/fb938854c46ee75ee10000000a44176d.html?version=2023.000",
+          "quote": "Automatic payments are all payments that are posted directly by transaction F110",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/3cb1182b4a184bdd93f8d62e3f1f0741/30ebd353ca9f4408e10000000a174cb4.html?version=2023.000",
+          "quote": "Once the specifications for the payment run are complete, you can schedule the payment proposal.",
+          "release": "2023"
+        }
+      ],
+      "limitations": [
+        "Transaction F110 is evidenced by the Supplier Payment Analysis page, which defines automatic payments as those posted by F110; the 2023 payment program pages fetched here do not give an F110 how-to.",
+        "Payment methods, house banks, bank determination and payment medium formats are Customizing (Customizing the Payment Program) and were not read.",
+        "The payment advice output channels shown on the app page are XML via Ariba only; email and printout are marked not supported on the page."
+      ]
+    },
+    {
+      "id": "S4-2023-FI-PAYMENT-PROPOSAL-REVISE",
+      "capability": "Revise a payment proposal before the run: change payment method or bank, block or unblock items, reallocate items between payments",
+      "fitType": "STANDARD",
+      "objects": [
+        "Revise Payment Proposals",
+        "Manage Automatic Payments"
+      ],
+      "verification": "VERIFIED",
+      "evidence": [
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/3cb1182b4a184bdd93f8d62e3f1f0741/de567c542889063de10000000a441470.html?version=2023.000",
+          "quote": "With this app you can check and revise payment proposals and the details of open items.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/3cb1182b4a184bdd93f8d62e3f1f0741/de567c542889063de10000000a441470.html?version=2023.000",
+          "quote": "Block and unblock items in payments and reallocate items among payments.",
+          "release": "2023"
+        },
+        {
+          "url": "https://help.sap.com/docs/SAP_S4HANA_ON-PREMISE/3cb1182b4a184bdd93f8d62e3f1f0741/30ebd353ca9f4408e10000000a174cb4.html?version=2023.000",
+          "quote": "All changes you make affect only the payment proposal. No changes are made to the source documents.",
+          "release": "2023"
+        }
+      ],
+      "limitations": [
+        "Navigation from Revise Payment Proposals to Manage Automatic Payments may not show every proposal (stated on the page).",
+        "Dual control or approval of payments is a separate topic (Approve Bank Payments) and was not read."
+      ]
     }
   ]
 }
