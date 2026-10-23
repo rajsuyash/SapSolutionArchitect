@@ -14,6 +14,7 @@ import {
   RUBRIC, type Aggregate, type Calibration, type CaseBrief, type Graded, type ToBe, type Usage,
 } from "../src/lib/eval-judge";
 import { createProviderClient } from "../src/lib/ai/provider";
+import { loadSapReferences } from "../src/lib/ai/sap-references";
 
 const flag = (name: string) => { const i = process.argv.indexOf(`--${name}`); return i >= 0 ? process.argv[i + 1] : undefined; };
 const has = (name: string) => process.argv.includes(`--${name}`);
@@ -35,7 +36,9 @@ async function main() {
   const apiKey = process.env.DEEPINFRA_API_KEY?.trim();
   if (!apiKey) throw new Error("DEEPINFRA_API_KEY is not set");
   const client = createProviderClient("deepinfra", apiKey, 660_000);
-  const brief = buildCaseBrief(readJson(flag("case") ?? "fixtures/eval/pump-o2c.json"));
+  const rawCase = readJson(flag("case") ?? "fixtures/eval/pump-o2c.json") as { project: { targetProduct: Parameters<typeof loadSapReferences>[0]; targetRelease?: string | null } };
+  const references = await loadSapReferences(rawCase.project.targetProduct, rawCase.project.targetRelease ?? null);
+  const brief = buildCaseBrief(rawCase, references.length);
   let spent = 0;
 
   async function judge(label: string, tobe: ToBe, caseBrief: CaseBrief): Promise<Judged> {

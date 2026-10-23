@@ -121,7 +121,7 @@ async function runOnce(fixture: Fixture, deps: { pool: Pool; provider: string; m
   const project = await createProjectRepository(pool, auth).create(owner.token, fixture.project, randomUUID());
   const variant = fixture.project.variantCode;
   const worker = { orgId: owner.user.orgId, projectId: project.id, variantCode: variant, requestedBy: owner.user.id };
-  let current = await workspaces.create(owner.token, project.id, variant, { variantName: fixture.project.variantName }, randomUUID());
+  let current = await workspaces.create(owner.token, project.id, variant, { variantName: fixture.project.variantName, targetRelease: (fixture.project.targetRelease as string | undefined) ?? null }, randomUUID());
   let state = current.state;
   const run = async (command: Command) => {
     current = await workspaces.command(owner.token, project.id, variant, state.revision, randomUUID(), command);
@@ -320,6 +320,8 @@ async function forceComplete(fixture: Fixture, getState: () => WorkspaceState, r
 async function generateToBe(pool: Pool, snapshotId: string, stage: typeof runStage): Promise<NonNullable<Transcript["toBe"]>> {
   const row = (await pool.query(`SELECT target_product,payload FROM discovery_versions WHERE id=$1`, [snapshotId])).rows[0];
   const input = parseToBeInput({ targetProduct: row.target_product, discovery: row.payload });
+  const references = await loadToBeReferences(input);
+  console.log(`catalog: ${input.targetProduct} ${input.discovery.targetRelease ?? "UNKNOWN"} -> ${references.length} verified references`);
   console.log(`To-Be input: ${input.discovery.asIsSteps.length} steps, ${input.discovery.requirements.length} requirements, ${input.discovery.companyContext?.length ?? 0} company-context fields`);
   const requirements = input.discovery.requirements.map(r => ({ id: r.id, statement: r.statement, evidence: r.evidence.quote }));
   const base = { attempted: true, requirements };
@@ -330,7 +332,7 @@ async function generateToBe(pool: Pool, snapshotId: string, stage: typeof runSta
   };
   try {
     const generated = await stage("to_be", input);
-    const validation = validateToBeOutput(input, (generated.payload as { design?: unknown }).design, await loadToBeReferences(input));
+    const validation = validateToBeOutput(input, (generated.payload as { design?: unknown }).design, references);
     return finish(generated.metrics, { structurallyValid: validation.success, errorCode: validation.success ? null : "VALIDATION_FAILED",
       design: validation.success ? validation.data.design as unknown as NonNullable<Transcript["toBe"]>["design"] : null });
   } catch (error) {

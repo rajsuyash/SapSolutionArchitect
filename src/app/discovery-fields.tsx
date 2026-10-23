@@ -2,6 +2,7 @@
 
 import { useId } from "react";
 import type { DiscoveryInput } from "../lib/discovery";
+import { CATALOG_RELEASES } from "../lib/sap-releases";
 import styles from "./discovery.module.css";
 
 type Source = DiscoveryInput["sources"][number];
@@ -27,6 +28,16 @@ function Field({ name, value, change, multiline = false, required = true, limit 
       : <input id={fieldId} value={value} onChange={event => change(event.target.value)} required={required} maxLength={limit} pattern={required ? ".*\\S.*" : undefined} />}
   </div>;
 }
+/** Offers only releases that have a verified SAP catalog; a previously saved free-text value stays selectable. */
+export function ReleaseSelect({ id, value, change }: { id: string; value: string | null; change: (value: string | null) => void }) {
+  const known = (CATALOG_RELEASES as readonly string[]).includes(value ?? "");
+  return <div><label htmlFor={id}>Target SAP release</label>
+    <select id={id} value={value ?? ""} onChange={event => change(event.target.value || null)}>
+      <option value="">Not decided</option>
+      {CATALOG_RELEASES.map(release => <option key={release} value={release}>{release} (verified SAP reference catalog)</option>)}
+      {value && !known && <option value={value}>{value} (no verified SAP reference catalog)</option>}
+    </select></div>;
+}
 function EvidenceFields({ name, value, sources, change }:
   { name: string; value: Evidence; sources: Source[]; change: (value: Evidence) => void }) {
   const sourceFieldId = useId();
@@ -51,10 +62,9 @@ export function DiscoveryFields({ value, change }: { value: DiscoveryInput; chan
   return <>
     <div className={styles.grid}>
       <Field name="Process variant name" value={value.variantName} limit={200} change={variantName => change({ ...value, variantName })} />
-      <Field name="Target SAP release (optional)" value={value.targetRelease ?? ""} limit={200} required={false}
-        change={targetRelease => change({ ...value, targetRelease: targetRelease || null })} />
+      <ReleaseSelect id="discovery-release" value={value.targetRelease} change={targetRelease => change({ ...value, targetRelease })} />
     </div>
-    <p className={styles.help}>Leave the release blank if it is unknown. Source notes are user-provided evidence and still need business review.</p>
+    <p className={styles.help}>Choose Not decided if the release is unknown. Source notes are user-provided evidence and still need business review.</p>
     <section aria-labelledby="discovery-sources"><h2 id="discovery-sources">1. Source notes</h2>
       <p>Paste the original workshop notes or document excerpts. Record the document revision and a sheet/cell, page or section location.</p>
       {value.sources.map((source, i) => {

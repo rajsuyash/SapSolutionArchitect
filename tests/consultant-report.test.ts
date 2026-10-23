@@ -39,6 +39,7 @@ const data: ReportData = {
   blockers: [{ code: "OPEN_QUESTION", path: "draft.openQuestions.0" }, { code: "OPEN_CONFLICT", path: "draft.conflictDecisions.0" },
     { code: "SOMETHING_NEW", path: "draft.steps.0.implementation" }],
   unresolvedInputQuestions: [{ id: "IQ-1", question: "Which plants are in scope?", owner: "Process owner" }],
+  catalogReferenceCount: 14,
   references: [{ id: "REF-1", targetProduct: "S4HANA_CLOUD_PRIVATE", targetRelease: "2023", status: "VERIFIED", evidence: "q", fitType: "CONFIGURATION",
     capability: "Returns processing", objects: ["VA01"], limitations: ["Needs plant setup"], evidenceUrls: ["https://help.sap.com/docs/x", "https://evil.example/x", "http://help.sap.com/y"] }],
 };
@@ -52,6 +53,13 @@ describe("consultant report model", () => {
     expect(text).toContain("It has not been approved");
     expect(text).toMatch(/Review status: Blocked\./);
     expect(text).not.toMatch(/status: approved/i);
+  });
+  it("shows a visible warning on the page model and in the Markdown only when the catalog is empty", () => {
+    expect(model.catalogWarning).toBeNull();
+    expect(renderMarkdown(model)).not.toContain("no verified SAP reference catalog");
+    const empty = buildReport({ ...data, catalogReferenceCount: 0, targetRelease: "2025" });
+    expect(empty.catalogWarning).toContain("no verified SAP reference catalog for SAP S/4HANA Cloud Private Edition 2025");
+    expect(renderMarkdown(empty)).toContain("**Warning: there is no verified SAP reference catalog");
   });
   it("maps blocker codes to plain categories and keeps unknown codes labelled", () => {
     expect(model.blockersByCategory.map(group => group.category).sort()).toEqual(["Open decisions", "Other", "Source conflicts"]);

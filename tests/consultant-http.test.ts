@@ -306,7 +306,7 @@ describe.skipIf(process.env.RUN_DB_TESTS !== "1")("consultant HTTP boundary", ()
     expect(ok.status, JSON.stringify(ok.body)).toBe(200);
     expect(ok.headers.get("cache-control")).toContain("no-store");
     const report = ok.body.data.report;
-    expect(Object.keys(report).sort()).toEqual(["blockers", "design", "discovery", "generatedAt", "jobId", "project", "references",
+    expect(Object.keys(report).sort()).toEqual(["blockers", "catalogReferenceCount", "design", "discovery", "generatedAt", "jobId", "project", "references",
       "sourceRevision", "targetProduct", "targetRelease", "unresolvedInputQuestions", "variant"]);
     expect(report).toMatchObject({ jobId: r.jobId, project: { name: "Hire returns" }, variant: { code: "RENTAL", name: "Equipment hire" },
       sourceRevision: r.revision, design: { schemaVersion: 1 } });

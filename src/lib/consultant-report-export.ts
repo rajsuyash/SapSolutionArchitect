@@ -29,6 +29,7 @@ export function renderMarkdown(source: ReportModel): string {
   const add = (...lines: string[]) => out.push(...lines, "");
   add(`# To-Be design report: ${header.processName}`);
   add(`**Review status: ${model.statusCopy.label}.** ${model.statusCopy.detail}`);
+  if (model.catalogWarning) add(`**${model.catalogWarning}**`);
   add(table(["Field", "Value"], [row("Project", `${header.project} (${header.client})`), row("Process variant", header.variant),
     row("Discovery revision", header.sourceRevision), row("Target product", header.product), row("Target release", header.release),
     row("Generated", header.generatedAt), row("Blockers", model.blockers.length)]));

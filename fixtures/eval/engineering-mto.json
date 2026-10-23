@@ -8,6 +8,7 @@
     "clientName": "Halden Precision Engineering Ltd (fictional)",
     "problemStatement": "Plan-to-produce at Halden Precision Engineering runs on CAD exports, spreadsheets and a basic job-tracking tool, so engineering changes do not reach the shop floor, material shortages stop projects, project costs are known only after delivery and quality records are paper.",
     "targetProduct": "S4HANA_CLOUD_PRIVATE",
+    "targetRelease": "2023",
     "startingLandscape": "NON_SAP",
     "modules": ["PP", "PS", "MM", "QM", "CO", "SD"],
     "orgUnits": [

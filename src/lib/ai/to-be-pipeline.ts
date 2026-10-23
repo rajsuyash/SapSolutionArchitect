@@ -5,6 +5,7 @@ import { DetailedDesignSchema, IMPLEMENTATION_KINDS, draftIssues, evaluateDesign
 import { REGISTER_GROUPS, REGISTER_GROUP_NAMES, RegisterGroupSchemas, groupOf, type RegisterGroup, type RegisterPayloads } from "./design-registers";
 import type { ValidationIssue } from "./problem-analysis";
 import { repairOutlineShape } from "./outline-repair";
+import { noCatalogNote } from "../sap-releases";
 import { toBeContext, validateToBeOutput, type ToBeInput, type ToBeOutput } from "./to-be";
 
 /** Skeleton-then-expansion To-Be generation. A slow model cannot emit a whole design inside the stage budget, so the model
@@ -40,6 +41,9 @@ export const TRUNCATED = Symbol("truncated");
 export const OUTPUT_TRUNCATED = "OUTPUT_TRUNCATED";
 /** Added to a repair request whose previous answer was cut off. Fixed text: nothing the model wrote is echoed back. */
 const TRUNCATION_NOTE = "Your previous answer was cut off because it reached the output limit. Answer again, more concisely: shorter text values, no repetition, and keep any internal reasoning brief.";
+/** Tells the model, in every call, when no verified catalog backs this product and release. */
+const catalogNote = (input: ToBeInput, references: DesignContext["references"]) =>
+  references.length ? {} : { catalogNote: noCatalogNote(input.targetProduct, input.discovery.targetRelease) };
 const truncationNote = (errors: readonly ValidationIssue[]) => errors.some(error => error.code === OUTPUT_TRUNCATED) ? { repairNote: TRUNCATION_NOTE } : {};
 
 const PLACEHOLDER = "(filled in by the step call)";
@@ -152,7 +156,7 @@ export function stepRequest(input: ToBeInput, references: DesignContext["referen
     conflicts: discovery.conflicts.filter(conflict => conflict.sourceIds.some(sourceId => sourceIds.has(sourceId))),
     inputOpenQuestions: discovery.openQuestions,
     references: references.filter(reference => step.implementation.referenceIds.includes(reference.id)),
-    approvedDecisions: [], validationErrors, ...truncationNote(validationErrors),
+    approvedDecisions: [], validationErrors, ...catalogNote(input, references), ...truncationNote(validationErrors),
   };
 }
 
@@ -167,7 +171,7 @@ export function registerRequest(input: ToBeInput, references: DesignContext["ref
     outline: { processName: outline.processName, steps: outline.steps, coverage: outline.coverage, openQuestions: outline.openQuestions },
     requirements: discovery.requirements.map(r => ({ id: r.id, asIsStepId: r.asIsStepId, critical: r.critical, kind: r.kind, statement: r.statement })),
     references: references.map(({ id, fitType, capability, objects }) => ({ id, fitType, capability, objects })),
-    inputOpenQuestions: discovery.openQuestions, validationErrors, ...truncationNote(validationErrors),
+    inputOpenQuestions: discovery.openQuestions, validationErrors, ...catalogNote(input, references), ...truncationNote(validationErrors),
   };
 }
 
@@ -199,7 +203,7 @@ export async function runDesign(input: ToBeInput, references: DesignContext["ref
   const base = { input, approvedDecisions: [] as never[], references };
   let outlineRepairs = 0;
   const requestOutline = async (errors: ValidationIssue[]) => {
-    const raw = await deps.ask("to_be_outline", { ...base, validationErrors: errors, ...truncationNote(errors) });
+    const raw = await deps.ask("to_be_outline", { ...base, validationErrors: errors, ...catalogNote(input, references), ...truncationNote(errors) });
     const result = raw === TRUNCATED ? { success: false as const, errors: [{ path: "to_be_outline", code: OUTPUT_TRUNCATED }] }
       : validateOutline(input, references, raw);
     if (!result.success) deps.record(result.errors);

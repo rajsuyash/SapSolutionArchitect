@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState, type FormEvent, type Keyboard
 import { ApiError, api, isActive, isUncertain, variantCodeFor, type Command, type JobView, type VariantSummary, type Workspace } from "./consultant-api";
 import { ConsultantChat } from "./consultant-chat";
 import { ConsultantSummary } from "./consultant-summary";
+import { ReleaseSelect } from "./discovery-fields";
 import styles from "./consultant.module.css";
 
 type Tab = "chat" | "summary";
@@ -217,8 +218,7 @@ function StartForm({ canEdit, pending, error, onStart, onCancel }: { canEdit: bo
     <p className={styles.muted}>Describe the business problem in your own words. The consultant will ask a few focused questions at a time and build the current-process summary with you.</p>
     <label htmlFor="variant-name">Which process are we discussing?</label>
     <input id="variant-name" value={name} onChange={(e) => setName(e.target.value)} maxLength={200} required placeholder="For example: Equipment hire" />
-    <label htmlFor="target-release">Target SAP release (optional)</label>
-    <input id="target-release" value={release} onChange={(e) => setRelease(e.target.value)} maxLength={200} placeholder="Leave blank if not decided" />
+    <ReleaseSelect id="target-release" value={release || null} change={(next) => setRelease(next ?? "")} />
     {error && <div role="alert" className={styles.alert}><p>{error}</p></div>}
     <div className={styles.row}>
       <button type="submit" className={styles.primary} disabled={pending || !name.trim()}>{pending ? "Starting…" : "Start the conversation"}</button>

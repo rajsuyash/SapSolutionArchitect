@@ -11,9 +11,9 @@ describe("validators against the hand-written expert control (pump-o2c, the inpu
   const expert = await loadExpert("pump-o2c", { withRegister: true });
   const details = new Map(Object.entries(expert.details));
 
-  it("builds the eval's input: public cloud, no release, so no verified references", () => {
+  it("builds the eval's input: public cloud 2023 has no catalog, so no verified references (this case measures the no-catalog path)", () => {
     expect(expert.input.targetProduct).toBe("S4HANA_CLOUD_PUBLIC");
-    expect(expert.input.discovery.targetRelease).toBeNull();
+    expect(expert.input.discovery.targetRelease).toBe("2023");
     expect(expert.references).toEqual([]);
     expect(expert.input.discovery.requirements).toHaveLength(16);
     expect(expert.input.discovery.asIsSteps.map(s => s.id)).toContain("st_as_is_11");

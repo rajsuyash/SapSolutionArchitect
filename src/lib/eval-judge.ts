@@ -148,18 +148,20 @@ export function loadToBe(raw: unknown): ToBe {
 
 const CaseSchema = z.looseObject({
   caseId: z.string(), company: z.string(),
-  project: z.looseObject({ problemStatement: z.string() }),
+  project: z.looseObject({ problemStatement: z.string(), targetProduct: z.string().optional(), targetRelease: z.string().nullable().optional() }),
   answerBank: z.looseObject({ catalog: z.record(z.string(), z.string()) }),
   steps: z.array(z.looseObject({ n: z.number(), name: z.string(), system: z.string() })).min(1),
   requirements: z.array(z.looseObject({ key: z.string(), stepN: z.number(), kind: z.string(), critical: z.boolean(), statement: z.string() })),
 });
 export type CaseBrief = ReturnType<typeof buildCaseBrief>;
 /** What the business told the consultant: problem, targets, constraints, as-is steps and requirement list. No expected answers. */
-export function buildCaseBrief(rawCase: unknown) {
+export function buildCaseBrief(rawCase: unknown, verifiedReferences: number | null = null) {
   const c = CaseSchema.parse(rawCase);
   const catalog = c.answerBank.catalog;
   return {
     caseId: c.caseId, company: c.company, problem: c.project.problemStatement,
+    // How many verified SAP references the design generator had. With none, NEEDS_VALIDATION is the correct answer for SAP claims.
+    sapCatalog: { targetProduct: c.project.targetProduct ?? null, targetRelease: c.project.targetRelease ?? null, verifiedReferences },
     desiredOutcome: catalog.desired_outcome ?? "", desiredControlsAndConstraints: catalog.desired_controls ?? "",
     // The company-context answers the business gave, so the judge can check the registers (KPIs, interfaces, org units) against them.
     companyContext: WORKSPACE_FIELDS.flatMap(field => catalog[field.id] ? [{ fieldId: field.id, label: field.label, value: catalog[field.id]! }] : []),
@@ -188,6 +190,7 @@ export function buildSystemPrompt(rubric: readonly Criterion[]): string {
     "- Generic phrases such as 'handled in SAP standard', 'improves efficiency' or 'per standard' are not specifics: FAIL for any criterion that demands specifics.",
     "- The design has no dedicated field for some artefacts (document control, role catalogue). Such a criterion is satisfied only if the text of the design actually contains it.",
     "- A design with schemaVersion 2 also carries solution-design registers: keyDesignDecisions (options, recommendation, owner), fitGap (clean-core class and RICEFW type per requirement), orgStructure, masterDataPrerequisites, interfaces, kpis, dataMigration and cutover. Read them as the decision log, gap and RICEFW register, interface list, KPI list and migration/cutover plan. A schemaVersion 1 design has none of them.",
+    "- case.sapCatalog.verifiedReferences is how many verified SAP references the author had. When it is 0 there was no verified SAP catalog for the target product and release, so NEEDS_VALIDATION realizations that name the SAP object to validate are correct: do not penalise them for being unverified.",
     "- Values marked 'business to provide' or held in an open decision with an owner are correctly flagged uncertainty; invented thresholds, rates or accounting rules are not.",
     "- For PASS and PARTIAL, `citation` must name the strongest specific element: stepId.field (for example O2C-ORD-030.effects.financial), or a rule, test, open-question or requirement id from the design. A PASS or PARTIAL whose citation names no real element id is rejected and scored FAIL.",
     "- For FAIL, `citation` names where the content should be or says design-wide, and `reason` says what is missing.",

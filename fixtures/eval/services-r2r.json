@@ -8,6 +8,7 @@
     "clientName": "Corvane Advisory Group plc (fictional)",
     "problemStatement": "Record-to-report at Corvane Advisory Group is a spreadsheet-driven close across four legal entities, with manual intercompany matching, Excel revenue recognition and consolidation, manual bank reconciliations and a close that takes 11 working days.",
     "targetProduct": "S4HANA_CLOUD_PUBLIC",
+    "targetRelease": "2023",
     "startingLandscape": "NON_SAP",
     "modules": ["FI", "CO", "AA", "PS", "TRM"],
     "orgUnits": [

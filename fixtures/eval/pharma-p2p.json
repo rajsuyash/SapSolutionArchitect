@@ -8,6 +8,7 @@
     "clientName": "Nordhaven Pharma Wholesale GmbH (fictional)",
     "problemStatement": "Procure-to-pay at Nordhaven Pharma Wholesale runs on a legacy wholesale system plus spreadsheets, causing GDP batch and expiry gaps at goods receipt, slow manual invoice matching, missed early-payment discounts and an unreliable GR/IR balance at month end.",
     "targetProduct": "S4HANA_CLOUD_PRIVATE",
+    "targetRelease": "2023",
     "startingLandscape": "NON_SAP",
     "modules": ["MM", "FI", "CO", "QM", "EWM"],
     "orgUnits": [

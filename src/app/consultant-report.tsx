@@ -85,6 +85,7 @@ export function ConsultantReport({ model, downloads }: { model: ReportModel; dow
       <h1 id="report-title">To-Be design report: {header.processName}</h1>
       <p className={styles.status} data-status={model.status} data-testid="report-status" role="status">
         <strong>Review status: {model.statusCopy.label}.</strong> {model.statusCopy.detail}</p>
+      {model.catalogWarning && <p className={styles.status} data-testid="report-catalog-warning" role="alert"><strong>{model.catalogWarning}</strong></p>}
       <dl className={styles.facts}>
         <dt>Process variant</dt><dd>{header.variant}</dd><dt>Discovery revision</dt><dd>{header.sourceRevision}</dd>
         <dt>Target product</dt><dd>{header.product}</dd><dt>Target release</dt><dd>{header.release}</dd>

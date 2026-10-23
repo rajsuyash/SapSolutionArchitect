@@ -25,7 +25,7 @@ export function buildToBeInput(fixture: Fixture): ToBeInput {
     return state!;
   };
   state = createWorkspace({ variantCode: fixture.project.variantCode, variantName: fixture.project.variantName,
-    targetProduct: fixture.project.targetProduct as never, targetRelease: null, problemStatement: String(fixture.project.problemStatement) },
+    targetProduct: fixture.project.targetProduct as never, targetRelease: (fixture.project.targetRelease as string | undefined) ?? null, problemStatement: String(fixture.project.problemStatement) },
   { actorId: "eval-actor", at: "2026-10-23T00:00:00.000Z", id: "ws0" });
   for (const [fieldId, value] of Object.entries(fixture.answerBank.catalog)) {
     if (state.facts.some(f => f.id === fieldId && f.status !== "KNOWN")) run(fieldCommand(state, fieldId, value));

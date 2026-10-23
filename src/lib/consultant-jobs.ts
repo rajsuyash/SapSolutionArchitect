@@ -176,7 +176,7 @@ export function createConsultantJobs(pool: Pool, auth: AuthService, queue: PgBos
         discovery: { asIsSteps: discovery.asIsSteps, requirements: discovery.requirements, conflicts: discovery.conflicts,
           openQuestions: discovery.openQuestions, sources: discovery.sources.map(({ id, title, locator, revision }) => ({ id, title, locator, revision })) },
         design: stored.design, blockers: stored.evaluation.blockers, unresolvedInputQuestions: stored.unresolvedInputQuestions,
-        references: catalog.filter(reference => cited.has(reference.id)) };
+        references: catalog.filter(reference => cited.has(reference.id)), catalogReferenceCount: catalog.length };
     },
     async recover() {
       await pool.query(`UPDATE consultant_jobs j SET status='FAILED',run_token=NULL,deadline_at=NULL,finished_at=clock_timestamp(),

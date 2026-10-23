@@ -8,6 +8,7 @@
     "clientName": "Kaveri Fluid Systems Pvt Ltd",
     "problemStatement": "Order-to-cash at Kaveri Fluid Systems runs on disconnected tools with manual re-entry, causing order errors, late deliveries, slow collections and a slow month-end close.",
     "targetProduct": "S4HANA_CLOUD_PUBLIC",
+    "targetRelease": "2023",
     "startingLandscape": "NON_SAP",
     "modules": ["SD", "MM", "PP", "FI", "CO", "QM"],
     "orgUnits": [

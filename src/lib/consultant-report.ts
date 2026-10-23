@@ -15,6 +15,8 @@ export type ReportData = {
   unresolvedInputQuestions: { id: string; question: string; owner: string }[];
   /** Only references the design cites, resolved from the curated catalog at read time. */
   references: TrustedReference[];
+  /** Size of the curated catalog for this product and release; 0 means no SAP claim in the design could be verified. */
+  catalogReferenceCount: number;
 };
 
 const StoredSchema = z.object({
@@ -237,6 +239,8 @@ export function buildReport(data: ReportData) {
       tests: design.steps.reduce((sum, step) => sum + step.acceptanceTests.length, 0), requirements: discovery.requirements.length,
       implemented: coverageCount("IMPLEMENTED"), deferred: coverageCount("DEFERRED"), rejected: coverageCount("REJECTED"),
       openQuestions: questions.length, conflicts: conflicts.length },
+    catalogWarning: data.catalogReferenceCount === 0
+      ? `Warning: there is no verified SAP reference catalog for ${PRODUCT_LABELS[data.targetProduct] ?? data.targetProduct} ${data.targetRelease ?? "(release not decided)"}. Every SAP claim in this design needs SAP validation.` : null,
     comparison, steps: stepViews, traceability, registers: { questions, conflicts, sapPoints }, solution,
     sources: discovery.sources,
   };
