@@ -21,6 +21,12 @@ export const TurnRecordSchema = z.object({
   stopReasons: z.array(z.string().nullable()).default([]),
   /** Server-side repairs applied to the accepted turn (reply_replaced, question_dropped, name_hint_dropped). */
   warnings: z.array(z.object({ path: z.string(), code: z.string() })).default([]),
+  /** Provider responses of the chat call accepted from a JSON text block instead of a tool call (absent in older transcripts). */
+  textFallbacks: count.default(0),
+  /** The background extraction of this turn's user message (absent in older transcripts and when it was already done). */
+  extraction: z.object({ attempts: count, validationErrors: count, textFallbacks: count,
+    warnings: z.array(z.object({ path: z.string(), code: z.string() })), inputTokens: count, outputTokens: count, latencyMs: count,
+    error: z.string().nullable() }).nullable().default(null),
   /** Stage error code when the turn failed (AI_INVALID_OUTPUT, AI_PROVIDER_ERROR, ...). */
   error: z.string().nullable(),
   inputTokens: count, outputTokens: count, latencyMs: count,
@@ -150,6 +156,13 @@ export function scoreRun(rawTranscript: unknown, rawCase: unknown) {
   // Array indices are collapsed so questions.3.gapKey and questions.0.gapKey count as one rule.
   const validationErrorPaths = histogram(i => `${i.path.replace(/\.\d+(?=\.|$)/g, ".*")}|${i.code}`);
   const firstAttemptValidRate = turns.length ? validTurns / turns.length : 0;
+  // "Valid" lets the server repair a reply or fall back to a JSON text block; "clean" does not: it counts the turns where the
+  // chat call (and the extraction, when one ran) came back as a native tool call that needed no repair at all.
+  const extractions = turns.flatMap(t => t.extraction ? [t.extraction] : []);
+  const extractionValid = extractions.filter(e => e.error === null && e.attempts === 1 && e.validationErrors === 0).length;
+  const cleanTurns = turns.filter(t => t.error === null && t.attempts === 1 && t.validationErrors === 0 && t.textFallbacks === 0 && t.warnings.length === 0 &&
+    (!t.extraction || (t.extraction.error === null && t.extraction.attempts === 1 && t.extraction.validationErrors === 0 &&
+      t.extraction.textFallbacks === 0 && t.extraction.warnings.length === 0))).length;
   const turnsToReadiness = transcript.readiness.reached ? transcript.readiness.atTurn : null;
 
   const requirementText = new Map((toBe?.requirements ?? []).map(r => [r.id, `${r.statement}\n${r.evidence ?? ""}`]));
@@ -208,6 +221,10 @@ export function scoreRun(rawTranscript: unknown, rawCase: unknown) {
     stopReasons: count_(turns.flatMap(t => t.stopReasons.map(r => r ?? "none"))),
     warningCodes: count_(turns.flatMap(t => t.warnings.map(w => w.code))),
     firstAttemptValidRate: Number(firstAttemptValidRate.toFixed(3)),
+    extractionRuns: extractions.length, extractionFirstAttemptValidRate: extractions.length ? Number((extractionValid / extractions.length).toFixed(3)) : null,
+    extractionFailures: extractions.filter(e => e.error !== null).length,
+    textFallbackTurns: turns.filter(t => t.textFallbacks > 0 || (t.extraction?.textFallbacks ?? 0) > 0).length,
+    cleanFirstTryRate: turns.length ? Number((cleanTurns / turns.length).toFixed(3)) : 0,
     toBeValid, capabilities, capabilityCount, kpis, kpiCount, salesforce,
     outputTokens: turns.reduce((n, t) => n + t.outputTokens, 0) + (toBe?.outputTokens ?? 0),
     aborted: transcript.aborted, checks, pass: checks.every(c => c.pass),
@@ -223,6 +240,8 @@ export function summarize(score: Score): string {
   if (score.turns.zeroQuestionTurnsWithGapsRemaining.length) {
     lines.push(`  turns with 0 questions while gaps remained: ${score.turns.zeroQuestionTurnsWithGapsRemaining.join(", ")}`);
   }
+  if (score.extractionRuns) lines.push(`  extraction: ${score.extractionRuns} runs, first-attempt valid ${((score.extractionFirstAttemptValidRate ?? 0) * 100).toFixed(0)}%, failures ${score.extractionFailures}`);
+  lines.push(`  clean first try (no repair, no text fallback, chat + extraction): ${(score.cleanFirstTryRate * 100).toFixed(0)}%; turns using the JSON-text fallback: ${score.textFallbackTurns}`);
   if (score.interviewerCreated) lines.push(`  created by the interviewer: ${score.interviewerCreated.steps} steps, ${score.interviewerCreated.requirements} requirements`);
   if (score.turns.forcedCompletion) lines.push(`  note: template completed by direct entry after the turn cap (${score.turns.directEdits} edits)`);
   const top = (h: Record<string, number>) => Object.entries(h).slice(0, 8).map(([k, n]) => `${k} x${n}`).join(", ");

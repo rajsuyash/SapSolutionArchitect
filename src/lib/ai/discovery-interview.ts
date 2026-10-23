@@ -18,6 +18,8 @@ export const InterviewInputSchema = z.strictObject({
   fields: z.array(z.strictObject({
     id: identifier, label: content(200), value: fieldValue.nullable(),
     status: z.enum(["EMPTY", "KNOWN", "UNKNOWN", "NOT_APPLICABLE"]),
+    /** True when an answer to this field is already proposed and waiting for the user: it is not proposed again. */
+    pending: z.boolean().optional(),
   })).max(200),
   /** `stepId` ties a gap to one current step: a turn may ask at most one gap per step. */
   activeGaps: z.array(z.strictObject({
@@ -31,6 +33,9 @@ export const InterviewInputSchema = z.strictObject({
   /** Requirements and pain points already recorded or proposed, for the same reason. */
   requirements: z.array(z.strictObject({ stepId: identifier, kind: z.enum(["PAIN_POINT", "TO_BE_REQUIREMENT", "CONTROL"]),
     statement: content(500), status: z.enum(["CURRENT", "PROPOSED"]) })).max(80),
+  /** Recent user messages whose extraction (fields, steps, requirements) has not been recorded yet. Their full text is in
+   * `evidence`; the interviewer must treat what they say as already answered, not ask for it again. */
+  unextractedMessageIds: z.array(identifier).max(10),
   history: z.array(z.strictObject({ role: z.enum(["user", "assistant"]), text: content(8000) })).max(24),
 });
 export type InterviewInput = z.infer<typeof InterviewInputSchema>;
@@ -73,7 +78,19 @@ export const InterviewTurnSchema = z.strictObject({
   proposedRequirements: z.array(z.strictObject({ ...requirementBase, ...storedCite, value: fieldValue })).max(MAX_NEW_REQUIREMENTS),
   observations: z.array(observationShape).max(6),
 });
-/** The contract shown to the model as the tool schema: sentence IDs as evidence, no server-owned scalars and no `value`. */
+/** The chat call's contract: what to say next. It proposes nothing; extraction (below) does that from the same message. */
+export const InterviewChatToolSchema = z.strictObject({
+  reply: z.enum(REPLIES),
+  questions: z.array(z.strictObject({ gapKey: identifier, question: content(500), whyItMatters: content(500) })).max(3),
+});
+/** The extraction call's contract: facts and structure found in one user message, each citing sentence IDs. */
+export const ExtractionToolSchema = z.strictObject({
+  proposedUpdates: z.array(z.strictObject({ ...updateBase, sentenceIds })).max(MAX_PROPOSALS),
+  proposedSteps: z.array(z.strictObject({ ...stepBase, sentenceIds })).max(MAX_NEW_STEPS),
+  proposedRequirements: z.array(z.strictObject({ ...requirementBase, sentenceIds })).max(MAX_NEW_REQUIREMENTS),
+  observations: z.array(observationShape).max(6),
+});
+/** The combined contract (one call that both asks and extracts): kept for turns stored before the split and for tests. */
 export const InterviewTurnToolSchema = z.strictObject({
   reply: z.enum(REPLIES),
   questions: z.array(z.strictObject({ gapKey: identifier, question: content(500), whyItMatters: content(500) })).max(3),
@@ -87,11 +104,11 @@ export const InterviewTurnToolSchema = z.strictObject({
  * differs by who wrote the turn: a model cites `sentenceIds`; a turn the server already validated carries `sourceId` + `quote`. */
 const rawTurn = <C extends z.ZodRawShape>(cite: C) => z.strictObject({
   schemaVersion: z.unknown().optional(), contextRevision: z.unknown().optional(), reply: z.unknown().optional(),
-  questions: z.array(z.strictObject({ gapKey: identifier, question: content(500), whyItMatters: z.unknown().optional() })).max(3),
-  proposedUpdates: z.array(z.strictObject({ ...updateBase, ...cite, value: z.unknown().optional() })).max(MAX_PROPOSALS),
+  questions: z.array(z.strictObject({ gapKey: identifier, question: content(500), whyItMatters: z.unknown().optional() })).max(3).default([]),
+  proposedUpdates: z.array(z.strictObject({ ...updateBase, ...cite, value: z.unknown().optional() })).max(MAX_PROPOSALS).default([]),
   proposedSteps: z.array(z.strictObject({ ...stepBase, ...cite, value: z.unknown().optional() })).max(MAX_NEW_STEPS).default([]),
   proposedRequirements: z.array(z.strictObject({ ...requirementBase, ...cite, value: z.unknown().optional() })).max(MAX_NEW_REQUIREMENTS).default([]),
-  observations: z.array(observationShape).max(6),
+  observations: z.array(observationShape).max(6).default([]),
 });
 export const InterviewTurnRawSchema = rawTurn({ sentenceIds });
 const StoredTurnRawSchema = rawTurn(storedCite);
@@ -175,13 +192,19 @@ type TurnResult = { success: true; data: InterviewTurn; warnings: InterviewWarni
  * question without whyItMatters is dropped. Repairs are returned as warnings, never as errors. This does not establish
  * business truth or the relevance of a selected passage; a user must still review each proposal before a separate
  * authorized apply. */
-export const validateInterviewTurn = (input: InterviewInput, raw: unknown): TurnResult => validate(input, raw, "model");
+export const validateInterviewTurn = (input: InterviewInput, raw: unknown): TurnResult => validate(input, raw, "model", "full");
+/** The chat call's turn: reply and questions only. Anything else the model adds is ignored with a warning. */
+export const validateChatTurn = (input: InterviewInput, raw: unknown): TurnResult => validate(input, raw, "model", "chat");
+/** The extraction call's output for one message: proposals and observations. It asks and says nothing. */
+export const validateExtraction = (input: InterviewInput, raw: unknown): TurnResult => validate(input, raw, "model", "extraction");
 
 /** Re-check a turn this server already validated (stored shape: `sourceId` + exact `quote`) against the current input,
  * e.g. just before it is persisted. A quote must be an exact substring of its source; nothing is normalised. */
-export const revalidateStoredTurn = (input: InterviewInput, raw: unknown): TurnResult => validate(input, raw, "stored");
+export const revalidateStoredTurn = (input: InterviewInput, raw: unknown, scope: Scope = "full"): TurnResult => validate(input, raw, "stored", scope);
+/** What a validated payload covers: a whole turn, the chat half (reply + questions) or the extraction half (proposals). */
+export type Scope = "full" | "chat" | "extraction";
 
-function validate(input: InterviewInput, raw: unknown, mode: "model" | "stored"): TurnResult {
+function validate(input: InterviewInput, raw: unknown, mode: "model" | "stored", scope: Scope): TurnResult {
   // Over a proposal cap: keep the first entries in model order. Dropped proposals are simply never offered;
   // every kept one still goes through citation resolution and user acceptance.
   const warnings: InterviewWarning[] = [];
@@ -198,10 +221,19 @@ function validate(input: InterviewInput, raw: unknown, mode: "model" | "stored")
       (typeof part === "string" && /^[a-zA-Z][a-zA-Z0-9]{0,30}$/.test(part))).join("."), code: issue.code,
   })) };
   const model = parsed.data as unknown as RawTurn;
+  // Each half of a split turn does one job; what the other half owns is ignored (and noted) rather than trusted.
+  if (scope === "chat" && (model.proposedUpdates.length || model.proposedSteps.length || model.proposedRequirements.length || model.observations.length)) {
+    warnings.push({ path: "proposals", code: "chat_extras_ignored" });
+    Object.assign(model, { proposedUpdates: [], proposedSteps: [], proposedRequirements: [], observations: [] });
+  }
+  if (scope === "extraction" && model.questions.length) {
+    warnings.push({ path: "questions", code: "extraction_extras_ignored" });
+    model.questions = [];
+  }
   const errors: InterviewIssue[] = [];
   const invalid = (path: string, code: string) => errors.push({ path, code });
   const reply = REPLIES.find(allowed => allowed === model.reply);
-  if (!reply) warnings.push({ path: "reply", code: "reply_replaced" });
+  if (!reply && scope !== "extraction") warnings.push({ path: "reply", code: "reply_replaced" });
   const kept = model.questions.flatMap((question, index) => {
     if (usableWhy(question.whyItMatters)) return [{ index, question: { ...question, whyItMatters: question.whyItMatters } }];
     warnings.push({ path: `questions.${index}.whyItMatters`, code: "question_dropped" });
@@ -232,8 +264,9 @@ function validate(input: InterviewInput, raw: unknown, mode: "model" | "stored")
   });
   if (asked.length) refused.forEach(item => warnings.push({ path: item.path, code: "question_dropped", detail: item.code }));
   else if (refused.length) refused.forEach(item => invalid(item.path, item.code));
-  else if (input.activeGaps.length) {
-    // A turn that asks nothing while a gap is open stalls the interview: refuse it so the model repairs it.
+  else if (input.activeGaps.length && scope !== "extraction" && mode === "model") {
+    // A turn that asks nothing while a gap is open stalls the interview: refuse it so the model repairs it. (A stored turn
+    // whose questions were all answered meanwhile is saved as the reply alone.)
     if (model.questions.length) invalid(`questions.${model.questions.findIndex(q => !usableWhy(q.whyItMatters))}.whyItMatters`, "missing_why_it_matters");
     else invalid("questions", "no_questions");
   }
@@ -269,6 +302,7 @@ function validate(input: InterviewInput, raw: unknown, mode: "model" | "stored")
     const drop = (detail: string) => { warnings.push({ path, code: "update_dropped", detail }); return []; };
     if (!field) return drop("unknown_field");
     if (updated.has(update.fieldId)) return drop("duplicate_update");
+    if (field.pending) return drop("already_proposed");
     if (update.operation === "PROPOSE_SET"
       ? field.status !== "EMPTY" || field.value !== null || update.previousValue !== null
       : field.status !== "KNOWN" || field.value === null || update.previousValue !== field.value) return drop("invalid_previous_value");

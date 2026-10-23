@@ -27,7 +27,8 @@ async function run() {
       await jobs.execute(job.id, AbortSignal.any([job.signal, shutdown.signal]), runStage);
     });
     await workConsultantQueues(services.queue, consultantJobs, runStage, { chatConcurrency: config.AI_CHAT_CONCURRENCY,
-      batchConcurrency: config.AI_MAX_CONCURRENCY, shutdown: shutdown.signal, catalog: { baseDir: catalogs.baseDir } });
+      batchConcurrency: config.AI_MAX_CONCURRENCY, shutdown: shutdown.signal, catalog: { baseDir: catalogs.baseDir },
+      extract: { pool: services.pool, concurrency: config.AI_CHAT_CONCURRENCY, maxWaitSeconds: config.AI_STAGE_BUDGET_SECONDS } });
     recoveryTimer = setInterval(() => {
       recovery ??= Promise.all([jobs.recover(), consultantJobs.recover()]).then(() => {})
         .catch(() => { console.error("Job recovery check failed"); })

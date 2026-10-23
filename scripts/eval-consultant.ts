@@ -23,12 +23,12 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { parseEnv, promisify } from "node:util";
 import { Client, Pool } from "pg";
 import { AIStageError, createStageRunner, runStage, type StageMetrics } from "../src/lib/ai/runStage";
-import { revalidateStoredTurn } from "../src/lib/ai/discovery-interview";
 import { parseEnvironment } from "../src/lib/env";
 import { loadToBeReferences, parseToBeInput, validateToBeOutput } from "../src/lib/ai/to-be";
 import { createAuthService, transaction } from "../src/lib/auth";
 import { createProjectRepository } from "../src/lib/tenant";
 import { createDiscoveryWorkspaceRepository, persistWorkspaceTurn } from "../src/lib/discovery-workspace";
+import { extractMessage } from "../src/lib/consultant-extraction";
 import { buildInterviewInput, type WorkspaceState } from "../src/lib/discovery-workspace-model";
 import { REASK_SUFFIX, STEP_GAP_PREFIX, STEP_KEYS } from "../src/lib/workspace-fields";
 import { jaccard, ScoringCaseSchema, scoreRun, summarize, TranscriptSchema, type ScoringCase, type Transcript } from "../src/lib/eval-score";
@@ -128,7 +128,7 @@ function factStatus(state: WorkspaceState, fieldId: string) {
  * contains the bank text verbatim.
  * Its To-Be is the repository's one-step rental benchmark remapped onto the workspace ids: a plumbing check, never a quality score. */
 function scriptedStage(fixture: Fixture, getState: () => WorkspaceState): typeof runStage {
-  const metrics = (stage: "interview_turn" | "to_be") => ({ stage, provider: "stub" as const, model: "scripted", inputTokens: 1,
+  const metrics = (stage: "interview_turn" | "extraction_turn" | "to_be") => ({ stage, provider: "stub" as const, model: "scripted", inputTokens: 1,
     outputTokens: 1, latencyMs: 1, attempts: 1, validationErrors: [] });
   return (async (stage: string, raw: unknown) => {
     if (stage === "to_be") {
@@ -157,14 +157,16 @@ function scriptedStage(fixture: Fixture, getState: () => WorkspaceState): typeof
       return stepRef && message.includes(r.statement) && !input.requirements.some(x => x.statement === r.statement)
         ? [{ stepRef, kind: r.kind, critical: r.critical, sourceId: input.currentMessage.id, quote: r.statement }] : [];
     });
-    return { payload: { schemaVersion: 1, contextRevision: input.contextRevision, reply: "Thank you for that context.",
+    if (stage === "interview_turn") return { payload: { schemaVersion: 1, contextRevision: input.contextRevision, reply: "Thank you for that context.",
       questions: questions.map(g => ({ gapKey: g.key, question: `Scripted question about ${g.fieldId}`,
-        whyItMatters: "It decides how this step is designed." })),
+        whyItMatters: "It decides how this step is designed." })), proposedUpdates: [], proposedSteps: [], proposedRequirements: [], observations: [] },
+      metrics: metrics("interview_turn") };
+    return { payload: { schemaVersion: 1, contextRevision: input.contextRevision, reply: "Thank you for that context.", questions: [],
       proposedUpdates: input.fields.flatMap(f => {
         const answer = f.status === "EMPTY" ? answerFor(fixture, state, f.id) : null;
         return answer && message.includes(answer) ? [{ fieldId: f.id, operation: "PROPOSE_SET" as const,
           previousValue: null, value: answer, sourceId: input.currentMessage.id, quote: answer }] : [];
-      }), proposedSteps, proposedRequirements, observations: [] }, metrics: metrics("interview_turn") };
+      }), proposedSteps, proposedRequirements, observations: [] }, metrics: metrics("extraction_turn") };
   }) as unknown as typeof runStage;
 }
 
@@ -174,6 +176,7 @@ function metricsRecord(m: StageMetrics) {
   return { model: m.model, attempts: m.attempts, validationErrors: m.validationErrors.length,
     issues: groups.flatMap((group, i) => group.map(issue => ({ attempt: i + 1, ...issue }))),
     stopReasons: m.stopReasons ?? [], warnings: (m.warnings ?? []).map(({ path, code }) => ({ path, code })),
+    textFallbacks: m.textFallbacks ?? 0,
     inputTokens: m.inputTokens, outputTokens: m.outputTokens, latencyMs: m.latencyMs };
 }
 
@@ -187,6 +190,7 @@ async function runOnce(fixture: Fixture, deps: { pool: Pool; provider: string; m
     password: "Password123!", orgName: `Eval ${fixture.caseId}` });
   const project = await createProjectRepository(pool, auth).create(owner.token, fixture.project, randomUUID());
   const variant = fixture.project.variantCode;
+  const worker = { orgId: owner.user.orgId, projectId: project.id, variantCode: variant, requestedBy: owner.user.id };
   let current = await workspaces.create(owner.token, project.id, variant, { variantName: fixture.project.variantName }, randomUUID());
   let state = current.state;
   const run = async (command: Command) => {
@@ -230,21 +234,40 @@ async function runOnce(fixture: Fixture, deps: { pool: Pool; provider: string; m
       const input = buildInterviewInput(state, messageId!);
       const record: Transcript["turns"][number] = { index, userMessage: state.messages.find(m => m.id === messageId)!.text,
         gapsAvailable: input.activeGaps.length, questions: [], proposals: 0, attempts: 0, validationErrors: 0, issues: [], stopReasons: [], warnings: [], error: null,
-        inputTokens: 0, outputTokens: 0, latencyMs: 0 };
+        textFallbacks: 0, extraction: null, inputTokens: 0, outputTokens: 0, latencyMs: 0 };
       transcript.turns.push(record);
+      // The reply (chat call) and the reading of the same message (extraction call) run together, as in production: the chat
+      // call sees the message's raw text, not its extraction. The driver waits for both before the simulated client answers,
+      // which keeps a run repeatable (the production worker does not wait; see awaitExtraction in consultant-extraction.ts).
+      const proposalsBefore = state.proposals.length, questionsBefore = state.questions.length;
+      const extracting = (async () => {
+        let last: unknown = null;
+        for (let attempt = 1; attempt <= 2; attempt++) { // the queue retries a failed extraction once
+          try { return { outcome: await extractMessage(pool, stage, worker, messageId!, randomUUID()), error: null }; }
+          catch (error) { last = error; }
+        }
+        return { outcome: null, error: last };
+      })();
       try {
-        const generated = await stage("interview_turn", input);
+        const generated = await stage("interview_turn", input).catch(async error => { await extracting; throw error; });
         Object.assign(record, metricsRecord(generated.metrics));
         outputTokens += generated.metrics.outputTokens;
-        if (!revalidateStoredTurn(input, generated.payload).success) throw new Error("DRIVER_REVALIDATION_FAILED");
-        await transaction(pool, client => persistWorkspaceTurn(client, { orgId: owner.user.orgId, projectId: project.id,
-          variantCode: variant, requestedBy: owner.user.id, expectedRevision: state.revision, currentMessageId: messageId!,
-          turn: generated.payload, requestKey: randomUUID() }));
+        const extraction = await extracting;
+        const extractionMetrics = extraction.outcome?.status === "RECORDED" ? extraction.outcome.metrics
+          : extraction.error instanceof AIStageError ? extraction.error.metrics : null;
+        if (extractionMetrics) {
+          outputTokens += extractionMetrics.outputTokens;
+          record.extraction = { attempts: extractionMetrics.attempts, validationErrors: extractionMetrics.validationErrors.length,
+            textFallbacks: extractionMetrics.textFallbacks ?? 0, warnings: (extractionMetrics.warnings ?? []).map(({ path, code }) => ({ path, code })),
+            inputTokens: extractionMetrics.inputTokens, outputTokens: extractionMetrics.outputTokens, latencyMs: extractionMetrics.latencyMs,
+            error: extraction.error ? (extraction.error instanceof AIStageError ? extraction.error.code : "DRIVER_ERROR") : null };
+        } else if (extraction.error) record.extraction = { attempts: 0, validationErrors: 0, textFallbacks: 0, warnings: [], inputTokens: 0,
+          outputTokens: 0, latencyMs: 0, error: `DRIVER_ERROR:${message(extraction.error).slice(0, 80)}` };
+        await transaction(pool, client => persistWorkspaceTurn(client, { ...worker, expectedRevision: state.revision, currentMessageId: messageId!,
+          turn: generated.payload, requestKey: randomUUID(), scope: "chat" }));
         state = (await workspaces.get(owner.token, project.id, variant)).state!;
-        record.questions = generated.payload.questions.map(q => ({ gapKey: q.gapKey,
-          fieldId: input.activeGaps.find(g => g.key === q.gapKey)!.fieldId, question: q.question }));
-        record.proposals = generated.payload.proposedUpdates.length + generated.payload.proposedSteps.length +
-          generated.payload.proposedRequirements.length;
+        record.questions = state.questions.slice(questionsBefore).map(q => ({ gapKey: q.gapKey, fieldId: q.fieldId, question: q.question }));
+        record.proposals = state.proposals.length - proposalsBefore;
         retryMessageId = null; failures = 0;
       } catch (error) {
         const stageError = error instanceof AIStageError ? error : null;

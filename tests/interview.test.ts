@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import { parseEnvironment } from "../src/lib/env";
 import { createStageRunner } from "../src/lib/ai/runStage";
 import { z } from "zod";
-import { InterviewTurnSchema, InterviewTurnToolSchema, parseInterviewInput, revalidateStoredTurn, validateInterviewTurn,
+import { InterviewTurnSchema, InterviewTurnToolSchema, parseInterviewInput, revalidateStoredTurn, validateChatTurn, validateExtraction, validateInterviewTurn,
   type InterviewTurn } from "../src/lib/ai/discovery-interview";
 import { interviewModelView } from "../src/lib/ai/interview-sentences";
 import { fixture } from "./support/interview-input";
@@ -31,6 +31,15 @@ type ModelTurn = Omit<InterviewTurn, "proposedUpdates" | "proposedSteps" | "prop
 const proposal = (): ModelTurn => ({ ...stored(), proposedSteps: [], proposedRequirements: [],
   proposedUpdates: [{ fieldId: "return-action", operation: "PROPOSE_SET", previousValue: null, sentenceIds: ["S1"] }] });
 const valid = (raw: unknown, input = fixture()) => validateInterviewTurn(input, raw);
+/** The input as the extraction call sees it: numbered sentences, and none of the gaps or history it does not use. */
+const extractionView = (input: ReturnType<typeof fixture>) => ({ ...interviewModelView(input), activeGaps: [], closedGapKeys: [], history: [] });
+/** What the extraction call returns: proposals and observations only. */
+const extraction = () => { const p = proposal(); return { proposedUpdates: p.proposedUpdates, proposedSteps: p.proposedSteps,
+  proposedRequirements: p.proposedRequirements, observations: p.observations }; };
+/** The extraction as the server stores it: the combined stored turn with no questions. */
+const extractionStored = (): InterviewTurn => ({ ...stored(), questions: [] });
+/** What the chat call returns: a reply and questions only. */
+const chat = () => ({ reply: stored().reply, questions: stored().questions });
 
 describe("interview turn contract", () => {
   it("preserves evidence exactly and permits a concise proposal with one grounded question", () => {
@@ -240,12 +249,13 @@ const settings = (overrides = {}) => parseEnvironment({ ...local, NODE_ENV: "tes
   AI_PROVIDER: "anthropic", ANTHROPIC_API_KEY: "synthetic-interview-test-key", ...overrides });
 type RequestBody = { system: string; messages: { content: string }[];
   tools: { name: string; input_schema: unknown }[]; tool_choice: unknown };
-function response(output: unknown = proposal(), stop = "tool_use", name = "submit_interview_turn") {
+function response(output: unknown = extraction(), stop = "tool_use", name = "submit_extraction") {
   return new Response(JSON.stringify({ id: "msg_synthetic", type: "message", role: "assistant", model: "synthetic",
     content: [{ type: "tool_use", id: "tool_synthetic", name, input: output }], stop_reason: stop,
     usage: { input_tokens: 100, output_tokens: 200 } }), { headers: { "content-type": "application/json" } });
 }
-function harness(reply: (attempt: number) => Response = () => response(), count: (attempt: number) => number = () => 1000) {
+function harness(reply: (attempt: number) => Response = () => response(extraction()), count: (attempt: number) => number = () => 1000,
+  stage: "interview_turn" | "extraction_turn" = "extraction_turn") {
   const sent: RequestBody[] = [], counted: RequestBody[] = [];
   const fetch = vi.fn<typeof globalThis.fetch>(async (url, init) => {
     expect(String(url)).toMatch(/^https:\/\/api\.anthropic\.com\/v1\/messages/);
@@ -257,17 +267,39 @@ function harness(reply: (attempt: number) => Response = () => response(), count:
     sent.push(body); return asStream(reply(sent.length));
   });
   const runner = createStageRunner(settings(), { fetch });
-  return { sent, counted, fetch, run: (input: unknown) => runner("interview_turn", input) };
+  return { sent, counted, fetch, run: (input: unknown) => runner(stage, input) };
 }
+
+describe("chat and extraction scopes", () => {
+  it("validates the chat half on questions alone: it asks, ignores proposals, and still refuses to stay silent", () => {
+    expect(validateChatTurn(fixture(), chat())).toMatchObject({ success: true, data: { questions: [{ gapKey: "return-date-gap" }], proposedUpdates: [] }, warnings: [] });
+    expect(validateChatTurn(fixture(), { ...chat(), ...extraction() })).toMatchObject({ success: true, data: { proposedUpdates: [], observations: [] },
+      warnings: [{ code: "chat_extras_ignored" }] });
+    expect(validateChatTurn(fixture(), { reply: chat().reply, questions: [] })).toEqual({ success: false, errors: [{ path: "questions", code: "no_questions" }] });
+  });
+  it("validates the extraction half on proposals alone: it never needs a question or a reply", () => {
+    expect(validateExtraction(fixture(), extraction())).toMatchObject({ success: true, data: { questions: [], proposedUpdates: [{ fieldId: "return-action" }] }, warnings: [] });
+    expect(validateExtraction(fixture(), { proposedUpdates: [], proposedSteps: [], proposedRequirements: [], observations: [] })).toMatchObject({ success: true, warnings: [] });
+    expect(validateExtraction(fixture(), { ...extraction(), questions: chat().questions })).toMatchObject({ success: true, data: { questions: [] },
+      warnings: [{ code: "extraction_extras_ignored" }] });
+    const unknown = extraction(); unknown.proposedUpdates[0]!.sentenceIds = ["S99"];
+    expect(validateExtraction(fixture(), unknown)).toEqual({ success: false, errors: [{ path: "proposedUpdates.0.sentenceIds", code: "unknown_sentence_id" }] });
+  });
+  it("re-checks a stored half against the current input by scope", () => {
+    expect(revalidateStoredTurn(fixture(), { questions: [], proposedUpdates: extractionStored().proposedUpdates, observations: [] }, "extraction").success).toBe(true);
+    // A stored chat turn whose questions were all answered meanwhile is saved as the reply alone.
+    expect(revalidateStoredTurn(fixture(), { reply: chat().reply, questions: [] }, "chat").success).toBe(true);
+  });
+});
 
 describe("interview stage transport", () => {
   it("counts the complete request including system/schema and returns a validated proposal", async () => {
     const h = harness(); const input = fixture(); const result = await h.run(input);
-    expect(JSON.parse(h.sent[0]!.messages[0]!.content).input).toEqual(interviewModelView(input));
+    expect(JSON.parse(h.sent[0]!.messages[0]!.content).input).toEqual(extractionView(input));
     expect(h.counted[0]).toEqual(expect.objectContaining({ system: h.sent[0]!.system,
       messages: h.sent[0]!.messages, tools: h.sent[0]!.tools, tool_choice: h.sent[0]!.tool_choice }));
-    expect(h.sent[0]!.tools[0]!.name).toBe("submit_interview_turn");
-    expect(result.payload).toEqual(stored());
+    expect(h.sent[0]!.tools[0]!.name).toBe("submit_extraction");
+    expect(result.payload).toEqual(extractionStored());
   });
   it("shows the model its evidence as [Sn] lines and resolves what it cites", async () => {
     const h = harness(); const result = await h.run(fixture());
@@ -278,34 +310,34 @@ describe("interview stage transport", () => {
     expect(result.payload.proposedUpdates[0]).toMatchObject({ sourceId: "MSG-3", quote: "The clerk records physical returns in the spreadsheet." });
   });
   it("repairs a turn citing an unknown sentence id, telling the model the error code and nothing it wrote", async () => {
-    const bad = proposal(); bad.proposedUpdates[0]!.sentenceIds = ["S77"];
-    const h = harness(attempt => response(attempt === 1 ? bad : proposal()));
+    const bad = extraction(); bad.proposedUpdates[0]!.sentenceIds = ["S77"];
+    const h = harness(attempt => response(attempt === 1 ? bad : extraction()));
     const result = await h.run(fixture());
-    expect(result.payload).toEqual(stored());
+    expect(result.payload).toEqual(extractionStored());
     expect(result.metrics.validationErrors).toEqual([{ path: "proposedUpdates.0.sentenceIds", code: "unknown_sentence_id" }]);
     expect(h.sent[1]!.messages[0]!.content).toContain("unknown_sentence_id");
   });
   it("repairs an invalid proposal once without echoing model text or changing context", async () => {
-    const h = harness(attempt => response(attempt === 1 ? { ...proposal(), approved: "private-invalid-output" } : proposal()));
+    const h = harness(attempt => response(attempt === 1 ? { ...extraction(), approved: "private-invalid-output" } : extraction()));
     const result = await h.run(fixture());
-    expect(result.payload).toEqual(stored());
+    expect(result.payload).toEqual(extractionStored());
     expect(result.metrics).toMatchObject({ attempts: 2, inputTokens: 200, outputTokens: 400 });
     expect(result.metrics.attemptIssues).toHaveLength(1); // success path keeps the failed first attempt's issues
     expect(result.metrics.attemptIssues![0]).toEqual(result.metrics.validationErrors);
     expect(h.sent).toHaveLength(2);
-    expect(JSON.parse(h.sent[1]!.messages[0]!.content).input).toEqual(interviewModelView(fixture()));
+    expect(JSON.parse(h.sent[1]!.messages[0]!.content).input).toEqual(extractionView(fixture()));
     expect(h.sent[1]!.messages[0]!.content).not.toContain("private-invalid-output");
   });
   it.each(["wrong tool", "invented citation", "no tool"]) ("rejects %s after bounded repair", async kind => {
-    const wrong = proposal();
+    const wrong = extraction();
     if (kind === "invented citation") wrong.proposedUpdates[0]!.sentenceIds = ["S99"];
     const h = harness(() => response(wrong, kind === "no tool" ? "end_turn" : "tool_use",
-      kind === "wrong tool" ? "other_tool" : "submit_interview_turn"));
+      kind === "wrong tool" ? "other_tool" : "submit_extraction"));
     await expect(h.run(fixture())).rejects.toMatchObject({ code: "AI_INVALID_OUTPUT", metrics: { attempts: 2 } });
     expect(h.sent).toHaveLength(2);
   });
-  it("requests 16000 output tokens for an interview turn and records the stop reason per attempt", async () => {
-    const h = harness(attempt => response(attempt === 1 ? { ...proposal(), proposedUpdates: [{ fieldId: "return-action" }] } : proposal(),
+  it("requests 16000 output tokens for an extraction and records the stop reason per attempt", async () => {
+    const h = harness(attempt => response(attempt === 1 ? { ...extraction(), proposedUpdates: [{ fieldId: "return-action" }] } : extraction(),
       attempt === 1 ? "max_tokens" : "tool_use"));
     const result = await h.run(fixture());
     expect((h.sent[0] as unknown as { max_tokens: number }).max_tokens).toBe(16000);
@@ -316,37 +348,75 @@ describe("interview stage transport", () => {
     await expect(h.run(fixture())).rejects.toMatchObject({ code: "AI_INVALID_OUTPUT",
       metrics: { stopReasons: ["max_tokens", "max_tokens"], attemptIssues: [[{ path: "", code: "invalid_type" }], [{ path: "", code: "invalid_type" }]] } });
   });
-  it("accepts a turn whose scalars and reply the server repairs, and reports the repairs in metrics", async () => {
-    const sloppy = { ...JSON.parse(JSON.stringify(proposal())), contextRevision: 99, reply: "Sure thing." };
+  it("accepts an extraction whose scalars the server repairs, and reports the repairs in metrics", async () => {
+    const sloppy = { ...JSON.parse(JSON.stringify(extraction())), contextRevision: 99, reply: "Sure thing." };
     delete sloppy.schemaVersion;
     const h = harness(() => response(sloppy));
     const result = await h.run(fixture());
     expect(result.metrics.attempts).toBe(1);
-    expect(result.payload).toEqual(stored());
-    expect(result.metrics.warnings).toEqual([{ path: "reply", code: "reply_replaced" }]);
+    expect(result.payload).toEqual(extractionStored());
+    expect(result.metrics.warnings).toEqual([]); // the extraction call has no reply to repair
   });
   it("accepts the turn as one JSON text block when the model skips the tool call, and still validates it fully", async () => {
     const asText = (output: unknown, text = JSON.stringify(output)) => new Response(JSON.stringify({ id: "msg_synthetic", type: "message",
       role: "assistant", model: "synthetic", content: [{ type: "text", text }], stop_reason: "end_turn",
       usage: { input_tokens: 100, output_tokens: 200 } }), { headers: { "content-type": "application/json" } });
-    const ok = harness(() => asText(proposal()));
-    expect((await ok.run(fixture())).payload).toEqual(stored());
-    expect((await harness(() => asText(proposal(), "```json\n" + JSON.stringify(proposal()) + "\n```")).run(fixture())).payload).toEqual(stored());
+    const ok = harness(() => asText(extraction()));
+    expect((await ok.run(fixture())).payload).toEqual(extractionStored());
+    expect((await harness(() => asText(extraction(), "```json\n" + JSON.stringify(extraction()) + "\n```")).run(fixture())).payload).toEqual(extractionStored());
     // The same checks apply: an invented citation, prose, or an array is refused after the bounded repair.
-    const invented = proposal(); invented.proposedUpdates[0]!.sentenceIds = ["S99"];
+    const invented = extraction(); invented.proposedUpdates[0]!.sentenceIds = ["S99"];
     for (const bad of [asText(invented), asText(null, "I will ask about the return date."), asText(null, "[1,2]")]) {
       await expect(harness(() => bad.clone()).run(fixture())).rejects.toMatchObject({ code: "AI_INVALID_OUTPUT" });
     }
+  });
+  it("runs the chat call on its own tool: reply and questions, plain messages, nothing to cite", async () => {
+    const h = harness(() => response(chat(), "tool_use", "submit_interview_turn"), () => 1000, "interview_turn"); const input = fixture();
+    const result = await h.run(input);
+    expect(h.sent[0]!.tools[0]!.name).toBe("submit_interview_turn");
+    const schema = JSON.stringify(h.sent[0]!.tools[0]!.input_schema);
+    expect(schema).toContain("questions");
+    expect(schema).not.toMatch(/sentenceIds|proposedUpdates|proposedSteps|observations/);
+    expect(JSON.parse(h.sent[0]!.messages[0]!.content).input).toEqual(input); // not [Sn]-tagged
+    expect(h.sent[0]!.system).toContain("a separate step that runs in the background");
+    expect(result.payload).toEqual({ ...stored(), proposedUpdates: [], observations: [] });
+    expect(result.metrics.stage).toBe("interview_turn");
+  });
+  it("ignores proposals a chat reply carries, with a warning, instead of trusting them", async () => {
+    const h = harness(() => response({ ...chat(), proposedUpdates: extraction().proposedUpdates }, "tool_use", "submit_interview_turn"), () => 1000, "interview_turn");
+    const result = await h.run(fixture());
+    expect(result.payload.proposedUpdates).toEqual([]);
+    expect(result.metrics.warnings).toEqual([{ path: "proposals", code: "chat_extras_ignored" }]);
+  });
+  it("runs the extraction call on its own tool, with numbered sentences and without gaps or history", async () => {
+    const h = harness(); const input = fixture(); await h.run(input);
+    expect(h.sent[0]!.tools[0]!.name).toBe("submit_extraction");
+    const schema = JSON.stringify(h.sent[0]!.tools[0]!.input_schema);
+    expect(schema).toContain("sentenceIds");
+    expect(schema).not.toMatch(/"questions"|"reply"/);
+    const sent = JSON.parse(h.sent[0]!.messages[0]!.content).input;
+    expect(sent.activeGaps).toEqual([]); expect(sent.history).toEqual([]);
+    expect(sent.currentMessage.text).toContain("[S1]");
+    expect(h.sent[0]!.system).toContain("submit_extraction");
+  });
+  it("counts every response accepted from a JSON text block, so the fallback never hides in the first-try rate", async () => {
+    const asText = (output: unknown) => new Response(JSON.stringify({ id: "m", type: "message", role: "assistant", model: "s",
+      content: [{ type: "text", text: JSON.stringify(output) }], stop_reason: "end_turn", usage: { input_tokens: 1, output_tokens: 1 } }),
+    { headers: { "content-type": "application/json" } });
+    const viaText = await harness(() => asText(extraction())).run(fixture());
+    expect(viaText.metrics.textFallbacks).toBe(1);
+    const viaTool = await harness().run(fixture());
+    expect(viaTool.metrics.textFallbacks).toBe(0);
   });
   it("rejects oversized complete request without truncating sources", async () => {
     const h = harness(() => response(), () => 60001);
     await expect(h.run(fixture())).rejects.toMatchObject({ code: "AI_INPUT_TOO_LARGE" });
     expect(h.sent).toHaveLength(0);
-    expect(JSON.parse(h.counted[0]!.messages[0]!.content).input).toEqual(interviewModelView(fixture()));
+    expect(JSON.parse(h.counted[0]!.messages[0]!.content).input).toEqual(extractionView(fixture()));
   });
   it("refuses a fabricated stub response and sensitive input before provider IO", async () => {
     const stub = createStageRunner(settings({ AI_PROVIDER: "stub" }));
-    await expect(stub("interview_turn", fixture())).rejects.toMatchObject({ code: "AI_PROVIDER_ERROR" });
+    await expect(stub("extraction_turn", fixture())).rejects.toMatchObject({ code: "AI_PROVIDER_ERROR" });
     const input = fixture(); input.currentMessage.text += " alice@example.invalid";
     const h = harness();
     await expect(h.run(input)).rejects.toMatchObject({ code: "AI_INPUT_INVALID" });

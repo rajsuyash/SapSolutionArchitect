@@ -28,7 +28,7 @@ function step(i: number, title: string, detail: string, requirementKey: string, 
 const turn = (index: number, gapKeys: string[], extra: Partial<Transcript["turns"][number]> = {}): Transcript["turns"][number] => ({
   index, userMessage: `message ${index}`, gapsAvailable: 5,
   questions: gapKeys.map(k => ({ gapKey: k, fieldId: k.slice(2), question: `Distinct question about ${k.slice(2)} topic number ${index}` })),
-  proposals: 1, attempts: 1, validationErrors: 0, issues: [], stopReasons: ["tool_use"], warnings: [], error: null, inputTokens: 100, outputTokens: 50, latencyMs: 10, ...extra });
+  proposals: 1, attempts: 1, validationErrors: 0, issues: [], stopReasons: ["tool_use"], warnings: [], error: null, textFallbacks: 0, extraction: null, inputTokens: 100, outputTokens: 50, latencyMs: 10, ...extra });
 
 /** A passing run; each test mutates a private copy. */
 function goodTranscript(): Transcript {
@@ -144,6 +144,21 @@ describe("scoreRun", () => {
     t.turns.push(turn(9, ["gstep_x"], { questions: [{ gapKey: "gstep_x", fieldId: "f",
       question: "Walk me through what happens at Raise customer quote: who does it, in which system, and what goes wrong?" }] }));
     expect(score(t).semanticDuplicateCount).toBe(1);
+  });
+
+  it("counts a turn as clean only when neither call needed a repair or the JSON-text fallback", () => {
+    const t = goodTranscript();
+    const clean = { attempts: 1, validationErrors: 0, textFallbacks: 0, warnings: [], inputTokens: 1, outputTokens: 1, latencyMs: 1, error: null };
+    t.turns.forEach(turn => { turn.extraction = { ...clean }; });
+    expect(score(t)).toMatchObject({ cleanFirstTryRate: 1, extractionRuns: 3, extractionFirstAttemptValidRate: 1, textFallbackTurns: 0 });
+    t.turns[0]!.textFallbacks = 1; // chat accepted from a text block: still valid, no longer clean
+    t.turns[1]!.extraction = { ...clean, warnings: [{ path: "proposedUpdates.0", code: "update_dropped" }] };
+    t.turns[2]!.extraction = { ...clean, attempts: 2, validationErrors: 1 };
+    const result = score(t);
+    expect(result.firstAttemptValidRate).toBe(1);
+    expect(result).toMatchObject({ cleanFirstTryRate: 0, extractionFirstAttemptValidRate: 0.667, textFallbackTurns: 1 });
+    expect(summarize(result)).toContain("clean first try");
+    expect(score(goodTranscript())).toMatchObject({ cleanFirstTryRate: 1, extractionRuns: 0, extractionFirstAttemptValidRate: null }); // older transcripts
   });
 
   it("reports the steps and requirements the interviewer created", () => {

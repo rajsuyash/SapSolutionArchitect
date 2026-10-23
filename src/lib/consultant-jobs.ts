@@ -7,6 +7,7 @@ import { withTenantSession } from "./tenant";
 import { assertOrgCanRunAi } from "./org-limits";
 import { validateDiscovery } from "./discovery";
 import { loadWorkspaceForWorker, persistWorkspaceTurn } from "./discovery-workspace";
+import { CONSULTANT_EXTRACT_QUEUE, extractionScope } from "./consultant-extraction";
 import { buildInterviewInput } from "./discovery-workspace-model";
 import { loadToBeReferences, parseToBeInput, validateToBeOutput } from "./ai/to-be";
 import { loadSapReferences, type SapReferenceOptions } from "./ai/sap-references";
@@ -66,7 +67,7 @@ export function createConsultantJobs(pool: Pool, auth: AuthService, queue: PgBos
   const { deadlineSeconds, queueExpireSeconds } = jobTiming(stageBudgetSeconds);
   return {
     async initialize() {
-      for (const name of CONSULTANT_QUEUES) {
+      for (const name of [...CONSULTANT_QUEUES, CONSULTANT_EXTRACT_QUEUE]) {
         await queue.createQueue(name, { retryLimit: 0, expireInSeconds: queueExpireSeconds, retentionSeconds: 3600, deleteAfterSeconds: 604800 });
       }
     },
@@ -88,7 +89,11 @@ export function createConsultantJobs(pool: Pool, auth: AuthService, queue: PgBos
           if (prior.request_hash !== hash) throw new AuthError("IDEMPOTENCY_CONFLICT", 409, "This request key was already used for different inputs.");
           return expose(prior);
         }
-        if (workspace.state.revision !== input.expectedRevision) throw stale();
+        // A chat turn answers the latest user message and may be sent while an earlier message is still being extracted in the
+        // background, which advances the revision: it is current when its message is still the last one. A To-Be run pins a revision.
+        const lastUserMessage = workspace.state.messages.findLast(message => message.role === "user")?.id;
+        if (input.kind === "INTERVIEW" ? input.expectedRevision > workspace.state.revision || input.messageId !== lastUserMessage
+          : workspace.state.revision !== input.expectedRevision) throw stale();
         if (input.kind === "TO_BE" && (!workspace.canConfirm || !workspace.confirmedSnapshotId)) {
           throw new AuthError("DISCOVERY_NOT_CONFIRMED", 409, "A project lead or consultant must confirm the completed As-Is discovery first.");
         }
@@ -118,6 +123,15 @@ export function createConsultantJobs(pool: Pool, auth: AuthService, queue: PgBos
         const queued = await queue.send(consultantQueueFor(input.kind), { jobId: id }, { id, retryLimit: 0, expireInSeconds: queueExpireSeconds,
           retentionSeconds: 3600, deleteAfterSeconds: 604800, db: { executeSql: (sql, values) => client.query(sql, values) } });
         if (!queued) throw new Error("Consultant enqueue failed");
+        if (input.kind === "INTERVIEW") {
+          // The same transaction also queues reading this message for facts and structure; the reply never waits for it.
+          const seq = workspace.state.messages.filter(message => message.role === "user").findIndex(message => message.id === input.messageId) + 1;
+          const extraction = await queue.send(CONSULTANT_EXTRACT_QUEUE, { scope: extractionScope({ orgId: user.orgId, projectId, variantCode }),
+            orgId: user.orgId, projectId, variantCode, requestedBy: user.id, messageId: input.messageId, seq },
+          { id: randomUUID(), retryLimit: 1, retryDelay: 2, expireInSeconds: queueExpireSeconds, retentionSeconds: 3600, deleteAfterSeconds: 604800,
+            db: { executeSql: (sql, values) => client.query(sql, values) } });
+          if (!extraction) throw new Error("Consultant extraction enqueue failed");
+        }
         return expose(job);
       }),
     latest: (token: string | null, projectId: string, variantCode: string) =>
@@ -180,8 +194,11 @@ export function createConsultantJobs(pool: Pool, auth: AuthService, queue: PgBos
         const input = await transaction(pool, async client => {
           const workspace = await loadWorkspaceForWorker(client, workerScope(job), true);
           if (!workspace.canEdit) throw forbidden();
+          if (job.kind === "INTERVIEW") {
+            if (workspace.state.messages.findLast(message => message.role === "user")?.id !== job.message_id) throw stale();
+            return { kind: "INTERVIEW" as const, input: buildInterviewInput(workspace.state, job.message_id!) };
+          }
           if (workspace.state.revision !== job.input_revision) throw stale();
-          if (job.kind === "INTERVIEW") return { kind: "INTERVIEW" as const, input: buildInterviewInput(workspace.state, job.message_id!) };
           if (!workspace.canConfirm || workspace.confirmedSnapshotId !== job.snapshot_id) throw stale();
           return { kind: "TO_BE" as const, input: await designInput(client, job) };
         });
@@ -198,13 +215,17 @@ export function createConsultantJobs(pool: Pool, auth: AuthService, queue: PgBos
           if (!locked.rows[0]!.live) throw timeoutError();
           const workspace = await loadWorkspaceForWorker(client, workerScope(job), true);
           if (!workspace.canEdit) throw forbidden();
-          if (workspace.state.revision !== job.input_revision) throw stale();
           let result: unknown;
           if (input.kind === "INTERVIEW") {
+            // The reply is for the participant's latest message; one sent meanwhile makes it stale. (A revision that moved on
+            // because the background extraction recorded an earlier message is fine.)
+            if (workspace.state.messages.findLast(message => message.role === "user")?.id !== job.message_id) throw stale();
+            // Chat half only, onto the latest revision: extraction may have recorded the previous message meanwhile.
             const saved = await persistWorkspaceTurn(client, { ...workerScope(job), expectedRevision: job.input_revision,
-              currentMessageId: job.message_id!, turn: generated.payload, requestKey: id });
+              currentMessageId: job.message_id!, turn: generated.payload, requestKey: id, scope: "chat" });
             result = { workspaceRevision: saved.state.revision };
           } else {
+            if (workspace.state.revision !== job.input_revision) throw stale();
             if (!workspace.canConfirm || workspace.confirmedSnapshotId !== job.snapshot_id) throw stale();
             const validation = validateToBeOutput(input.input, (generated.payload as { design?: unknown }).design,
               await loadToBeReferences(input.input, catalog));

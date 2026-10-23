@@ -8,10 +8,16 @@ import { createProviderClient, logProviderFailure, logStageTimeout, type Provide
 import { DetailedDesignSchema } from "./design-quality";
 import { loadToBeReferences, parseToBeInput, validateToBeOutput, type ToBeOutput } from "./to-be";
 import { interviewModelView } from "./interview-sentences";
-import { InterviewTurnRawSchema, InterviewTurnToolSchema, parseInterviewInput, validateInterviewTurn, type InterviewInput, type InterviewTurn } from "./discovery-interview";
+
+/** The chat call needs no citations: it sees plain messages, and not the facts it cannot ask about. */
+const chatModelView = (input: InterviewInput) => input;
+/** The extraction call sees the message as numbered sentences, and neither the gaps nor the history it does not use. */
+const extractionModelView = (input: InterviewInput) => ({ ...interviewModelView(input), activeGaps: [], closedGapKeys: [], history: [] });
+import { ExtractionToolSchema, InterviewChatToolSchema, InterviewTurnRawSchema, parseInterviewInput, validateChatTurn, validateExtraction,
+  type InterviewInput, type InterviewTurn } from "./discovery-interview";
 
 type Stage = (typeof STAGE_NAMES)[number];
-type Payloads = { problem_analysis: ProblemAnalysis; to_be: ToBeOutput; interview_turn: InterviewTurn };
+type Payloads = { problem_analysis: ProblemAnalysis; to_be: ToBeOutput; interview_turn: InterviewTurn; extraction_turn: InterviewTurn };
 type Code = "AI_INPUT_INVALID" | "AI_INPUT_TOO_LARGE" | "AI_INVALID_OUTPUT" | "AI_PROVIDER_ERROR" | "AI_TIMEOUT" | "AI_CANCELLED";
 export type StageMetrics = { stage: Stage; provider: Provider; model: string; inputTokens: number;
   outputTokens: number; latencyMs: number; attempts: number; validationErrors: ValidationIssue[];
@@ -22,6 +28,9 @@ export type StageMetrics = { stage: Stage; provider: Provider; model: string; in
   stopReasons?: (string | null)[];
   /** Interview turns only: server-side repairs applied to an accepted turn (off-list reply, dropped question, normalized quote). */
   warnings?: ValidationIssue[];
+  /** Interview stages only: provider responses accepted from a JSON text block because the model skipped the tool call.
+   * Counted so a run that leans on the fallback is visible; a clean native tool call is the expected case. */
+  textFallbacks?: number;
   /** True when this stage's requests carried `thinking: {type: "disabled"}` (AI_NO_THINKING_STAGES, DeepInfra only). */
   thinkingDisabled?: boolean };
 export class AIStageError extends Error {
@@ -122,10 +131,10 @@ export function createStageRunner(config: Config, options: Options = {}) {
   return async function runStage<S extends Stage>(stage: S, rawInput: unknown, externalSignal?: AbortSignal): Promise<{ payload: Payloads[S]; metrics: StageMetrics }> {
     const started = Date.now();
     const isDesign = DESIGN_STAGES.has(stage);
-    const lane = stage === "interview_turn" ? chatLane : batchLane;
+    const lane = stage === "interview_turn" || stage === "extraction_turn" ? chatLane : batchLane;
     const model = isDesign ? config.AI_MODEL_DESIGN ?? config.AI_MODEL : config.AI_MODEL;
     const metrics: StageMetrics = { stage, provider, model, inputTokens: 0, outputTokens: 0,
-      latencyMs: 0, attempts: 0, validationErrors: [], attemptIssues: [], stopReasons: [], thinkingDisabled: noThinking.has(stage) };
+      latencyMs: 0, attempts: 0, validationErrors: [], attemptIssues: [], stopReasons: [], textFallbacks: 0, thinkingDisabled: noThinking.has(stage) };
     const fail = (code: Code) => new AIStageError(code, metrics);
     const deadline = new AbortController();
     const timer = setTimeout(() => deadline.abort(fail("AI_TIMEOUT")), stageBudget);
@@ -167,7 +176,7 @@ export function createStageRunner(config: Config, options: Options = {}) {
     }
 
     try {
-      if (stage !== "problem_analysis" && stage !== "to_be" && stage !== "interview_turn") throw fail("AI_INPUT_INVALID");
+      if (!STAGE_NAMES.includes(stage)) throw fail("AI_INPUT_INVALID");
       let designInput: ReturnType<typeof parseToBeInput> | undefined;
       let designReferences: Awaited<ReturnType<typeof loadToBeReferences>> = [];
       let interviewInput: InterviewInput | undefined;
@@ -180,7 +189,7 @@ export function createStageRunner(config: Config, options: Options = {}) {
         if (!client) throw fail("AI_PROVIDER_ERROR");
         // A malformed curated catalog fails closed (provider error) rather than dropping or inventing trust.
         designReferences = await loadToBeReferences(designInput, { baseDir: options.sapCatalogDir });
-      } else if (stage === "interview_turn") {
+      } else if (stage === "interview_turn" || stage === "extraction_turn") {
         try { interviewInput = parseInterviewInput(rawInput); }
         catch { metrics.validationErrors = [{ path: "input", code: "invalid_or_sensitive_interview" }]; throw fail("AI_INPUT_INVALID"); }
         if (!client) throw fail("AI_PROVIDER_ERROR");
@@ -212,13 +221,15 @@ export function createStageRunner(config: Config, options: Options = {}) {
         if (!analysisInput.problemStatement.trim() || await count(analysisInput.problemStatement) > config.AI_MAX_INPUT_TOKENS) throw fail("AI_INPUT_TOO_LARGE");
       }
       const [system, template] = designInput || interviewInput ? [await call(() =>
-        readFile(new URL(designInput ? "../../../prompts/to_be.system.md" : "../../../prompts/discovery_interview.system.md", import.meta.url), "utf8")), ""] : await call(() => Promise.all([
+        readFile(new URL(designInput ? "../../../prompts/to_be.system.md"
+          : stage === "extraction_turn" ? "../../../prompts/discovery_extraction.system.md" : "../../../prompts/discovery_interview.system.md", import.meta.url), "utf8")), ""] : await call(() => Promise.all([
         readFile(new URL("../../../prompts/problem_analysis.system.md", import.meta.url), "utf8"),
         readFile(new URL("../../../prompts/problem_analysis.user.md", import.meta.url), "utf8"),
       ]));
       if (analysisInput && (!template.includes("{{input}}") || !template.includes("{{validationErrors}}"))) throw fail("AI_PROVIDER_ERROR");
-      const jsonSchema = z.toJSONSchema(designInput ? DetailedDesignSchema : interviewInput ? InterviewTurnToolSchema : ProblemAnalysisSchema);
-      const tool = designInput ? "submit_to_be" : interviewInput ? "submit_interview_turn" : "submit_analysis";
+      const jsonSchema = z.toJSONSchema(designInput ? DetailedDesignSchema : interviewInput
+        ? (stage === "extraction_turn" ? ExtractionToolSchema : InterviewChatToolSchema) : ProblemAnalysisSchema);
+      const tool = designInput ? "submit_to_be" : interviewInput ? (stage === "extraction_turn" ? "submit_extraction" : "submit_interview_turn") : "submit_analysis";
       const tools: Anthropic.Tool[] = [{ name: tool, input_schema: { ...jsonSchema, type: "object" } }];
       // Claude Sonnet 5.5 rejects a forced tool choice (HTTP 400), so Anthropic keeps "auto". DeepInfra's MiMo answers in
       // prose under "auto" (0/4 tool calls measured 2026-10-22) and calls the tool every time when it is forced.
@@ -228,7 +239,7 @@ export function createStageRunner(config: Config, options: Options = {}) {
       for (let repair = 0; repair < 2; repair++) {
         // One replacement pass prevents client text containing template markers from being interpreted.
         const user = designInput ? JSON.stringify({ input: designInput, approvedDecisions: [], references: designReferences, validationErrors: errors })
-          : interviewInput ? JSON.stringify({ input: interviewModelView(interviewInput), validationErrors: errors })
+          : interviewInput ? JSON.stringify({ input: stage === "extraction_turn" ? extractionModelView(interviewInput) : chatModelView(interviewInput), validationErrors: errors })
           : template.replace(/\{\{(input|validationErrors)\}\}/g, (_, key: string) =>
             key === "input" ? JSON.stringify({ ...analysisInput, inputTruncated }) : JSON.stringify(errors));
         const messages: Anthropic.MessageParam[] = [{ role: "user", content: user }];
@@ -271,6 +282,7 @@ export function createStageRunner(config: Config, options: Options = {}) {
           const toolCalls = message.content.filter((block) => block.type === "tool_use");
           output = message.stop_reason === "tool_use" && toolCalls.length === 1 && toolCalls[0]!.name === tool ? toolCalls[0]!.input
             : interviewInput && !toolCalls.length ? jsonFromText(message.content) : null;
+          if (interviewInput && !toolCalls.length && output !== null) metrics.textFallbacks! += 1;
         }
         signal.throwIfAborted();
         if (designInput) {
@@ -278,7 +290,7 @@ export function createStageRunner(config: Config, options: Options = {}) {
           if (result.success) return { payload: result.data as Payloads[S], metrics };
           errors = result.errors;
         } else if (interviewInput) {
-          const result = validateInterviewTurn(interviewInput, output);
+          const result = (stage === "extraction_turn" ? validateExtraction : validateChatTurn)(interviewInput, output);
           if (result.success) { metrics.warnings = result.warnings; return { payload: result.data as Payloads[S], metrics }; }
           errors = result.errors;
         } else {

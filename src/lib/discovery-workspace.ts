@@ -3,7 +3,7 @@ import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
 import { AuthError, type AuthService } from "./auth";
 import { withTenantSession } from "./tenant";
-import { containsSensitiveText, revalidateStoredTurn } from "./ai/discovery-interview";
+import { containsSensitiveText, revalidateStoredTurn, type Scope } from "./ai/discovery-interview";
 import { applyWorkspaceCommand, backfillCatalog, buildInterviewInput, compileDiscovery, createWorkspace,
   getWorkspaceReadiness, recordInterviewTurn, WorkspaceCommandSchema, WorkspaceStateSchema,
   type WorkspaceState } from "./discovery-workspace-model";
@@ -21,8 +21,10 @@ type Row = { id: string; revision: number; state: unknown; request_hash: string;
 type Access = { target_product: WorkspaceState["targetProduct"]; problem_statement: string;
   project_role: string; org_role: string; is_demo: boolean };
 export type WorkspaceWorkerArgs = { orgId: string; projectId: string; variantCode: string; requestedBy: string };
+/** `scope` "chat" or "extraction" persists one half of a turn onto the latest revision (the other half, or the user, may
+ * have moved the workspace on since the job started); the default "full" still requires `expectedRevision` to be current. */
 export type WorkspaceTurnArgs = WorkspaceWorkerArgs & { expectedRevision: number; currentMessageId: string;
-  turn: unknown; requestKey: string };
+  turn: unknown; requestKey: string; scope?: Scope };
 
 function validIdentity(projectId: string, variantCode: string) {
   if (!uuid.safeParse(projectId).success || !variant.safeParse(variantCode).success) throw absent();
@@ -110,26 +112,40 @@ export async function loadWorkspaceForWorker(client: PoolClient, args: Workspace
   return result(row, a);
 }
 
+/** Questions of a chat turn whose gap is still open now; one answered meanwhile (by an extraction or an edit) is not asked. */
+function stillOpen(input: ReturnType<typeof buildInterviewInput>, turn: unknown) {
+  const questions = (turn as { questions?: unknown } | null)?.questions;
+  if (!Array.isArray(questions)) return turn;
+  const open = new Set(input.activeGaps.map(gap => gap.key));
+  return { ...(turn as object), questions: questions.filter(q => open.has((q as { gapKey?: string })?.gapKey ?? "")) };
+}
+
 /** Called only inside the worker's transaction after it has fenced the job.
  * Model/network execution belongs outside this transaction. */
 export async function persistWorkspaceTurn(client: PoolClient, args: WorkspaceTurnArgs) {
+  const scope = args.scope ?? "full";
   validKey(args.requestKey);
   validRevision(args.expectedRevision);
   validIdentity(args.projectId, args.variantCode);
   await lock(client, args.orgId, args.projectId, args.variantCode);
   const a = await access(client, args, true); // worker-only: privileged connection
   requireEdit(a);
-  const hash = digest({ expectedRevision: args.expectedRevision, currentMessageId: args.currentMessageId, turn: args.turn });
+  const hash = digest(scope === "full" ? { expectedRevision: args.expectedRevision, currentMessageId: args.currentMessageId, turn: args.turn }
+    : { scope, currentMessageId: args.currentMessageId, turn: args.turn });
   const prior = await replay(client, args, args.requestKey, hash);
   if (prior) return result(prior, a);
   const current = await latest(client, args);
   if (!current) throw absent();
   const state = readState(current);
-  if (state.revision !== args.expectedRevision) throw conflict();
-  if (!revalidateStoredTurn(buildInterviewInput(state, args.currentMessageId), args.turn).success) {
+  if (scope === "full" && state.revision !== args.expectedRevision) throw conflict();
+  // An extraction that was already recorded (a retry, or the same message extracted twice) changes nothing.
+  if (scope === "extraction" && state.extractedMessageIds?.includes(args.currentMessageId)) return result(current, a);
+  const input = buildInterviewInput(state, args.currentMessageId);
+  const turn = scope === "chat" ? stillOpen(input, args.turn) : args.turn;
+  if (!revalidateStoredTurn(input, turn, scope).success) {
     throw new AuthError("INVALID_INTERVIEW_TURN", 400, "The interview response could not be validated");
   }
-  const next = recordInterviewTurn(state, args.turn, args.currentMessageId, metadata(args.requestedBy));
+  const next = recordInterviewTurn(state, turn, args.currentMessageId, metadata(args.requestedBy), scope);
   return result(await append(client, args, "TURN", next, args.requestKey, hash,
     next.confirmation ? current.confirmed_snapshot_id : null), a);
 }

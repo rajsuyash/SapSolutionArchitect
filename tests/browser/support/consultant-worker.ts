@@ -7,7 +7,7 @@ import type { InterviewInput } from "../../../src/lib/ai/discovery-interview";
 import type { ToBeInput } from "../../../src/lib/ai/to-be";
 import { rentalDraft } from "../../../fixtures/ai/to-be/rental-benchmark";
 
-const metrics = (stage: "interview_turn" | "to_be") => ({ stage, provider: "stub" as const, model: "scripted-browser-double",
+const metrics = (stage: "interview_turn" | "extraction_turn" | "to_be") => ({ stage, provider: "stub" as const, model: "scripted-browser-double",
   inputTokens: 1, outputTokens: 1, latencyMs: 1, attempts: 1, validationErrors: [] });
 
 function interviewTurn(input: InterviewInput) {
@@ -46,13 +46,15 @@ function design(input: ToBeInput) {
 
 const runStage = (async (stage: string, raw: unknown) => stage === "interview_turn"
   ? { payload: interviewTurn(raw as InterviewInput), metrics: metrics("interview_turn") }
+  : stage === "extraction_turn" ? { payload: interviewTurn(raw as InterviewInput), metrics: metrics("extraction_turn") }
   : { payload: { design: design(raw as ToBeInput) }, metrics: metrics("to_be") }) as ReturnType<typeof createStageRunner>;
 
 const { services, consultantJobs, startQueue } = getRuntime();
 await startQueue();
 await consultantJobs.recover();
 const shutdown = new AbortController();
-await workConsultantQueues(services.queue, consultantJobs, runStage, { chatConcurrency: 2, batchConcurrency: 2, shutdown: shutdown.signal });
+await workConsultantQueues(services.queue, consultantJobs, runStage, { chatConcurrency: 2, batchConcurrency: 2, shutdown: shutdown.signal,
+  extract: { pool: services.pool, concurrency: 2, maxWaitSeconds: 60 } });
 console.info("Consultant test worker ready");
 const stop = async () => { shutdown.abort(); try { await services.close(); } finally { process.exit(0); } };
 process.once("SIGTERM", () => void stop());

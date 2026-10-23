@@ -2,7 +2,7 @@ import { z } from "zod";
 import { validateDiscovery, type DiscoveryInput } from "./discovery";
 import { REASK_AFTER_USER_TURNS, REASK_SUFFIX, STEP_GAP_PREFIX, STEP_KEYS as stepKeys, STEP_QUESTIONS as stepQuestions,
   WORKSPACE_FIELDS } from "./workspace-fields";
-import { parseInterviewInput, revalidateStoredTurn, type InterviewInput, type InterviewTurn } from "./ai/discovery-interview";
+import { parseInterviewInput, revalidateStoredTurn, type InterviewInput, type InterviewTurn, type Scope } from "./ai/discovery-interview";
 
 // Re-exported for server callers; the client imports ./workspace-fields directly.
 export { WORKSPACE_FIELDS };
@@ -62,6 +62,9 @@ export const WorkspaceStateSchema = z.strictObject({
   requirements: z.array(RequirementSchema).max(200), requirementDrafts: z.array(RequirementDraftSchema).max(200),
   proposals: z.array(ProposalSchema).max(500),
   questions: z.array(QuestionSchema).max(500), observations: z.array(ObservationSchema).max(500),
+  /** User messages whose extraction (proposals) is recorded, so a retried or replayed extraction is a no-op. Absent in
+   * workspaces saved before extraction became a separate step. */
+  extractedMessageIds: z.array(id).max(1000).optional(),
   confirmation: ConfirmationSchema.nullable(),
 });
 export type WorkspaceState = z.infer<typeof WorkspaceStateSchema>;
@@ -363,17 +366,24 @@ export function applyWorkspaceCommand(rawState: WorkspaceState, rawCommand: unkn
 }
 
 /** Persist only a validated model turn. It cannot change an accepted fact. */
-export function recordInterviewTurn(rawState: WorkspaceState, rawTurn: unknown, currentMessageId: string, meta: WorkspaceMeta): WorkspaceState {
+/** Persist a validated model turn. It cannot change an accepted fact. `scope` selects what is recorded: "chat" the assistant's
+ * reply and questions, "extraction" the proposals and observations found in `currentMessageId` (no reply), "full" both. */
+export function recordInterviewTurn(rawState: WorkspaceState, rawTurn: unknown, currentMessageId: string, meta: WorkspaceMeta,
+  scope: Scope = "full"): WorkspaceState {
   checkMeta(meta);
   const state = structuredClone(checked(rawState));
   const input = buildInterviewInput(state, currentMessageId);
-  const validated = revalidateStoredTurn(input, rawTurn);
+  const validated = revalidateStoredTurn(input, rawTurn, scope);
   if (!validated.success) fail("INVALID_INTERVIEW_TURN");
   const turn: InterviewTurn = validated.data;
+  if (scope !== "chat" && state.extractedMessageIds?.includes(currentMessageId)) fail("ALREADY_EXTRACTED");
   if (state.messages.some(m => m.id === meta.id)) fail("DUPLICATE_WORKSPACE_ID");
-  const reply = [turn.reply, ...turn.questions.map(q => `${q.question} ${q.whyItMatters}`)].join("\n\n");
-  state.messages.push({ id: meta.id, role: "assistant", text: reply, createdBy: null, createdAt: meta.at });
+  if (scope !== "extraction") {
+    const reply = [turn.reply, ...turn.questions.map(q => `${q.question} ${q.whyItMatters}`)].join("\n\n");
+    state.messages.push({ id: meta.id, role: "assistant", text: reply, createdBy: null, createdAt: meta.at });
+  }
   const userTurn = state.messages.filter(m => m.role === "user").length;
+  if (scope !== "chat") state.extractedMessageIds = [...(state.extractedMessageIds ?? []), currentMessageId];
   for (const question of turn.questions) state.questions.push({ ...question,
     fieldId: input.activeGaps.find(g => g.key === question.gapKey)!.fieldId, askedAtRevision: state.revision, askedAtUserTurn: userTurn });
   const proposalId = (index: number) => `p_${meta.id}_${index}`;
@@ -467,10 +477,10 @@ export function buildInterviewInput(rawState: WorkspaceState, currentMessageId: 
   const visibleDrafts = incompleteDrafts.filter(d => shown.has(d.id) || recentlyAsked.has(d.id)).slice(0, MAX_VISIBLE_DRAFTS);
   const fields = [...WORKSPACE_FIELDS.map(def => {
     const fact = state.facts.find(f => f.id === def.id)!;
-    return { id: def.id, label: `${def.domain}: ${def.label}`, value: fact.value, status: wire(fact.status) };
+    return { id: def.id, label: `${def.domain}: ${def.label}`, value: fact.value, status: wire(fact.status), ...(covered.has(def.id) ? { pending: true } : {}) };
   }), ...visibleDrafts.flatMap(draft => draft.fields.filter(fact => fact.status === "EMPTY" || /_(name|description)$/.test(fact.id)).map(fact => ({ id: fact.id,
     label: `AS_IS step ${draft.id}${draftFact(draft, "name").value ? ` (${trimmed(draftFact(draft, "name").value!, 60)})` : ""}: ${fact.id.slice(draft.id.length + 1)}`,
-    value: fact.value, status: wire(fact.status) }))),
+    value: fact.value, status: wire(fact.status), ...(covered.has(fact.id) ? { pending: true } : {}) }))),
   ...visibleRequirements.map(draft => ({ id: draft.statement.id, label: `${draft.kind}: desired requirement or pain point for step ${draft.asIsStepId}`,
     value: draft.statement.value, status: wire(draft.statement.status) }))];
   const closedGapKeys = WORKSPACE_FIELDS.map(def => `g_${def.id}`).filter(key => !activeGaps.some(g => g.key === key));
@@ -503,10 +513,12 @@ export function buildInterviewInput(rawState: WorkspaceState, currentMessageId: 
       history.unshift({ role: message.role, text: content }); historyBytes += bytes;
     }
   }
+  const extracted = new Set(state.extractedMessageIds ?? []);
+  const unextractedMessageIds = state.messages.filter(m => m.role === "user" && recentMessageIds.has(m.id) && !extracted.has(m.id)).map(m => m.id);
   return parseInterviewInput({ schemaVersion: 1, contextRevision: state.revision, variantName: state.variantName,
     problemStatement: state.problemStatement, currentMessage: { id: message.id, text: message.text },
     evidence: evidenceSources.map(s => ({ id: s.id, text: s.text })), fields, activeGaps, closedGapKeys, steps: currentSteps,
-    requirements: knownRequirements, history });
+    requirements: knownRequirements, unextractedMessageIds, history });
 }
 
 /** Compile reviewed user facts only. This artifact remains USER_PROVIDED/DRAFT

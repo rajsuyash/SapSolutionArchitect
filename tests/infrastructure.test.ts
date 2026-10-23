@@ -19,7 +19,7 @@ describe("server environment", () => {
     expect(config.AI_MODEL).toBe("claude-sonnet-5-5");
     expect(config.AI_MAX_INPUT_TOKENS).toBe(60000);
     expect(config.AI_MAX_CONCURRENCY).toBe(4);
-    expect(config.AI_CHAT_CONCURRENCY).toBe(2);
+    expect(config.AI_CHAT_CONCURRENCY).toBe(3);
     expect(config.AI_PROVIDER).toBe("stub");
     expect(config.CONSULTANT_DAILY_JOB_LIMIT).toBe(200);
     expect(parseEnvironment({ ...example(), CONSULTANT_DAILY_JOB_LIMIT: "50", AI_MAX_INPUT_TOKENS: "60000" }).CONSULTANT_DAILY_JOB_LIMIT).toBe(50);

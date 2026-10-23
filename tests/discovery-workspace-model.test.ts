@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { validateInterviewTurn } from "../src/lib/ai/discovery-interview";
+import { validateExtraction, validateInterviewTurn } from "../src/lib/ai/discovery-interview";
 import { indexSentences } from "../src/lib/ai/interview-sentences";
 import { WORKSPACE_FIELDS } from "../src/lib/workspace-fields";
 import { backfillCatalog, buildInterviewInput, compileDiscovery, createWorkspace, getWorkspaceReadiness,
@@ -420,5 +420,40 @@ describe("discovery workspace model", () => {
       const id = say(text);
       expect(keys(id).filter(k => k.startsWith("g_process_owner"))).toEqual([]);
     }
+  });
+
+  it("records the chat half and the extraction half of a turn separately, and extracts each message once", () => {
+    let state = start();
+    const m = meta();
+    state = applyWorkspaceCommand(state, { type: "SEND_MESSAGE", text: "We use Tally for finance. A clerk checks credit by phone." }, m);
+    const chat = { questions: ask("g_process_owner"), proposedUpdates: [], observations: [] };
+    const extraction = { proposedUpdates: [{ fieldId: "current_systems", operation: "PROPOSE_SET", previousValue: null, sourceId: m.id,
+      quote: "We use Tally for finance.", value: "We use Tally for finance." }], observations: [] };
+    // Chat: the reply and its question only; nothing is proposed and nothing is marked extracted.
+    state = recordInterviewTurn(state, { ...chat, ...extraction }, m.id, meta(), "chat");
+    expect(state.messages.at(-1)).toMatchObject({ role: "assistant" });
+    expect(state.proposals).toHaveLength(0);
+    expect(state.extractedMessageIds ?? []).toEqual([]);
+    expect(buildInterviewInput(state, m.id).unextractedMessageIds).toEqual([]); // the current message is never listed
+    // A later message sees the earlier one as not yet extracted, with its text in evidence.
+    const later = meta();
+    state = applyWorkspaceCommand(state, { type: "SEND_MESSAGE", text: "Credit is checked by phone." }, later);
+    const view = buildInterviewInput(state, later.id);
+    expect(view.unextractedMessageIds).toEqual([m.id]);
+    expect(view.evidence.find(source => source.id === m.id)?.text).toContain("We use Tally");
+    // Extraction: proposals and marker, no assistant message, and only once.
+    const messages = state.messages.length;
+    state = recordInterviewTurn(state, extraction, m.id, meta(), "extraction");
+    expect(state.messages).toHaveLength(messages);
+    expect(state.proposals).toMatchObject([{ fieldId: "current_systems", status: "PENDING" }]);
+    expect(state.extractedMessageIds).toEqual([m.id]);
+    expect(() => recordInterviewTurn(state, extraction, m.id, meta(), "extraction")).toThrow("ALREADY_EXTRACTED");
+    expect(buildInterviewInput(state, later.id).unextractedMessageIds).toEqual([]);
+    // The field now has an answer waiting: the next extraction is told, and does not propose it again.
+    expect(buildInterviewInput(state, later.id).fields.find(f => f.id === "current_systems")).toMatchObject({ status: "EMPTY", pending: true });
+    const again = validateExtraction(buildInterviewInput(state, later.id), { ...extraction, proposedUpdates: [{ fieldId: "current_systems",
+      operation: "PROPOSE_SET", previousValue: null, sentenceIds: ["S1"] }] });
+    expect(again).toMatchObject({ success: true, data: { proposedUpdates: [] },
+      warnings: expect.arrayContaining([expect.objectContaining({ code: "update_dropped", detail: "already_proposed" })]) });
   });
 });

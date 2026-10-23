@@ -6,6 +6,25 @@ import { fixture } from "./support/interview-input";
 
 const pieces = (text: string) => splitSentences(text).map(({ start, end }) => text.slice(start, end));
 
+describe("splitSentences: lists, clauses and SAP-safe guards", () => {
+  it("splits semicolon clauses and bullet lines, without the separators", () => {
+    expect(pieces("Customer enquiry; price list; discount approval email")).toEqual(["Customer enquiry", "price list", "discount approval email"]);
+    expect(pieces("- Receive PO\n- Enter order\n• Check stock\n1) Ship")).toEqual(["Receive PO", "Enter order", "Check stock", "Ship"]);
+    expect(pieces("Order entered;   then invoiced.")).toEqual(["Order entered", "then invoiced."]);
+  });
+  it("does not split decimals, thousands, list numbers, versions or abbreviations", () => {
+    expect(pieces("Revenue is ₹1.5 crore, about 2,800.50 orders. Version 2.1.3 is live.")).toEqual(["Revenue is ₹1.5 crore, about 2,800.50 orders.", "Version 2.1.3 is live."]);
+    expect(pieces("1. Receive the order\n2. Check stock")).toEqual(["1. Receive the order", "2. Check stock"]);
+    expect(pieces("We use SAP e.g. for finance, i.e. the ledger, vs. Tally. Mr. Rao and Dr. Iyer sign. Kaveri Pvt. Ltd. pays.")).toEqual(
+      ["We use SAP e.g. for finance, i.e. the ledger, vs. Tally.", "Mr. Rao and Dr. Iyer sign.", "Kaveri Pvt. Ltd. pays."]);
+  });
+  it("never yields an empty or whitespace-only sentence", () => {
+    for (const text of [";;; ;", "a;; ;b", "\n\n- \n- x", "...", "  ;  \n "]) {
+      for (const piece of pieces(text)) expect(piece.trim().length).toBeGreaterThan(0);
+    }
+  });
+});
+
 describe("splitSentences", () => {
   const samples = [
     "The clerk records returns. The date is sometimes missing! Who checks it? Nobody.",

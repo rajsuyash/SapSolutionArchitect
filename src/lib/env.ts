@@ -15,7 +15,7 @@ const modelPrices = z.preprocess((value) => {
   try { return JSON.parse(value); } catch { return value; }
 }, z.record(z.string().trim().min(1), z.tuple([z.number().positive().max(1000), z.number().positive().max(1000)])).default({}));
 /** The AI stages the runner knows; runStage derives its Stage type from this list. */
-export const STAGE_NAMES = ["problem_analysis", "to_be", "interview_turn"] as const;
+export const STAGE_NAMES = ["problem_analysis", "to_be", "interview_turn", "extraction_turn"] as const;
 // Comma-separated stage names; blank or unset means none. Unknown names are rejected.
 const stageList = z.preprocess((value) => typeof value === "string"
   ? value.split(",").map((name) => name.trim()).filter(Boolean) : value, z.array(z.enum(STAGE_NAMES)).default([]));
@@ -36,7 +36,7 @@ const schema = z.object({
   AI_MAX_CONCURRENCY: z.coerce.number().int().positive().default(4),
   // Model-call slots reserved for interview (chat) turns, separate from AI_MAX_CONCURRENCY (To-Be, problem analysis),
   // so a long batch stage never delays a chat turn.
-  AI_CHAT_CONCURRENCY: z.coerce.number().int().positive().default(2),
+  AI_CHAT_CONCURRENCY: z.coerce.number().int().positive().default(3),
   // Time budgets. The defaults are sized for Claude; slower models need more (see README, "AI time budgets").
   AI_STAGE_BUDGET_SECONDS: seconds(300, 60, 1800),
   AI_CALL_TIMEOUT_SECONDS: seconds(120, 30, 1500),

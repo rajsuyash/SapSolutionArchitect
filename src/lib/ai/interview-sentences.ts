@@ -9,15 +9,15 @@ type Sources = { currentMessage: { id: string; text: string }; evidence: { id: s
 /** A sentence longer than this is cut on whitespace, so one unpunctuated paragraph still has addressable parts. */
 const MAX_SENTENCE = 1000;
 /** Words whose trailing period does not end a sentence. Single letters and numbers ("1.", "A.") are handled separately. */
-const ABBREVIATIONS = new Set(["vs", "approx", "incl", "mr", "mrs", "ms", "dr", "prof", "inc", "ltd", "co", "corp",
+const ABBREVIATIONS = new Set(["vs", "approx", "incl", "mr", "mrs", "ms", "dr", "prof", "inc", "ltd", "pvt", "co", "corp",
   "st", "fig", "ref", "dept", "est", "avg", "max", "min", "qty", "tel"]);
-// A terminator run (with closing quotes/brackets) followed by whitespace, or a newline.
-const BOUNDARY = /[.!?…।]+["'”’)\]]*(?=\s)|\n/g;
+// A terminator run (with closing quotes/brackets) followed by whitespace, a semicolon followed by whitespace, or a newline.
+const BOUNDARY = /[.!?…।]+["'”’)\]]*(?=\s)|;+(?=\s)|\n/g;
 const isAbbreviation = (word: string) => /^(?:\p{L}\.)+\p{L}$/u.test(word) || /^\p{L}$/u.test(word) || /^\d+$/.test(word) || ABBREVIATIONS.has(word.toLowerCase());
 
 function endsSentence(text: string, at: number, end: number): boolean {
   const mark = text.slice(at, end);
-  if (mark === "\n" || /[!?\u0964]/.test(mark)) return true;
+  if (mark === "\n" || mark.startsWith(";") || /[!?\u0964]/.test(mark)) return true;
   if (/^\p{Ll}/u.test(text.slice(end).trimStart())) return false;
   if (mark !== ".") return true;
   // A single full stop is not a sentence end after an abbreviation, a list marker or an initial.
@@ -27,7 +27,7 @@ function endsSentence(text: string, at: number, end: number): boolean {
 
 /** Split text into sentences: spans of the original string, ordered, never overlapping, trimmed of surrounding whitespace.
  * Only whitespace lies between them, so no other character is lost. Boundaries: ". ! ? … ।" followed by whitespace, and
- * every newline. A single "." does not end a sentence after an abbreviation ("e.g.", "etc.", "Dr."), a list marker ("1."),
+ * every newline and every ";" followed by whitespace (the ";" is not part of the sentence). A single "." does not end a sentence after an abbreviation ("e.g.", "etc.", "Dr."), a list marker ("1."),
  * or when the next word starts in lowercase; "..." is treated the same way. */
 export function splitSentences(text: string): SentenceSpan[] {
   const spans: SentenceSpan[] = [];
@@ -35,7 +35,10 @@ export function splitSentences(text: string): SentenceSpan[] {
   const push = (to: number) => {
     let start = from, end = to;
     while (start < end && /\s/.test(text[start]!)) start++;
-    while (end > start && /\s/.test(text[end - 1]!)) end--;
+    // A list marker ("- ", "• ", "1) ") is not part of the sentence; the semicolon that ended a clause is not either.
+    const bullet = /^(?:[-*•–]|\d{1,3}\))\s+/.exec(text.slice(start, end));
+    if (bullet) start += bullet[0].length;
+    while (end > start && /[\s;]/.test(text[end - 1]!)) end--;
     from = to;
     while (end - start > MAX_SENTENCE) {
       let cut = text.lastIndexOf(" ", start + MAX_SENTENCE);
