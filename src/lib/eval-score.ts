@@ -38,6 +38,8 @@ const StepRecordSchema = z.looseObject({
   acceptanceTests: z.array(z.looseObject({ given: z.string(), when: z.string(), then: z.string() })),
   addedValue: z.string(),
 });
+const registerRows = z.array(z.looseObject({})).optional();
+const RegisterRows = { kpis: registerRows, interfaces: registerRows };
 export const TranscriptSchema = z.object({
   schemaVersion: z.literal(1),
   caseId: z.string(), provider: z.string(), model: z.string(), startedAt: z.string(),
@@ -58,7 +60,9 @@ export const TranscriptSchema = z.object({
     rawFailures: z.array(z.object({ substage: z.string(), key: z.string(), attempt: count, json: z.string(), truncated: z.boolean() })).optional(),
     substages: z.record(z.string(), z.object({ calls: count, inputTokens: count, outputTokens: count })).optional(),
     requirements: z.array(z.object({ id: z.string(), statement: z.string(), evidence: z.string().optional() })),
-    design: z.object({ steps: z.array(StepRecordSchema) }).nullable(),
+    /** The design exactly as the generator validated it (v1 or v2). Loose on purpose: unknown keys, including the v2 registers
+     * and coverage, must survive parsing, or the judge and replays see a steps-only design. */
+    design: z.looseObject({ steps: z.array(StepRecordSchema), ...RegisterRows }).nullable(),
   }).nullable(),
   /** Active interviewer gaps left when the run ended (absent in older transcripts). */
   gapsRemaining: count.optional(),
@@ -112,6 +116,8 @@ export function jaccard(a: string, b: string): number {
 }
 
 type Step = NonNullable<NonNullable<Transcript["toBe"]>["design"]>["steps"][number];
+type Design = NonNullable<NonNullable<Transcript["toBe"]>["design"]>;
+const rowText = (row: Record<string, unknown>) => Object.values(row).filter(v => typeof v === "string").join(" ");
 const stepText = (step: Step) => [step.title, ...step.actions.flatMap(a => [a.operation, a.system ?? "", ...(a.fields ?? [])]),
   step.implementation.detail].join("\n");
 
@@ -184,13 +190,17 @@ export function scoreRun(rawTranscript: unknown, rawCase: unknown) {
   });
   const capabilityCount = capabilities.filter(c => c.covered).length;
 
-  const kpiCorpus = steps.flatMap(s => [s.addedValue, ...s.acceptanceTests.map(t => `${t.given} ${t.when} ${t.then}`)]).join("\n");
+  const design: Design | null = toBe?.design ?? null;
+  // v2 designs state KPIs in their own register; v1 designs only in step added value and acceptance tests.
+  const kpiCorpus = [...steps.flatMap(s => [s.addedValue, ...s.acceptanceTests.map(t => `${t.given} ${t.when} ${t.then}`)]),
+    ...(design?.kpis ?? []).map(rowText)].join("\n");
   const kpis = expected.kpis.map(k => ({ id: k.id, met: rx(k.regex).test(kpiCorpus) }));
   const kpiCount = kpis.filter(k => k.met).length;
 
   const mention = rx(expected.salesforce.mentionRegex), replace = rx(expected.salesforce.replaceRegex);
   const salesforce = {
-    integration: steps.some(s => s.implementation.kind === "INTEGRATION" && mention.test(`${stepText(s)}\n${s.addedValue}`)),
+    integration: steps.some(s => s.implementation.kind === "INTEGRATION" && mention.test(`${stepText(s)}\n${s.addedValue}`)) ||
+      (design?.interfaces ?? []).some(row => mention.test(rowText(row))),
     replaced: steps.some(s => replace.test(`${stepText(s)}\n${s.addedValue}`)),
   };
 

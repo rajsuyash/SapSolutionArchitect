@@ -176,4 +176,10 @@ describe("solution-design registers in the report (schemaVersion 2)", () => {
     expect(parseStoredToBe(stored(design)).design.schemaVersion).toBe(1);
     expect(parseStoredToBe(stored(v2)).design.schemaVersion).toBe(2);
   });
+  it("keeps the whole version 2 design through storage, the report model and the JSON endpoint payload", () => {
+    const roundTripped = parseStoredToBe({ design: JSON.parse(JSON.stringify(v2)), evaluation: { blockers: [] }, unresolvedInputQuestions: [], sourceRevision: 1, snapshotId: "s" }).design;
+    expect(roundTripped).toEqual(v2);
+    expect(buildReport({ ...data, design: roundTripped }).data.design).toEqual(v2);
+    for (const key of ["keyDesignDecisions", "fitGap", "orgStructure", "masterDataPrerequisites", "interfaces", "kpis", "dataMigration", "cutover"] as const) expect(roundTripped[key]).toHaveLength(1);
+  });
 });

@@ -367,6 +367,26 @@ describe("solution-design registers reach the judge", () => {
     expect(Object.keys(sent.toBeDesign)).toEqual(expect.arrayContaining(["keyDesignDecisions", "fitGap", "orgStructure", "masterDataPrerequisites", "interfaces", "kpis", "dataMigration", "cutover"]));
     expect(sent.case.companyContext).toHaveLength(brief.companyContext.length);
   });
+  it("puts the content of every register and of coverage and open questions in the judge user message, not just the keys", () => {
+    // The rental fixture leaves kpis and interfaces empty: add one row each so every register carries content.
+    const trace = { requirementIds: [], contextFieldIds: [], stepIds: ["TB-1"] }, basis = { referenceIds: [], needsValidation: false, validationReason: null };
+    const full = loadToBe({ design: { ...rentalDraftV2,
+      kpis: [{ id: "KPI-X", name: "OTIF", baseline: "80%", target: "92% by Q4", measuredFrom: "Delivery docs", ...basis, ...trace }],
+      interfaces: [{ id: "IF-X", counterpartSystem: "Salesforce", direction: "INBOUND", triggerFrequency: "On quote", payload: "Quote", errorOwner: "Sales ops", outOfScopeReason: null, ...basis, ...trace }] } });
+    const text = buildUserPrompt(buildCaseBrief(pump), full);
+    const d = full.design as unknown as Record<string, { id?: string; [k: string]: unknown }[]>;
+    for (const key of ["keyDesignDecisions", "orgStructure", "masterDataPrerequisites", "interfaces", "kpis", "dataMigration", "cutover"]) {
+      expect(d[key]!.length, key).toBeGreaterThan(0);
+      for (const row of d[key]!) expect(text, `${key}.${row.id}`).toContain(JSON.stringify(row));
+    }
+    for (const row of d.fitGap!) expect(text).toContain(JSON.stringify(row));
+    for (const row of d.coverage!) expect(text).toContain(JSON.stringify(row));
+    for (const row of d.openQuestions!) expect(text).toContain(JSON.stringify(row));
+  });
+  it("loadToBe keeps the whole design of a saved eval run file", () => {
+    const run = { transcript: { toBe: { design: rentalDraftV2, requirements: [] } } };
+    expect(loadToBe(run).design).toEqual(rentalDraftV2);
+  });
   it("lets a verdict cite a register row, and tells the judge how to read the registers without touching the rubric", () => {
     const ids = citableIds(v2);
     for (const id of ["KDD-1", "ORG-1", "MD-1", "MIG-1", "CUT-1", "fitGap", "interfaces", "kpis"]) expect(isGrounded(`see ${id}`, ids)).toBe(true);

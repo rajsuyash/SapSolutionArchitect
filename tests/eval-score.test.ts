@@ -227,6 +227,25 @@ describe("scoreRun", () => {
   });
 });
 
+describe("version 2 registers", () => {
+  it("counts a KPI stated only in the kpis register, and rejects it when the register does not state it", () => {
+    const t = goodTranscript();
+    t.toBe!.design!.steps[10]!.acceptanceTests.pop();
+    expect(score(t).kpis.find(k => k.id === "close")!.met).toBe(false);
+    t.toBe!.design!.kpis = [{ id: "KPI-3", name: "Month-end close", baseline: "8 days", target: "Close in 5 working days", measuredFrom: "Close calendar" }];
+    expect(score(t).kpis.find(k => k.id === "close")!.met).toBe(true);
+    t.toBe!.design!.kpis = [{ id: "KPI-3", name: "Month-end close", baseline: "8 days", target: "Close in 9 days", measuredFrom: "Close calendar" }];
+    expect(score(t).kpis.find(k => k.id === "close")!.met).toBe(false);
+  });
+  it("counts a Salesforce interface in the interfaces register as the integration", () => {
+    const t = goodTranscript();
+    t.toBe!.design!.steps[9]!.implementation.kind = "CONFIGURATION";
+    expect(score(t).salesforce.integration).toBe(false);
+    t.toBe!.design!.interfaces = [{ id: "IF-1", counterpartSystem: "Salesforce", direction: "INBOUND", payload: "Quotes" }];
+    expect(score(t).salesforce.integration).toBe(true);
+  });
+});
+
 describe("validation detail", () => {
   const issue = (attempt: number, path: string, code: string) => ({ attempt, path, code });
   const failing = () => {

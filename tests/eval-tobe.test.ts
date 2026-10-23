@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { StageMetrics } from "../src/lib/ai/runStage";
 import { TranscriptSchema } from "../src/lib/eval-score";
+import { rentalDraftV2 } from "../fixtures/ai/to-be/rental-registers";
 import { toBeRun, toBeSummary } from "../src/lib/eval-tobe";
 
 const failed: StageMetrics = { stage: "to_be", provider: "deepinfra", model: "m", inputTokens: 64624, outputTokens: 16000, latencyMs: 91500, attempts: 2,
@@ -37,5 +38,12 @@ describe("toBeRun", () => {
       readiness: { reached: false, atTurn: null, forcedCompletion: false, directEdits: 0, blockers: [] }, toBe, aborted: null });
     expect(parsed.toBe!.rawFailures).toEqual(diag.rawFailures); expect(parsed.toBe!.warnings).toEqual(run.warnings);
     expect(parsed.toBe!.issues![0]!.detail).toContain("received string");
+  });
+  it("stores a version 2 design exactly as produced: registers, coverage and every other key survive the transcript schema", () => {
+    const toBe = { attempted: true, structurallyValid: true, errorCode: null, requirements: [], design: JSON.parse(JSON.stringify(rentalDraftV2)), ...toBeRun(failed) };
+    const parsed = TranscriptSchema.parse({ schemaVersion: 1, caseId: "c", provider: "p", model: "m", startedAt: "t", turns: [],
+      readiness: { reached: false, atTurn: null, forcedCompletion: false, directEdits: 0, blockers: [] }, toBe, aborted: null });
+    expect(parsed.toBe!.design).toEqual(rentalDraftV2);
+    expect(Object.keys(parsed.toBe!.design!)).toEqual(expect.arrayContaining(["schemaVersion", "processName", "coverage", "openQuestions", "fitGap", "orgStructure", "kpis", "interfaces", "cutover"]));
   });
 });
