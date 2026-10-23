@@ -35,7 +35,7 @@ const request = z.discriminatedUnion("kind", [
 const substageMetrics = z.strictObject({ calls: z.number().int().nonnegative(), inputTokens: z.number().int().nonnegative(), outputTokens: z.number().int().nonnegative() });
 const metricsSchema = z.object({ stage: z.enum(["interview_turn", "extraction_turn", "to_be"]), provider: z.enum(["stub", "anthropic", "deepinfra", "openrouter"]),
   model: z.string().max(160), inputTokens: z.number().int().nonnegative(), outputTokens: z.number().int().nonnegative(),
-  latencyMs: z.number().nonnegative(), attempts: z.number().int().nonnegative(), thinkingDisabled: z.boolean().optional(),
+  latencyMs: z.number().nonnegative(), attempts: z.number().int().nonnegative(), providerRetries: z.number().int().nonnegative().optional(), thinkingDisabled: z.boolean().optional(),
   substages: z.strictObject({ to_be_outline: substageMetrics.optional(), to_be_step: substageMetrics.optional(), to_be_registers: substageMetrics.optional(), to_be_review: substageMetrics.optional(), to_be_fix: substageMetrics.optional() }).optional(),
   validationErrors: z.array(z.strictObject({ path: z.string().max(200), code: z.string().max(80), detail: z.string().max(200).optional() })).max(1000) });
 type StoredJob = { id: string; org_id: string; project_id: string; variant_code: string; kind: "INTERVIEW" | "TO_BE";

@@ -219,18 +219,24 @@ const stalling = (overrides: Record<string, string>) => {
 };
 
 describe("streaming failures", () => {
-  it("classifies a provider error event that arrives mid-stream", async () => {
+  it("classifies a provider error event that arrives mid-stream, retries the call three times, then logs one error line", async () => {
+    vi.useFakeTimers(); vi.spyOn(Math, "random").mockReturnValue(0.5);
     const log = vi.spyOn(console, "error").mockImplementation(() => {});
     const h = harness();
     const fetch = vi.fn<typeof globalThis.fetch>(async (url) => String(url).includes("count_tokens")
       ? new Response(JSON.stringify({ input_tokens: 10 }), json)
       : sseResponse(messageEvents({ content: [thinking] }, { type: "overloaded_error", message: "private provider detail" })));
-    await expect(createStageRunner(deepinfra(), { fetch })("problem_analysis", input))
-      .rejects.toMatchObject({ code: "AI_PROVIDER_ERROR", metrics: { attempts: 1 } });
+    const pending = createStageRunner(deepinfra(), { fetch })("problem_analysis", input).catch((error: unknown) => error);
+    const messageCalls = () => fetch.mock.calls.filter(([url]) => !String(url).includes("count_tokens")).length;
+    for (const [call, wait] of [[1, 2000], [2, 6000], [3, 18000]] as const) {
+      await vi.waitFor(() => expect(messageCalls()).toBe(call)); await vi.advanceTimersByTimeAsync(wait);
+    }
+    expect(await pending).toMatchObject({ code: "AI_PROVIDER_ERROR", metrics: { attempts: 4, providerRetries: 3 } });
     expect(h.fetch).not.toHaveBeenCalled();
-    expect(log).toHaveBeenCalledTimes(1);
-    expect(JSON.parse(String(log.mock.calls[0]![0]))).toMatchObject({ event: "ai_provider_error", provider: "deepinfra", category: "overloaded" });
-    expect(String(log.mock.calls[0]![0])).not.toContain("private");
+    const lines = log.mock.calls.map((call) => JSON.parse(String(call[0])) as Record<string, unknown>);
+    expect(lines.map((line) => line.event)).toEqual(["ai_provider_retry", "ai_provider_retry", "ai_provider_retry", "ai_provider_error"]);
+    expect(lines[3]).toMatchObject({ provider: "deepinfra", category: "overloaded" });
+    expect(log.mock.calls.map((call) => String(call[0])).join()).not.toContain("private");
   });
   it("maps a stream aborted by the per-call signal to AI_TIMEOUT", async () => {
     vi.useFakeTimers();

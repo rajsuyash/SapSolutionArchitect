@@ -2,7 +2,7 @@ import type { RawFailure, StageMetrics } from "./ai/runStage";
 
 /** What the eval transcript keeps of a To-Be generation, on success and on failure. Codes and paths only, never model values. */
 export type ToBeRun = {
-  attempts: number; validationErrors: number; inputTokens: number; outputTokens: number; latencyMs: number;
+  attempts: number; providerRetries: number; validationErrors: number; inputTokens: number; outputTokens: number; latencyMs: number;
   stopReasons: string[];
   issues: { attempt: number; path: string; code: string; detail?: string }[];
   warnings: { path: string; code: string }[];
@@ -17,7 +17,7 @@ const MAX_ISSUES = 60;
 export function toBeRun(m: StageMetrics | undefined): ToBeRun {
   const groups = m?.attemptIssues ?? (m?.validationErrors.length ? [m.validationErrors] : []);
   return {
-    attempts: m?.attempts ?? 0, validationErrors: m?.validationErrors.length ?? 0, inputTokens: m?.inputTokens ?? 0,
+    attempts: m?.attempts ?? 0, providerRetries: m?.providerRetries ?? 0, validationErrors: m?.validationErrors.length ?? 0, inputTokens: m?.inputTokens ?? 0,
     outputTokens: m?.outputTokens ?? 0, latencyMs: m?.latencyMs ?? 0,
     stopReasons: (m?.stopReasons ?? []).map(reason => reason ?? "none"),
     issues: groups.flatMap((group, i) => group.map(({ path, code, detail }) => ({ attempt: i + 1, path, code, ...(detail && { detail }) }))).slice(0, MAX_ISSUES),

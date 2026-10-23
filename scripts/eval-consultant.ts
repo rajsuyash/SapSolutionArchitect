@@ -106,7 +106,7 @@ function scriptedStage(fixture: Fixture, getState: () => WorkspaceState): typeof
 /** Per-turn fields taken from runStage metrics; identical for the success and the AIStageError path. */
 function metricsRecord(m: StageMetrics) {
   const groups = m.attemptIssues ?? (m.validationErrors.length ? [m.validationErrors] : []);
-  return { model: m.model, attempts: m.attempts, validationErrors: m.validationErrors.length,
+  return { model: m.model, attempts: m.attempts, providerRetries: m.providerRetries ?? 0, validationErrors: m.validationErrors.length,
     issues: groups.flatMap((group, i) => group.map(issue => ({ attempt: i + 1, ...issue }))),
     stopReasons: m.stopReasons ?? [], warnings: (m.warnings ?? []).map(({ path, code, detail }) => ({ path, code, ...(detail ? { detail } : {}) })),
     textFallbacks: m.textFallbacks ?? 0,

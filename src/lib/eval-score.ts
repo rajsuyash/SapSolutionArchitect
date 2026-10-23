@@ -12,6 +12,8 @@ export const TurnRecordSchema = z.object({
   proposals: count,
   /** Provider calls made by runStage for this turn; 1 means the first attempt validated. */
   attempts: count,
+  /** Provider calls re-sent after a transient failure (absent in older transcripts). */
+  providerRetries: count.optional(),
   validationErrors: count,
   /** Model reported by runStage for this turn (absent in older transcripts). */
   model: z.string().optional(),
@@ -51,7 +53,7 @@ export const TranscriptSchema = z.object({
   }),
   toBe: z.object({
     attempted: z.boolean(), structurallyValid: z.boolean(), errorCode: z.string().nullable(),
-    attempts: count, validationErrors: count, inputTokens: count, outputTokens: count,
+    attempts: count, providerRetries: count.optional(), validationErrors: count, inputTokens: count, outputTokens: count,
     /** Absent in older transcripts. Provider stop reasons, validation issue codes+paths (no model values) and tokens per To-Be request kind. */
     latencyMs: count.optional(), stopReasons: z.array(z.string()).optional(),
     issues: z.array(z.object({ attempt: count, path: z.string(), code: z.string(), detail: z.string().optional() })).optional(),
