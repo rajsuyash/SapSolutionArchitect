@@ -265,11 +265,29 @@ describe("per-step repair", () => {
     expect(h.stepCalls.filter(call => call.id === "TB-3")[1]!.body.messages[0]!.content).toContain("TEST_TRACE_MISMATCH");
     expect(result.payload.design).toEqual(rentalDraftV3);
   });
-  it("fails with AI_INVALID_OUTPUT when the step is still invalid after its AI_TO_BE_PART_REPAIRS=2 retries", async () => {
+  it("fails with AI_INVALID_OUTPUT when the step is still invalid after its AI_TO_BE_PART_REPAIRS=2 retries and one last call with thinking on", async () => {
     const h = harness({ step: id => id === "TB-1" ? { oops: true } : split.details[id] });
     await expect(h.run()).rejects.toMatchObject({ code: "AI_INVALID_OUTPUT" });
-    expect(h.stepCount["TB-1"]).toBe(3);
+    expect(h.stepCount["TB-1"]).toBe(4);
     expect(h.outlineCalls).toHaveLength(1);
+  });
+  it("the thinking retry omits thinking-disabled for that call only, records a warning and counts under to_be_step", async () => {
+    const openrouter = { AI_PROVIDER: "openrouter", OPENROUTER_API_KEY: "synthetic-or-key" };
+    const seen: { step: string; thinking: unknown; effort: unknown }[] = [];
+    const h = harness({ step: (id, nth) => id === "TB-2" && nth < 4 ? { oops: true } : split.details[id], overrides: openrouter });
+    const spy = vi.fn<typeof globalThis.fetch>(async (url, init) => {
+      const body = JSON.parse(String(init?.body)) as RequestBody;
+      if (body.tools?.[0]?.name === "submit_to_be_step") seen.push({ step: stepIdOf(body), thinking: body.thinking, effort: body.output_config });
+      return h.fetch(url, init);
+    });
+    const result = await createStageRunner(settings(openrouter), { fetch: spy })("to_be", fixture());
+    const calls = seen.filter(call => call.step === "TB-2");
+    expect(calls.map(call => call.thinking)).toEqual([{ type: "disabled" }, { type: "disabled" }, { type: "disabled" }, undefined]);
+    expect(calls[3]!.effort).toEqual({ effort: "max" });
+    expect(seen.filter(call => call.step !== "TB-2").every(call => (call.thinking as { type: string }).type === "disabled")).toBe(true);
+    expect(result.metrics.warnings).toContainEqual({ code: "RETRIED_WITH_THINKING", path: "draft.steps.1" });
+    expect(result.metrics.substages!.to_be_step!.calls).toBe(STEP_IDS.length + 3);
+    expect(result.payload.design).toEqual(rentalDraftV3);
   });
   it("recovers a step whose body comes back incomplete twice (seen live: EX-09 without effects.financial, addedValue, acceptanceTests, implementation)", async () => {
     const partial = Object.fromEntries(Object.entries(split.details["TB-2"]!).filter(([key]) => !["effects", "addedValue", "acceptanceTests", "implementation"].includes(key)));
@@ -280,11 +298,26 @@ describe("per-step repair", () => {
     expect(result.payload.design).toEqual(rentalDraftV3);
   });
   it("AI_TO_BE_PART_REPAIRS=1 allows one retry and 0 allows none", async () => {
-    for (const [repairs, calls] of [["1", 2], ["0", 1]] as const) {
+    for (const [repairs, calls] of [["1", 3], ["0", 1]] as const) {
       const h = harness({ step: id => id === "TB-1" ? { oops: true } : split.details[id], overrides: { AI_TO_BE_PART_REPAIRS: repairs } });
       await expect(h.run()).rejects.toMatchObject({ code: "AI_INVALID_OUTPUT" });
       expect(h.stepCount["TB-1"]).toBe(calls);
     }
+  });
+  it("an invented decision id in a step body and a lower-case stepType are repaired on the first call, with warnings (seen live: draft.steps.10 UNKNOWN_DECISION, steps.7 stepType)", async () => {
+    const h = harness({ step: id => id === "TB-2" ? { ...split.details[id], decisionIds: ["D-INVENTED"], stepType: "in-system manual" } : split.details[id] });
+    const result = await h.run();
+    expect(h.stepCount["TB-2"]).toBe(1);
+    expect(result.metrics.warnings).toEqual(expect.arrayContaining([{ code: "REPAIRED_UNKNOWN_DECISION", path: "draft.steps.1" }, { code: "REPAIRED_ENUM_SYNONYM", path: "draft.steps.1.stepType" }]));
+    expect(result.payload.design).toEqual({ ...rentalDraftV3, steps: rentalDraftV3.steps.map((step, i) => i === 1 ? { ...step, decisionIds: [] } : step) });
+  });
+  it("a governance control mapping that cites an invented requirement is dropped on the first call (seen live: draft.controlMappings.12 UNKNOWN_REQUIREMENT)", async () => {
+    const bad = { ...rentalRegisterGroups.governance, controlMappings: [{ id: "CM-X", requirementId: "R-INVENTED", mechanism: "AUTHORIZATION", realization: "x", stepIds: ["TB-1"], ruleId: null }] };
+    const h = harness({ registers: group => group === "governance" ? bad : rentalRegisterGroups[group] });
+    const result = await h.run();
+    expect(h.registerCount.governance).toBe(1);
+    expect(result.metrics.warnings).toContainEqual({ code: "REPAIRED_DROPPED_ROW", path: "draft.controlMappings.0" });
+    expect(result.payload.design).toEqual(rentalDraftV3);
   });
   it("a register group wrapped as {parameter: '<JSON>'} is unwrapped and accepted on the first call, with a warning (seen live)", async () => {
     const h = harness({ registers: group => group === "fitgap" ? { parameter: JSON.stringify(rentalRegisterGroups.fitgap) } : rentalRegisterGroups[group] });
@@ -684,11 +717,11 @@ describe("To-Be answers without a tool call", () => {
     expect(result.payload.design).toEqual(rentalDraftV3);
   });
 
-  it("does not trust text that is invalid for the schema: it is repaired twice, then fails closed", async () => {
+  it("does not trust text that is invalid for the schema: it is repaired twice, retried once with thinking, then fails closed", async () => {
     const wrong = { ...split.details[STEP_IDS[0]!]!, actions: [] };
     const h = harness({ step: id => id === STEP_IDS[0] ? textMessage(JSON.stringify(wrong)) : split.details[id] });
     await expect(h.run()).rejects.toMatchObject({ code: "AI_INVALID_OUTPUT" });
-    expect(h.stepCount[STEP_IDS[0]!]).toBe(3);
+    expect(h.stepCount[STEP_IDS[0]!]).toBe(4);
   });
 
   it("treats prose, two text blocks and a text block next to a tool call as no payload", async () => {

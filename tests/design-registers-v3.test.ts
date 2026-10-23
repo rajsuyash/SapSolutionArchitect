@@ -196,7 +196,8 @@ describe("roles, segregation of duties and control mappings (checklists 24 to 26
   it("segregation of duties is assessed: a row exists, uses known roles, and a conflict spans two steps", () => {
     expect(codes(design(draft => { draft.sodAssessments = []; }))).toEqual(["SOD_ASSESSMENT_MISSING@draft.sodAssessments"]);
     expect(codes(design(draft => { draft.sodAssessments![0]!.roleIds = ["ROLE-9"]; }))).toEqual(["UNKNOWN_ROLE@draft.sodAssessments.0"]);
-    expect(codes(design(draft => { Object.assign(draft.sodAssessments![0]!, { assessment: "CONFLICT_IDENTIFIED", stepIds: ["TB-2"] }); }))).toEqual(["SOD_CONFLICT_STEPS@draft.sodAssessments.0"]);
+    // A conflict that names fewer than two steps is incomplete, not wrong: a review finding, never a structural error.
+    expectFinding(design(draft => { Object.assign(draft.sodAssessments![0]!, { assessment: "CONFLICT_IDENTIFIED", stepIds: ["TB-2"] }); }), "SOD_CONFLICT_STEPS@draft.sodAssessments.0");
     expect(codes(design(draft => { draft.sodAssessments![0]!.assessment = "CONFLICT_IDENTIFIED"; }))).toEqual([]);
   });
   const control = withKinds({ "R-4": "CONTROL" });

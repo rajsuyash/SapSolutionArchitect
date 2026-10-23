@@ -301,9 +301,15 @@ exceptionsNotApplicableReason, masterData, effects, implementation (only detail)
 decisionIds (optional), addedValue and acceptanceTests. Do not repeat id, sequence,
 title, asIsStepIds, requirementIds or enablesStepIds.
 
+actions is an array of objects, never a string: each is {actor, system, operation, fields}
+where actor, system and operation are short texts and fields is an array of texts
+(for example [{"actor": "Planner", "system": "SAP MRP", "operation": "Start the run",
+"fields": ["project number"]}]). Write one object per action; put no prose in place of the array.
+
 Step type and phase are checked mechanically:
 
-- stepType says how the step is performed: IN_SYSTEM_MANUAL (a person works in SAP),
+- stepType is exactly one of IN_SYSTEM_MANUAL, AUTOMATIC, OUTSIDE_SYSTEM, DECISION or
+  INTEGRATION (no other value, no lower case or spaces). It says how the step is performed: IN_SYSTEM_MANUAL (a person works in SAP),
   AUTOMATIC (SAP or a background job acts alone), OUTSIDE_SYSTEM (done off-system:
   paper, a call, a spreadsheet), DECISION (a person or rule chooses a branch, no
   posting) or INTEGRATION (a retained or external system exchanges data with SAP).

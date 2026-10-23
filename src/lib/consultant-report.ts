@@ -62,6 +62,7 @@ export const REVIEW_FINDINGS: Record<string, string> = {
   ROLE_ACTOR_UNMATCHED: "The roles assigned to this step do not match the actor named on the step.",
   CONTROL_UNMAPPED: "A control from discovery has no control mapping saying how the design enforces it.",
   REPORT_PAIN_POINT_UNCOVERED: "A pain point from discovery is not addressed by any report or KPI.",
+  SOD_CONFLICT_STEPS: "A segregation-of-duties assessment records a conflict but names fewer than two steps, so it is unclear which steps clash.",
   E2E_STEP_UNCOVERED: "A To-Be step is not walked by any end-to-end test scenario.",
 };
 const BLOCKERS: Record<string, { category: string; label: string }> = {

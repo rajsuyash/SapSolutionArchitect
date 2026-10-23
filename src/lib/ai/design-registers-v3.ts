@@ -69,7 +69,7 @@ export type V3Kit = {
 /** Version 3 checks. Everything here is decidable from the design and the company-context answers; a free-text claim is only compared
  * with another register of the same design (a role name with the step actors, a document type with the step outputs).
  * Structural integrity (schema, ids that must exist, traceability links, catalog-only SAP objects) is an error the model must fix.
- * Completeness and consistency heuristics (name overlap, "every X has a Y" across registers) are review findings: `block`, never `error`. */
+ * Completeness and consistency heuristics (name overlap, "every X has a Y" across registers, a conflict that names fewer than two steps) are review findings: `block`, never `error`. */
 export function checkVersion3(kit: V3Kit): void {
   const { ctx, error, block, known, rows, dup, traced, based } = kit;
   const steps = ctx.steps ?? [];
@@ -179,7 +179,7 @@ export function checkVersion3(kit: V3Kit): void {
     const path = `draft.sodAssessments.${i}`;
     traced("sodAssessments", row, i, [], false);
     known3("UNKNOWN_ROLE", path, row.roleIds as string[], roleIds);
-    if (row.assessment === "CONFLICT_IDENTIFIED" && (row.stepIds?.length ?? 0) < 2) error("SOD_CONFLICT_STEPS", path);
+    if (row.assessment === "CONFLICT_IDENTIFIED" && (row.stepIds?.length ?? 0) < 2) block("SOD_CONFLICT_STEPS", path);
   });
   const mappings = rows("controlMappings") as (Row & { requirementId: string; mechanism: string; ruleId: string | null })[];
   const ruleIdsOf = (stepIds: string[] | undefined) => new Set(steps.filter(step => stepIds?.includes(step.id)).flatMap(step => step.businessRuleIds));

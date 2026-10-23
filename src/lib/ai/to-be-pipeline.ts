@@ -9,6 +9,7 @@ import { repairOutlineLinks, repairOutlineShape, restoreFromPrevious } from "./o
 import { allowedKinds, applyOutlinePatch, isPatchable, locate, type OutlinePatch } from "./outline-patch";
 import { noCatalogNote } from "../sap-releases";
 import { normalizeToolInput } from "./tool-input-normalizer";
+import { repairRegisterGroup, repairStepBody } from "./part-repair";
 import { toBeContext, validateToBeOutput, type ToBeInput, type ToBeOutput } from "./to-be";
 
 /** Skeleton-then-expansion To-Be generation. A slow model cannot emit a whole design inside the stage budget, so the model
@@ -323,7 +324,7 @@ export async function runPool<T>(items: readonly T[], limit: number, worker: (it
 
 export type DesignDeps = {
   /** One model call; resolves to the tool payload, null when the provider did not return exactly one complete tool call, or TRUNCATED when it stopped on max_tokens. */
-  ask: (substage: Substage, user: unknown, group?: RegisterGroup | "patch") => Promise<unknown>;
+  ask: (substage: Substage, user: unknown, group?: RegisterGroup | "patch", options?: { thinking?: boolean }) => Promise<unknown>;
   /** The error to throw for AI_INVALID_OUTPUT. */
   invalid: () => Error;
   /** Record the issues of one failed attempt in the stage metrics. */
@@ -343,6 +344,8 @@ export type DesignDeps = {
 
 /** The first outline repair is always allowed; each further one only while more than this share of the stage budget remains. */
 export const EXTRA_OUTLINE_REPAIR_MIN_REMAINING = 0.5;
+/** A step body that still fails after its repairs gets one last call with model reasoning on, only while more than this share of the stage budget remains. */
+export const THINKING_RETRY_MIN_REMAINING = 0.25;
 export const outlineRepairAllowed = (done: number, max: number, remaining: number) =>
   done < max && (done === 0 || remaining > EXTRA_OUTLINE_REPAIR_MIN_REMAINING);
 
@@ -391,6 +394,9 @@ export async function runDesign(input: ToBeInput, references: DesignContext["ref
 
   const details = new Map<string, StepDetail>(), registers = new Map<RegisterGroup, unknown>(), retries = new Map<string, number>();
   const registerKey = (group: RegisterGroup) => `register:${group}`;
+  const warnAll = (...lists: ValidationIssue[][]) => { const all = lists.flat(); if (all.length) deps.warn?.(all); };
+  const decisionIds = new Set((input.decisionRegister ?? []).map(decision => decision.id));
+  const requirementIds = new Set(input.discovery.requirements.map(requirement => requirement.id));
   const isLate = (group: RegisterGroup) => (LATE_GROUPS as readonly string[]).includes(group);
   // Re-requests per call in total (AI_TO_BE_PART_REPAIRS, the second only while the stage budget is more than half unspent),
   // whether the answer failed its schema or the assembled design's checks.
@@ -405,16 +411,25 @@ export async function runDesign(input: ToBeInput, references: DesignContext["ref
     const current = outline;
     const expandStep = async (stepId: string) => {
       const index = current.steps.findIndex(step => step.id === stepId);
-      let validationErrors = errors.get(stepId) ?? [];
+      let validationErrors = errors.get(stepId) ?? [], thinking = false;
       for (;;) {
-        const raw = await deps.ask("to_be_step", stepRequest(input, references, current, current.steps[index]!, validationErrors));
+        const raw = await deps.ask("to_be_step", stepRequest(input, references, current, current.steps[index]!, validationErrors), undefined, thinking ? { thinking } : undefined);
         const normalized = normalizeToolInput(StepDetailSchema, raw, `draft.steps.${index}`);
-        const parsed = StepDetailSchema.safeParse(normalized.value);
-        if (parsed.success) { details.set(stepId, parsed.data); if (normalized.warnings.length) deps.warn?.(normalized.warnings); return; }
+        const repaired = repairStepBody(normalized.value, decisionIds, `draft.steps.${index}`);
+        const parsed = StepDetailSchema.safeParse(repaired.value);
+        if (parsed.success) { details.set(stepId, parsed.data); warnAll(normalized.warnings, repaired.warnings); return; }
         if (raw !== TRUNCATED && raw !== null) deps.rawFailure?.("to_be_step", stepId, raw);
         validationErrors = raw === TRUNCATED ? [{ path: `draft.steps.${index}`, code: OUTPUT_TRUNCATED }] : raw === null ? [{ path: `draft.steps.${index}`, code: "NO_TOOL_PAYLOAD" }]
           : rePath(draftIssues(parsed.error.issues), "draft", `draft.steps.${index}`);
         deps.record(validationErrors);
+        if (!thinking && (deps.maxPartRepairs ?? 2) > 0 && !outlineRepairAllowed(retries.get(stepId) ?? 0, deps.maxPartRepairs ?? 2, deps.remainingBudget?.() ?? 1)
+          && (deps.remainingBudget?.() ?? 1) > THINKING_RETRY_MIN_REMAINING) {
+          // Retries spent: one more call with reasoning on, for this step only. Its failure ends the stage like any exhausted retry.
+          thinking = true;
+          deps.warn?.([{ code: "RETRIED_WITH_THINKING", path: `draft.steps.${index}` }]);
+          continue;
+        }
+        if (thinking) throw deps.invalid();
         markRetry(stepId);
       }
     };
@@ -425,10 +440,11 @@ export async function runDesign(input: ToBeInput, references: DesignContext["ref
       for (;;) {
         const raw = await deps.ask("to_be_registers", registerRequest(input, references, current, group, validationErrors, steps), group);
         const normalized = normalizeToolInput(RegisterGroupSchemas[group], raw, "draft");
-        const parsed = RegisterGroupSchemas[group].safeParse(normalized.value);
+        const repaired = repairRegisterGroup(normalized.value, { requirementIds, stepIds: new Set(current.steps.map(step => step.id)), decisionIds });
+        const parsed = RegisterGroupSchemas[group].safeParse(repaired.value);
         if (parsed.success) {
           registers.set(group, parsed.data satisfies RegisterPayloads[RegisterGroup]);
-          if (normalized.warnings.length) deps.warn?.(normalized.warnings);
+          warnAll(normalized.warnings, repaired.warnings);
           return;
         }
         if (raw !== TRUNCATED && raw !== null) deps.rawFailure?.("to_be_registers", group, raw);

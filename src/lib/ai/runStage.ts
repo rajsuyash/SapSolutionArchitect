@@ -350,13 +350,14 @@ export function createStageRunner(config: Config, options: Options = {}) {
           record: (issues) => { metrics.validationErrors.push(...issues); metrics.attemptIssues!.push(issues); },
           warn: (issues) => { metrics.warnings = [...(metrics.warnings ?? []), ...issues]; },
           ...(options.captureRaw && { rawFailure: keepRaw }),
-          ask: async (substage, request, group) => {
+          ask: async (substage, request, group, askOptions) => {
             // A patch call is an outline call: it is counted under the to_be_outline substage.
             const key = substage === "to_be_registers" ? `to_be_registers:${group}` : group === "patch" ? "to_be_outline_patch" : substage;
             const kind = kinds[key as keyof typeof kinds];
             const rawKeyOf = substage === "to_be_registers" ? String(group) : substage === "to_be_step" ? (request as { step: { id: string } }).step.id : group === "patch" ? "outline-patch" : "outline";
             const output = await generate({ system: kind.system, user: JSON.stringify(request), tool: tools[key]!, maxTokens: kind.maxTokens,
-              guard: true, thinkingOff: reasoningOff || noThinking.has(substage) || noThinking.has("to_be") || expansionThinkingOff(substage),
+              // A thinking retry (one last call for a step that kept failing) sends the request without thinking-disabled; an operator's AI_REASONING_EFFORT=none still wins.
+              guard: true, thinkingOff: reasoningOff || (!askOptions?.thinking && (noThinking.has(substage) || noThinking.has("to_be") || expansionThinkingOff(substage))),
               // A model that ends its turn with the payload as a JSON text block instead of calling the tool is accepted exactly as in the interview.
               textFallback: true, substage,
               ...(options.captureRaw && { onNoPayload: (description: unknown) => keepRaw(substage, rawKeyOf, { noToolPayload: description }) }) });
