@@ -6,6 +6,8 @@
 // --live --provider stub --model stub [--fake-model] is the offline dry run: plain stub stops at the first model call
 // (runStage has no stub interviewer); --fake-model swaps in a scripted model to exercise the whole driver at zero cost.
 //
+// --tobe-only skips the interview: the discovery is entered from the fixture (As-Is steps, requirements, company context), confirmed,
+// and the real To-Be stage runs; the run file has the same format, so eval-judge.ts --run accepts it.
 // --no-tobe makes the run interview-only: no forced completion, no CONFIRM, no To-Be (a diagnostic of the interviewer alone).
 //
 // --replay scores a saved transcript: no network, no database.
@@ -30,8 +32,9 @@ import { createProjectRepository } from "../src/lib/tenant";
 import { createDiscoveryWorkspaceRepository, persistWorkspaceTurn } from "../src/lib/discovery-workspace";
 import { extractMessage } from "../src/lib/consultant-extraction";
 import { buildInterviewInput, type WorkspaceState } from "../src/lib/discovery-workspace-model";
+import { STEP_KEYS } from "../src/lib/workspace-fields";
 import { answerFor, composeReply, factStatus, fieldCommand, firstSentence, planForcedCompletion, type Asked, type Command, type Fixture } from "../src/lib/eval-user";
-import { jaccard, ScoringCaseSchema, scoreRun, summarize, TranscriptSchema, type ScoringCase, type Transcript } from "../src/lib/eval-score";
+import { ScoringCaseSchema, scoreRun, summarize, TranscriptSchema, type Transcript } from "../src/lib/eval-score";
 
 const OUTPUT_TOKEN_CAP = 400_000;
 const DEFAULT_MAX_TURNS = 25;
@@ -108,7 +111,7 @@ function metricsRecord(m: StageMetrics) {
 
 // --- one live run -----------------------------------------------------------------------------------------------
 
-async function runOnce(fixture: Fixture, deps: { pool: Pool; provider: string; model: string; maxTurns: number; forceComplete: boolean; fake: boolean; toBe: boolean }) {
+async function runOnce(fixture: Fixture, deps: { pool: Pool; provider: string; model: string; maxTurns: number; forceComplete: boolean; fake: boolean; toBe: boolean; toBeOnly: boolean }) {
   const { pool, maxTurns } = deps;
   const auth = createAuthService(pool, { secret: process.env.AUTH_SECRET!, appUrl: process.env.APP_URL! });
   const workspaces = createDiscoveryWorkspaceRepository(pool, auth);
@@ -129,6 +132,40 @@ async function runOnce(fixture: Fixture, deps: { pool: Pool; provider: string; m
   const transcript: Transcript = { schemaVersion: 1, caseId: fixture.caseId, provider: deps.provider, model: deps.model,
     startedAt: new Date().toISOString(), turns: [],
     readiness: { reached: false, atTurn: null, forcedCompletion: false, directEdits: 0, blockers: [] }, toBe: null, aborted: null };
+  if (deps.toBeOnly) {
+    // --tobe-only: no interview. The discovery is entered directly from the fixture's expected As-Is, through the same
+    // commands a person uses, confirmed, and handed to the real To-Be stage. Measures To-Be quality alone.
+    transcript.readiness.forcedCompletion = true;
+    try {
+      let edits = 0;
+      const set = async (fieldId: string, value: string) => { await run(fieldCommand(state, fieldId, value)); edits++; };
+      for (const [fieldId, value] of Object.entries(fixture.answerBank.catalog)) {
+        if (state.facts.some(f => f.id === fieldId && f.status !== "KNOWN")) await set(fieldId, value);
+      }
+      const draftOf = new Map<number, string>();
+      for (const step of fixture.steps) {
+        await run({ type: "START_STEP_DRAFT" });
+        const draft = state.stepDrafts.at(-1)!;
+        draftOf.set(step.n, draft.id);
+        for (const key of STEP_KEYS) await set(`${draft.id}_${key}`, step[key]);
+      }
+      for (const req of fixture.requirements) {
+        await run({ type: "START_REQUIREMENT_DRAFT", asIsStepId: draftOf.get(req.stepN)!, kind: req.kind, critical: req.critical });
+        await set(state.requirementDrafts.at(-1)!.statement.id, req.statement);
+      }
+      transcript.readiness.directEdits = edits;
+      transcript.structure = { steps: state.stepDrafts.length, requirements: state.requirementDrafts.length };
+      transcript.readiness.blockers = (current.readiness?.blockers ?? []).map(b => b.code);
+      if (!current.readiness?.ready) {
+        for (const b of current.readiness?.blockers ?? []) console.log(`tobe-only: blocker ${b.code} (${b.detail})`);
+        transcript.aborted = "fixture entry left readiness blockers";
+      } else {
+        await run({ type: "CONFIRM" });
+        transcript.toBe = await generateToBe(pool, current.confirmedSnapshotId!, stage);
+      }
+    } catch (error) { transcript.aborted = `driver error: ${message(error).slice(0, 200)}`; }
+    return TranscriptSchema.parse(transcript);
+  }
   let outputTokens = 0, failures = 0, directEdits = 0;
   const told = new Set<number>(); // fixture steps already described to the interviewer
   const capExceeded = () => outputTokens > OUTPUT_TOKEN_CAP;
@@ -235,13 +272,7 @@ async function runOnce(fixture: Fixture, deps: { pool: Pool; provider: string; m
     if (!transcript.readiness.reached && !transcript.aborted && deps.forceComplete && deps.toBe) {
       // Turn cap reached: complete the template by direct entry so the To-Be can still be measured (flagged in the score).
       transcript.readiness.forcedCompletion = true;
-      await resolvePending();
-      const open = [...state.facts.map(f => f.id), ...state.stepDrafts.flatMap(d => d.fields.map(f => f.id)),
-        ...state.requirementDrafts.map(d => d.statement.id)];
-      for (const fieldId of open) {
-        const value = answerFor(fixture, state, fieldId);
-        if (value && factStatus(state, fieldId) !== "KNOWN") { await run(fieldCommand(state, fieldId, value)); directEdits++; }
-      }
+      directEdits += await forceComplete(fixture, () => state, run, () => current, resolvePending);
     }
     transcript.readiness.directEdits = directEdits;
     transcript.structure = { steps: state.steps.length + state.stepDrafts.length,
@@ -249,6 +280,7 @@ async function runOnce(fixture: Fixture, deps: { pool: Pool; provider: string; m
     transcript.readiness.blockers = (current.readiness?.blockers ?? []).map(b => b.code);
 
     const canGenerate = deps.toBe && !!current.readiness?.ready && (transcript.readiness.reached || transcript.readiness.forcedCompletion);
+    if (deps.toBe && !canGenerate) console.log(`To-Be skipped: not ready (${transcript.readiness.blockers.join(", ") || "no blockers read"})`);
     if (canGenerate && !capExceeded()) {
       await run({ type: "CONFIRM" });
       transcript.toBe = await generateToBe(pool, current.confirmedSnapshotId!, stage);
@@ -260,10 +292,34 @@ async function runOnce(fixture: Fixture, deps: { pool: Pool; provider: string; m
   return TranscriptSchema.parse(transcript);
 }
 
+/** Forced completion: clear every readiness blocker the fixture can answer by direct entry (catalog fields, every blank step
+ * field, requirement statements), review what is left pending, and repeat until nothing changes. Prints each blocker it could
+ * not clear. Returns the number of direct edits made. */
+async function forceComplete(fixture: Fixture, getState: () => WorkspaceState, run: (c: Command) => Promise<void>,
+  getCurrent: () => { readiness: { ready: boolean; blockers: { code: string; detail: string }[] } | null }, resolvePending: () => Promise<void>) {
+  let edits = 0;
+  for (let round = 1; round <= 3; round++) {
+    await resolvePending();
+    const { commands, unresolved } = planForcedCompletion(fixture, getState());
+    for (const command of commands) { await run(command); edits++; }
+    await resolvePending();
+    const readiness = getCurrent().readiness;
+    if (readiness?.ready) return edits;
+    if (!commands.length) {
+      for (const blocker of readiness?.blockers ?? []) console.log(`forced completion could not clear: ${blocker.code} (${blocker.detail})`);
+      for (const item of unresolved) console.log(`forced completion: ${item}`);
+      return edits;
+    }
+  }
+  for (const blocker of getCurrent().readiness?.blockers ?? []) console.log(`forced completion could not clear: ${blocker.code} (${blocker.detail})`);
+  return edits;
+}
+
 /** Mirrors the consultant-jobs worker: confirmed snapshot -> parseToBeInput -> runStage("to_be") -> validateToBeOutput. */
 async function generateToBe(pool: Pool, snapshotId: string, stage: typeof runStage): Promise<NonNullable<Transcript["toBe"]>> {
   const row = (await pool.query(`SELECT target_product,payload FROM discovery_versions WHERE id=$1`, [snapshotId])).rows[0];
   const input = parseToBeInput({ targetProduct: row.target_product, discovery: row.payload });
+  console.log(`To-Be input: ${input.discovery.asIsSteps.length} steps, ${input.discovery.requirements.length} requirements, ${input.discovery.companyContext?.length ?? 0} company-context fields`);
   const requirements = input.discovery.requirements.map(r => ({ id: r.id, statement: r.statement, evidence: r.evidence.quote }));
   const base = { attempted: true, requirements };
   try {
@@ -351,7 +407,7 @@ async function main() {
   let allPassed = true;
   await withDisposableDatabase(async pool => {
     for (let run = 1; run <= runs; run++) {
-      const transcript = await runOnce(fixture, { pool, provider, model, maxTurns, forceComplete: !has("no-force-complete"), toBe: !has("no-tobe"), fake: has("fake-model") });
+      const transcript = await runOnce(fixture, { pool, provider, model, maxTurns, forceComplete: !has("no-force-complete"), toBe: !has("no-tobe"), toBeOnly: has("tobe-only"), fake: has("fake-model") });
       const { score, summary } = report(transcript, fixture, `Run ${run}/${runs}`);
       const file = `test-results/eval/${stamp}-${provider}-${model.replace(/[^A-Za-z0-9._-]+/g, "_")}${runs > 1 ? `-run${run}` : ""}.json`;
       writeFileSync(file, JSON.stringify({ transcript, score, summary }, null, 2));
