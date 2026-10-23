@@ -374,3 +374,39 @@ describe("register calls: repair and checks", () => {
     expect(h.registerCalls.filter(call => call.group === "decisions")[1]!.body.messages[0]!.content).toContain("draft.keyDesignDecisions.0.rationale");
   });
 });
+
+describe("output ceilings and truncation", () => {
+  const cut = (tool: string) => toolResponse({ processName: "private-cut-off-text" }, tool, "max_tokens");
+  const maxTokens = (body: RequestBody) => (body as RequestBody & { max_tokens: number }).max_tokens;
+  it("defaults to 16000 / 8000 / 8000 and takes overrides from the environment", async () => {
+    const h = harness(); await h.run();
+    expect([maxTokens(h.outlineCalls[0]!), maxTokens(h.stepCalls[0]!.body), maxTokens(h.registerCalls[0]!.body)]).toEqual([16000, 8000, 8000]);
+    const o = harness({ overrides: { AI_TO_BE_OUTLINE_MAX_TOKENS: "20000", AI_TO_BE_STEP_MAX_TOKENS: "5000", AI_TO_BE_REGISTERS_MAX_TOKENS: "4000" } }); await o.run();
+    expect([maxTokens(o.outlineCalls[0]!), maxTokens(o.stepCalls[0]!.body), maxTokens(o.registerCalls[0]!.body)]).toEqual([20000, 5000, 4000]);
+  });
+  it.each(["AI_TO_BE_OUTLINE_MAX_TOKENS", "AI_TO_BE_STEP_MAX_TOKENS", "AI_TO_BE_REGISTERS_MAX_TOKENS"])("rejects an invalid %s by name only", name => {
+    for (const bad of ["abc", "999", "64001", "1.5"]) expect(() => settings({ [name]: bad })).toThrow(`Invalid environment variables: ${name}`);
+    expect(settings({ [name]: " " })).toBeTruthy(); // blank = default
+  });
+  it("reports a max_tokens outline as OUTPUT_TRUNCATED and asks the repair for a shorter answer, without echoing the cut text", async () => {
+    const h = harness({ outline: () => cut("submit_to_be_outline") });
+    const error = await h.run().then(() => null, e => e);
+    expect(error).toMatchObject({ code: "AI_INVALID_OUTPUT", metrics: { attempts: 2, stopReasons: ["max_tokens", "max_tokens"] } });
+    expect(error.metrics.attemptIssues).toEqual([[{ path: "to_be_outline", code: "OUTPUT_TRUNCATED" }], [{ path: "to_be_outline", code: "OUTPUT_TRUNCATED" }]]);
+    expect(error.metrics.substages.to_be_outline.calls).toBe(2);
+    const first = h.outlineCalls[0]!.messages[0]!.content, repair = h.outlineCalls[1]!.messages[0]!.content;
+    expect(first).not.toContain("repairNote");
+    expect(repair).toContain("OUTPUT_TRUNCATED"); expect(repair).toContain("cut off"); expect(repair).toContain("more concisely");
+    expect(repair).not.toContain("private-cut-off-text");
+  });
+  it("recovers when the repaired outline fits, and marks a truncated step for a concise retry", async () => {
+    const h = harness({ outline: n => n === 1 ? cut("submit_to_be_outline") : split.outline,
+      step: (id, n) => id === STEP_IDS[0] && n === 1 ? cut("submit_to_be_step") : split.details[id] });
+    const result = await h.run();
+    expect(result.metrics.stopReasons).toContain("max_tokens");
+    expect(result.metrics.attemptIssues!.flat().map(issue => issue.code)).toEqual(["OUTPUT_TRUNCATED", "OUTPUT_TRUNCATED"]);
+    expect(h.stepCalls.find(c => c.id === STEP_IDS[0])!.body.messages[0]!.content).not.toContain("cut off");
+    const retry = h.stepCalls.filter(c => c.id === STEP_IDS[0])[1]!.body.messages[0]!.content;
+    expect(retry).toContain("cut off");
+  });
+});

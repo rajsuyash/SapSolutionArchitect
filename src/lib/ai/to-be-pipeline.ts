@@ -34,6 +34,13 @@ export const StepDetailSchema = DetailedDesignSchema.shape.steps.element
   .extend({ implementation: z.strictObject({ detail: text }) });
 export type StepDetail = z.infer<typeof StepDetailSchema>;
 
+/** What `ask` resolves to when the provider stopped on max_tokens: the answer was cut off, so it is neither parsed nor trusted. */
+export const TRUNCATED = Symbol("truncated");
+export const OUTPUT_TRUNCATED = "OUTPUT_TRUNCATED";
+/** Added to a repair request whose previous answer was cut off. Fixed text: nothing the model wrote is echoed back. */
+const TRUNCATION_NOTE = "Your previous answer was cut off because it reached the output limit. Answer again, more concisely: shorter text values, no repetition, and keep any internal reasoning brief.";
+const truncationNote = (errors: readonly ValidationIssue[]) => errors.some(error => error.code === OUTPUT_TRUNCATED) ? { repairNote: TRUNCATION_NOTE } : {};
+
 const PLACEHOLDER = "(filled in by the step call)";
 const MAX_ERRORS = 30;
 const MAX_ID_LENGTH = 64;
@@ -143,7 +150,7 @@ export function stepRequest(input: ToBeInput, references: DesignContext["referen
     conflicts: discovery.conflicts.filter(conflict => conflict.sourceIds.some(sourceId => sourceIds.has(sourceId))),
     inputOpenQuestions: discovery.openQuestions,
     references: references.filter(reference => step.implementation.referenceIds.includes(reference.id)),
-    approvedDecisions: [], validationErrors,
+    approvedDecisions: [], validationErrors, ...truncationNote(validationErrors),
   };
 }
 
@@ -158,7 +165,7 @@ export function registerRequest(input: ToBeInput, references: DesignContext["ref
     outline: { processName: outline.processName, steps: outline.steps, coverage: outline.coverage, openQuestions: outline.openQuestions },
     requirements: discovery.requirements.map(r => ({ id: r.id, asIsStepId: r.asIsStepId, critical: r.critical, kind: r.kind, statement: r.statement })),
     references: references.map(({ id, fitType, capability, objects }) => ({ id, fitType, capability, objects })),
-    inputOpenQuestions: discovery.openQuestions, validationErrors,
+    inputOpenQuestions: discovery.openQuestions, validationErrors, ...truncationNote(validationErrors),
   };
 }
 
@@ -175,7 +182,7 @@ export async function runPool<T>(items: readonly T[], limit: number, worker: (it
 }
 
 export type DesignDeps = {
-  /** One model call; resolves to the tool payload, or null when the provider did not return exactly one complete tool call. */
+  /** One model call; resolves to the tool payload, null when the provider did not return exactly one complete tool call, or TRUNCATED when it stopped on max_tokens. */
   ask: (substage: Substage, user: unknown, group?: RegisterGroup) => Promise<unknown>;
   /** The error to throw for AI_INVALID_OUTPUT. */
   invalid: () => Error;
@@ -188,7 +195,9 @@ export async function runDesign(input: ToBeInput, references: DesignContext["ref
   const base = { input, approvedDecisions: [] as never[], references };
   let outlineRepairs = 0;
   const requestOutline = async (errors: ValidationIssue[]) => {
-    const result = validateOutline(input, references, await deps.ask("to_be_outline", { ...base, validationErrors: errors }));
+    const raw = await deps.ask("to_be_outline", { ...base, validationErrors: errors, ...truncationNote(errors) });
+    const result = raw === TRUNCATED ? { success: false as const, errors: [{ path: "to_be_outline", code: OUTPUT_TRUNCATED }] }
+      : validateOutline(input, references, raw);
     if (!result.success) deps.record(result.errors);
     return result;
   };
@@ -213,7 +222,7 @@ export async function runDesign(input: ToBeInput, references: DesignContext["ref
         const raw = await deps.ask("to_be_step", stepRequest(input, references, current, current.steps[index]!, validationErrors));
         const parsed = StepDetailSchema.safeParse(raw);
         if (parsed.success) { details.set(stepId, parsed.data); return; }
-        validationErrors = raw === null ? [{ path: `draft.steps.${index}`, code: "NO_TOOL_PAYLOAD" }]
+        validationErrors = raw === TRUNCATED ? [{ path: `draft.steps.${index}`, code: OUTPUT_TRUNCATED }] : raw === null ? [{ path: `draft.steps.${index}`, code: "NO_TOOL_PAYLOAD" }]
           : rePath(draftIssues(parsed.error.issues), "draft", `draft.steps.${index}`);
         deps.record(validationErrors);
         markRetry(stepId);
@@ -225,7 +234,7 @@ export async function runDesign(input: ToBeInput, references: DesignContext["ref
         const raw = await deps.ask("to_be_registers", registerRequest(input, references, current, group, validationErrors), group);
         const parsed = RegisterGroupSchemas[group].safeParse(raw);
         if (parsed.success) { registers.set(group, parsed.data satisfies RegisterPayloads[RegisterGroup]); return; }
-        validationErrors = raw === null ? [{ path: "draft", code: "NO_TOOL_PAYLOAD" }] : draftIssues(parsed.error.issues);
+        validationErrors = raw === TRUNCATED ? [{ path: "draft", code: OUTPUT_TRUNCATED }] : raw === null ? [{ path: "draft", code: "NO_TOOL_PAYLOAD" }] : draftIssues(parsed.error.issues);
         deps.record(validationErrors);
         markRetry(registerKey(group));
       }

@@ -141,6 +141,7 @@ export function loadToBe(raw: unknown): ToBe {
   const design = toBe.design ?? root.design ?? (Array.isArray(root.steps) ? root : undefined);
   const requirements = toBe.requirements ?? root.requirements ?? [];
   const parsed = DesignLooseSchema.safeParse(design);
+  if (!parsed.success && typeof toBe.errorCode === "string" && !toBe.design) throw new Error(`No design to judge: the run's To-Be was not valid (${toBe.errorCode})`);
   if (!parsed.success) throw new Error("No To-Be design found: expected an eval run file, a transcript, {design, requirements} or a design object");
   return { design: design as Record<string, unknown>, requirements: z.array(RequirementSchema).parse(requirements) };
 }

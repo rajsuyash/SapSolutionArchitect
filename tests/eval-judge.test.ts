@@ -150,6 +150,7 @@ describe("loadToBe", () => {
   });
   it("rejects input with no design", () => {
     expect(() => loadToBe({ transcript: { toBe: null } })).toThrow(/No To-Be design/);
+    expect(() => loadToBe({ transcript: { toBe: { errorCode: "AI_INVALID_OUTPUT", design: null, structurallyValid: false } } })).toThrow("the run's To-Be was not valid (AI_INVALID_OUTPUT)");
     expect(() => loadToBe({ steps: [] })).toThrow(/No To-Be design/);
   });
 });

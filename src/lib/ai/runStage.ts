@@ -7,7 +7,7 @@ import { ProblemAnalysisInputSchema, ProblemAnalysisSchema, redactInput, schemaI
 import { createProviderClient, logProviderFailure, logStageTimeout, type Provider } from "./provider";
 import { loadToBeReferences, parseToBeInput, type ToBeOutput } from "./to-be";
 import { REGISTER_GROUP_NAMES, RegisterGroupSchemas } from "./design-registers";
-import { OutlineSchema, StepDetailSchema, runDesign, type Substage } from "./to-be-pipeline";
+import { OutlineSchema, StepDetailSchema, TRUNCATED, runDesign, type Substage } from "./to-be-pipeline";
 import { interviewModelView } from "./interview-sentences";
 
 /** The chat call needs no citations: it sees plain messages, and not the facts it cannot ask about. */
@@ -42,16 +42,12 @@ export class AIStageError extends Error {
   }
 }
 type Config = Pick<Environment, "NODE_ENV" | "AI_PROVIDER" | "ANTHROPIC_API_KEY" | "DEEPINFRA_API_KEY" | "AI_MODEL" | "AI_MODEL_DESIGN" | "AI_MAX_INPUT_TOKENS" | "AI_MAX_CONCURRENCY" | "AI_CHAT_CONCURRENCY" | "AI_FAULT_INJECTION"
-  | "AI_NO_THINKING_STAGES" | "AI_STAGE_BUDGET_SECONDS" | "AI_CALL_TIMEOUT_SECONDS" | "AI_DESIGN_CALL_TIMEOUT_SECONDS" | "AI_DESIGN_PARALLELISM">;
+  | "AI_NO_THINKING_STAGES" | "AI_STAGE_BUDGET_SECONDS" | "AI_CALL_TIMEOUT_SECONDS" | "AI_DESIGN_CALL_TIMEOUT_SECONDS" | "AI_DESIGN_PARALLELISM" | "AI_TO_BE_OUTLINE_MAX_TOKENS" | "AI_TO_BE_STEP_MAX_TOKENS" | "AI_TO_BE_REGISTERS_MAX_TOKENS">;
 const SDK_TIMEOUT_MARGIN_MS = 5000;
 /** An interview turn carries up to 42 quoted proposals; 8000 truncated some turns into an empty tool payload. */
 const INTERVIEW_MAX_TOKENS = 16000;
 /** The long design stages: the only place that decides which stages use the design timeout and AI_MODEL_DESIGN. */
 const DESIGN_STAGES: ReadonlySet<Stage> = new Set<Stage>(["to_be"]);
-/** Output ceilings of the two To-Be request kinds (targets: outline under 6k tokens, step under 3k). */
-const OUTLINE_MAX_TOKENS = 8000;
-const STEP_MAX_TOKENS = 6000;
-const REGISTER_MAX_TOKENS = 6000;
 /** issueDetail: eval harness only. Adds the schema's own message (never the received value) to interview_turn issues
  * recorded in metrics; the issues sent back to the model and the production default are unchanged. */
 type Options = { fetch?: typeof fetch; sapCatalogDir?: string; issueDetail?: boolean };
@@ -270,6 +266,8 @@ export function createStageRunner(config: Config, options: Options = {}) {
           const entry = (metrics.substages ??= {})[a.substage] ??= { calls: 0, inputTokens: 0, outputTokens: 0 };
           entry.calls++; entry.inputTokens += inputTokens; entry.outputTokens += usage.data.output_tokens;
         }
+        // A design answer cut off by the output limit is reported as such (reasoning tokens count against max_tokens), not as a missing payload.
+        if (a.substage && message.stop_reason === "max_tokens") return TRUNCATED;
         const toolCalls = message.content.filter((block) => block.type === "tool_use");
         const output = message.stop_reason === "tool_use" && toolCalls.length === 1 && toolCalls[0]!.name === a.tool.name ? toolCalls[0]!.input
           : a.textFallback && !toolCalls.length ? jsonFromText(message.content) : null;
@@ -288,10 +286,10 @@ export function createStageRunner(config: Config, options: Options = {}) {
         ]));
         // The four register groups share one system prompt (a stable prefix) and differ by tool.
         const kinds = {
-          to_be_outline: { system: outlineSystem, schema: OutlineSchema, name: "submit_to_be_outline", maxTokens: OUTLINE_MAX_TOKENS },
-          to_be_step: { system: stepSystem, schema: StepDetailSchema, name: "submit_to_be_step", maxTokens: STEP_MAX_TOKENS },
+          to_be_outline: { system: outlineSystem, schema: OutlineSchema, name: "submit_to_be_outline", maxTokens: config.AI_TO_BE_OUTLINE_MAX_TOKENS },
+          to_be_step: { system: stepSystem, schema: StepDetailSchema, name: "submit_to_be_step", maxTokens: config.AI_TO_BE_STEP_MAX_TOKENS },
           ...Object.fromEntries(REGISTER_GROUP_NAMES.map(group => [`to_be_registers:${group}`,
-            { system: registersSystem, schema: RegisterGroupSchemas[group], name: `submit_to_be_registers_${group}`, maxTokens: REGISTER_MAX_TOKENS }])),
+            { system: registersSystem, schema: RegisterGroupSchemas[group], name: `submit_to_be_registers_${group}`, maxTokens: config.AI_TO_BE_REGISTERS_MAX_TOKENS }])),
         } as const;
         const tools = Object.fromEntries(Object.entries(kinds).map(([key, kind]) =>
           [key, { name: kind.name, input_schema: { ...z.toJSONSchema(kind.schema), type: "object" } } satisfies Anthropic.Tool]));

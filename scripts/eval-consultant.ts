@@ -34,6 +34,7 @@ import { extractMessage } from "../src/lib/consultant-extraction";
 import { buildInterviewInput, type WorkspaceState } from "../src/lib/discovery-workspace-model";
 import { STEP_KEYS } from "../src/lib/workspace-fields";
 import { answerFor, composeReply, factStatus, fieldCommand, firstSentence, planForcedCompletion, type Asked, type Command, type Fixture } from "../src/lib/eval-user";
+import { toBeRun, toBeSummary } from "../src/lib/eval-tobe";
 import { ScoringCaseSchema, scoreRun, summarize, TranscriptSchema, type Transcript } from "../src/lib/eval-score";
 
 const OUTPUT_TOKEN_CAP = 400_000;
@@ -322,18 +323,19 @@ async function generateToBe(pool: Pool, snapshotId: string, stage: typeof runSta
   console.log(`To-Be input: ${input.discovery.asIsSteps.length} steps, ${input.discovery.requirements.length} requirements, ${input.discovery.companyContext?.length ?? 0} company-context fields`);
   const requirements = input.discovery.requirements.map(r => ({ id: r.id, statement: r.statement, evidence: r.evidence.quote }));
   const base = { attempted: true, requirements };
+  const finish = (m: StageMetrics | undefined, rest: { structurallyValid: boolean; errorCode: string | null; design: NonNullable<Transcript["toBe"]>["design"] }) => {
+    const run = toBeRun(m);
+    console.log(toBeSummary(run, rest.errorCode));
+    return { ...base, ...run, ...rest };
+  };
   try {
     const generated = await stage("to_be", input);
-    const m = generated.metrics;
-    const stats = { attempts: m.attempts, validationErrors: m.validationErrors.length, inputTokens: m.inputTokens, outputTokens: m.outputTokens };
     const validation = validateToBeOutput(input, (generated.payload as { design?: unknown }).design, await loadToBeReferences(input));
-    return { ...base, ...stats, structurallyValid: validation.success, errorCode: validation.success ? null : "VALIDATION_FAILED",
-      design: validation.success ? validation.data.design as unknown as NonNullable<Transcript["toBe"]>["design"] : null };
+    return finish(generated.metrics, { structurallyValid: validation.success, errorCode: validation.success ? null : "VALIDATION_FAILED",
+      design: validation.success ? validation.data.design as unknown as NonNullable<Transcript["toBe"]>["design"] : null });
   } catch (error) {
-    const stage = error instanceof AIStageError ? error : null;
-    return { ...base, attempts: stage?.metrics.attempts ?? 0, validationErrors: stage?.metrics.validationErrors.length ?? 0,
-      inputTokens: stage?.metrics.inputTokens ?? 0, outputTokens: stage?.metrics.outputTokens ?? 0,
-      structurallyValid: false, errorCode: stage?.code ?? `DRIVER_ERROR:${message(error).slice(0, 80)}`, design: null };
+    const failed = error instanceof AIStageError ? error : null;
+    return finish(failed?.metrics, { structurallyValid: false, errorCode: failed?.code ?? `DRIVER_ERROR:${message(error).slice(0, 80)}`, design: null });
   }
 }
 

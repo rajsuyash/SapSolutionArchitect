@@ -5,9 +5,10 @@ const httpUrl = z.url({ protocol: /^https?$/ });
 // A blank variable means "use the default", not zero.
 const price = (fallback: number) => z.preprocess((value) => (typeof value === "string" && !value.trim() ? undefined : value),
   z.coerce.number().min(0).default(fallback));
-// Whole seconds within [min, max]; a blank variable means "use the default".
-const seconds = (fallback: number, min: number, max: number) => z.preprocess((value) => (typeof value === "string" && !value.trim() ? undefined : value),
+// Whole number within [min, max]; a blank variable means "use the default".
+const whole = (fallback: number, min: number, max: number) => z.preprocess((value) => (typeof value === "string" && !value.trim() ? undefined : value),
   z.coerce.number().int().min(min).max(max).default(fallback));
+const seconds = whole;
 const blankToUndefined = (value: unknown) => (typeof value === "string" && !value.trim() ? undefined : value);
 // JSON object: model id -> [input USD/MTok, output USD/MTok]. Unparseable text is passed on as-is and fails the record check.
 const modelPrices = z.preprocess((value) => {
@@ -46,6 +47,11 @@ const schema = z.object({
   AI_DESIGN_CALL_TIMEOUT_SECONDS: seconds(240, 30, 1500),
   // To-Be step calls in flight at once within one design stage (whole number, not seconds). Held under the stage's single AI_MAX_CONCURRENCY permit.
   AI_DESIGN_PARALLELISM: seconds(4, 1, 16),
+  // Output-token ceilings (max_tokens) of the three To-Be request kinds. Reasoning tokens count against them, so a model that
+  // thinks needs room above the visible JSON (outline ~3k, step ~3k, register group ~3.5k tokens without reasoning).
+  AI_TO_BE_OUTLINE_MAX_TOKENS: whole(16000, 1000, 64000),
+  AI_TO_BE_STEP_MAX_TOKENS: whole(8000, 1000, 64000),
+  AI_TO_BE_REGISTERS_MAX_TOKENS: whole(8000, 1000, 64000),
   // Stages run with model reasoning off (DeepInfra only; `thinking: {type: "disabled"}`). Empty = every stage keeps default reasoning.
   AI_NO_THINKING_STAGES: stageList,
   AI_FAULT_INJECTION: z.string().regex(
