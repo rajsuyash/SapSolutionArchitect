@@ -5,8 +5,8 @@ import { parseEnvironment, STAGE_NAMES, type Environment } from "../env";
 import { ProblemAnalysisInputSchema, ProblemAnalysisSchema, redactInput, schemaIssues, validateProblemAnalysis,
   type ProblemAnalysis, type ValidationIssue } from "./problem-analysis";
 import { createProviderClient, logProviderFailure, logStageTimeout, type Provider } from "./provider";
-import { DetailedDesignSchema } from "./design-quality";
-import { loadToBeReferences, parseToBeInput, validateToBeOutput, type ToBeOutput } from "./to-be";
+import { loadToBeReferences, parseToBeInput, type ToBeOutput } from "./to-be";
+import { OutlineSchema, StepDetailSchema, runDesign, type Substage } from "./to-be-pipeline";
 import { interviewModelView } from "./interview-sentences";
 
 /** The chat call needs no citations: it sees plain messages, and not the facts it cannot ask about. */
@@ -32,19 +32,24 @@ export type StageMetrics = { stage: Stage; provider: Provider; model: string; in
    * Counted so a run that leans on the fallback is visible; a clean native tool call is the expected case. */
   textFallbacks?: number;
   /** True when this stage's requests carried `thinking: {type: "disabled"}` (AI_NO_THINKING_STAGES, DeepInfra only). */
-  thinkingDisabled?: boolean };
+  thinkingDisabled?: boolean;
+  /** To-Be only: provider calls and tokens per request kind (the outline call and the per-step calls, repairs included). */
+  substages?: Partial<Record<Substage, { calls: number; inputTokens: number; outputTokens: number }>> };
 export class AIStageError extends Error {
   constructor(public readonly code: Code, public readonly metrics: StageMetrics) {
     super(code); this.name = "AIStageError";
   }
 }
 type Config = Pick<Environment, "NODE_ENV" | "AI_PROVIDER" | "ANTHROPIC_API_KEY" | "DEEPINFRA_API_KEY" | "AI_MODEL" | "AI_MODEL_DESIGN" | "AI_MAX_INPUT_TOKENS" | "AI_MAX_CONCURRENCY" | "AI_CHAT_CONCURRENCY" | "AI_FAULT_INJECTION"
-  | "AI_NO_THINKING_STAGES" | "AI_STAGE_BUDGET_SECONDS" | "AI_CALL_TIMEOUT_SECONDS" | "AI_DESIGN_CALL_TIMEOUT_SECONDS">;
+  | "AI_NO_THINKING_STAGES" | "AI_STAGE_BUDGET_SECONDS" | "AI_CALL_TIMEOUT_SECONDS" | "AI_DESIGN_CALL_TIMEOUT_SECONDS" | "AI_DESIGN_PARALLELISM">;
 const SDK_TIMEOUT_MARGIN_MS = 5000;
 /** An interview turn carries up to 42 quoted proposals; 8000 truncated some turns into an empty tool payload. */
 const INTERVIEW_MAX_TOKENS = 16000;
 /** The long design stages: the only place that decides which stages use the design timeout and AI_MODEL_DESIGN. */
 const DESIGN_STAGES: ReadonlySet<Stage> = new Set<Stage>(["to_be"]);
+/** Output ceilings of the two To-Be request kinds (targets: outline under 6k tokens, step under 3k). */
+const OUTLINE_MAX_TOKENS = 8000;
+const STEP_MAX_TOKENS = 6000;
 /** issueDetail: eval harness only. Adds the schema's own message (never the received value) to interview_turn issues
  * recorded in metrics; the issues sent back to the model and the production default are unchanged. */
 type Options = { fetch?: typeof fetch; sapCatalogDir?: string; issueDetail?: boolean };
@@ -123,10 +128,15 @@ export function createStageRunner(config: Config, options: Options = {}) {
   // AbortSignal in call() bounds the whole stream. Keep the SDK value above both per-call limits.
   const sdkTimeout = Math.max(callTimeout, designCallTimeout) + SDK_TIMEOUT_MARGIN_MS;
   const client = provider === "stub" ? undefined : createProviderClient(provider, apiKey!, sdkTimeout, options.fetch);
-  const noThinking = new Set<Stage>(provider === "deepinfra" ? config.AI_NO_THINKING_STAGES ?? [] : []);
+  const noThinking = new Set<string>(provider === "deepinfra" ? config.AI_NO_THINKING_STAGES ?? [] : []);
   // Two independent lanes of model-call slots: chat turns (interview_turn) and batch stages (to_be, problem_analysis).
   // A long batch stage can hold every batch slot and a chat turn still runs.
   const chatLane = createLane(config.AI_CHAT_CONCURRENCY), batchLane = createLane(config.AI_MAX_CONCURRENCY);
+  // Claude Sonnet 5.5 rejects a forced tool choice (HTTP 400), so Anthropic keeps "auto". DeepInfra's MiMo answers in
+  // prose under "auto" (0/4 tool calls measured 2026-10-22) and calls the tool every time when it is forced.
+  // This applies to every tool the runner sends, the To-Be outline and step tools included.
+  const toolChoiceFor = (name: string): Anthropic.ToolChoice => provider === "deepinfra"
+    ? { type: "tool", name, disable_parallel_tool_use: true } : { type: "auto", disable_parallel_tool_use: true };
 
   return async function runStage<S extends Stage>(stage: S, rawInput: unknown, externalSignal?: AbortSignal): Promise<{ payload: Payloads[S]; metrics: StageMetrics }> {
     const started = Date.now();
@@ -134,7 +144,8 @@ export function createStageRunner(config: Config, options: Options = {}) {
     const lane = stage === "interview_turn" || stage === "extraction_turn" ? chatLane : batchLane;
     const model = isDesign ? config.AI_MODEL_DESIGN ?? config.AI_MODEL : config.AI_MODEL;
     const metrics: StageMetrics = { stage, provider, model, inputTokens: 0, outputTokens: 0,
-      latencyMs: 0, attempts: 0, validationErrors: [], attemptIssues: [], stopReasons: [], textFallbacks: 0, thinkingDisabled: noThinking.has(stage) };
+      latencyMs: 0, attempts: 0, validationErrors: [], attemptIssues: [], stopReasons: [], textFallbacks: 0,
+      thinkingDisabled: noThinking.has(stage) || (stage === "to_be" && noThinking.has("to_be_outline") && noThinking.has("to_be_step")) };
     const fail = (code: Code) => new AIStageError(code, metrics);
     const deadline = new AbortController();
     const timer = setTimeout(() => deadline.abort(fail("AI_TIMEOUT")), stageBudget);
@@ -220,38 +231,95 @@ export function createStageRunner(config: Config, options: Options = {}) {
         analysisInput.problemStatement = points.slice(0, low).join(""); inputTruncated = true;
         if (!analysisInput.problemStatement.trim() || await count(analysisInput.problemStatement) > config.AI_MAX_INPUT_TOKENS) throw fail("AI_INPUT_TOO_LARGE");
       }
-      const [system, template] = designInput || interviewInput ? [await call(() =>
-        readFile(new URL(designInput ? "../../../prompts/to_be.system.md"
-          : stage === "extraction_turn" ? "../../../prompts/discovery_extraction.system.md" : "../../../prompts/discovery_interview.system.md", import.meta.url), "utf8")), ""] : await call(() => Promise.all([
-        readFile(new URL("../../../prompts/problem_analysis.system.md", import.meta.url), "utf8"),
-        readFile(new URL("../../../prompts/problem_analysis.user.md", import.meta.url), "utf8"),
-      ]));
-      if (analysisInput && (!template.includes("{{input}}") || !template.includes("{{validationErrors}}"))) throw fail("AI_PROVIDER_ERROR");
-      const jsonSchema = z.toJSONSchema(designInput ? DetailedDesignSchema : interviewInput
-        ? (stage === "extraction_turn" ? ExtractionToolSchema : InterviewChatToolSchema) : ProblemAnalysisSchema);
-      const tool = designInput ? "submit_to_be" : interviewInput ? (stage === "extraction_turn" ? "submit_extraction" : "submit_interview_turn") : "submit_analysis";
-      const tools: Anthropic.Tool[] = [{ name: tool, input_schema: { ...jsonSchema, type: "object" } }];
-      // Claude Sonnet 5.5 rejects a forced tool choice (HTTP 400), so Anthropic keeps "auto". DeepInfra's MiMo answers in
-      // prose under "auto" (0/4 tool calls measured 2026-10-22) and calls the tool every time when it is forced.
-      const toolChoice: Anthropic.ToolChoice = provider === "deepinfra"
-        ? { type: "tool", name: tool, disable_parallel_tool_use: true } : { type: "auto", disable_parallel_tool_use: true };
-      let errors: ValidationIssue[] = [];
-      for (let repair = 0; repair < 2; repair++) {
-        // One replacement pass prevents client text containing template markers from being interpreted.
-        const user = designInput ? JSON.stringify({ input: designInput, approvedDecisions: [], references: designReferences, validationErrors: errors })
-          : interviewInput ? JSON.stringify({ input: stage === "extraction_turn" ? extractionModelView(interviewInput) : chatModelView(interviewInput), validationErrors: errors })
-          : template.replace(/\{\{(input|validationErrors)\}\}/g, (_, key: string) =>
-            key === "input" ? JSON.stringify({ ...analysisInput, inputTruncated }) : JSON.stringify(errors));
-        const messages: Anthropic.MessageParam[] = [{ role: "user", content: user }];
-        if (designInput || interviewInput) {
-          // Count the whole request, including schema and repair instructions.
-          // Never truncate source evidence, requirements or unresolved policies.
+      /** One provider request: for design and interview stages the whole request (system, schema, repair text) is counted first
+       * and never truncated, then streamed. Streaming keeps the connection alive during long generations; finalMessage()
+       * assembles the same Message. Only a single complete call of `tool.name` counts as output; anything else is null,
+       * except that interview stages (textFallback) also accept one JSON text block when the model made no tool call. */
+      const generate = async (a: { system: string; user: string; tool: Anthropic.Tool; maxTokens: number; guard: boolean;
+        thinkingOff: boolean; textFallback?: boolean; substage?: Substage }): Promise<unknown> => {
+        const messages: Anthropic.MessageParam[] = [{ role: "user", content: a.user }];
+        const tools = [a.tool];
+        const toolChoice = toolChoiceFor(a.tool.name);
+        if (a.guard) {
           const counted = await transport(signal => client!.messages.countTokens({
-            model, system, messages, tools, tool_choice: toolChoice,
+            model, system: a.system, messages, tools, tool_choice: toolChoice,
           }, { signal }));
           if (!Number.isSafeInteger(counted.input_tokens) || counted.input_tokens < 0) throw fail("AI_PROVIDER_ERROR");
           if (counted.input_tokens > config.AI_MAX_INPUT_TOKENS) throw fail("AI_INPUT_TOO_LARGE");
         }
+        const timeoutMs = isDesign ? designCallTimeout : callTimeout;
+        const message = await transport((signal) => {
+          metrics.attempts++;
+          return client!.messages.stream({ model, max_tokens: a.maxTokens, system: a.system,
+            messages, tools, ...(a.thinkingOff ? { thinking: { type: "disabled" as const } } : {}),
+            // Sonnet 5.5 rejects forced tool selection. The prompt requests the
+            // tool; validation still requires exactly one complete tool payload.
+            tool_choice: toolChoice }, { signal, timeout: timeoutMs }).finalMessage();
+        }, timeoutMs);
+        const usage = z.object({ input_tokens: z.number().int().nonnegative(), output_tokens: z.number().int().nonnegative(),
+          cache_creation_input_tokens: z.number().int().nonnegative().nullish(), cache_read_input_tokens: z.number().int().nonnegative().nullish(),
+        }).safeParse(message.usage);
+        if (!usage.success) throw fail("AI_PROVIDER_ERROR");
+        const inputTokens = usage.data.input_tokens + (usage.data.cache_creation_input_tokens ?? 0) + (usage.data.cache_read_input_tokens ?? 0);
+        metrics.inputTokens += inputTokens;
+        metrics.outputTokens += usage.data.output_tokens;
+        metrics.stopReasons!.push(message.stop_reason ?? null);
+        if (a.substage) {
+          const entry = (metrics.substages ??= {})[a.substage] ??= { calls: 0, inputTokens: 0, outputTokens: 0 };
+          entry.calls++; entry.inputTokens += inputTokens; entry.outputTokens += usage.data.output_tokens;
+        }
+        const toolCalls = message.content.filter((block) => block.type === "tool_use");
+        const output = message.stop_reason === "tool_use" && toolCalls.length === 1 && toolCalls[0]!.name === a.tool.name ? toolCalls[0]!.input
+          : a.textFallback && !toolCalls.length ? jsonFromText(message.content) : null;
+        if (a.textFallback && !toolCalls.length && output !== null) metrics.textFallbacks! += 1;
+        return output;
+      };
+
+      if (designInput) {
+        // The stage holds ONE AI_MAX_CONCURRENCY permit (acquired above) for the whole design; the outline call and the
+        // step fan-out run under it and never acquire again, so AI_MAX_CONCURRENCY=1 cannot deadlock. Fan-out width is
+        // AI_DESIGN_PARALLELISM, so provider requests in flight can reach AI_MAX_CONCURRENCY x AI_DESIGN_PARALLELISM.
+        const [outlineSystem, stepSystem] = await call(() => Promise.all([
+          readFile(new URL("../../../prompts/to_be_outline.system.md", import.meta.url), "utf8"),
+          readFile(new URL("../../../prompts/to_be_step.system.md", import.meta.url), "utf8"),
+        ]));
+        const kinds = {
+          to_be_outline: { system: outlineSystem, schema: OutlineSchema, name: "submit_to_be_outline", maxTokens: OUTLINE_MAX_TOKENS },
+          to_be_step: { system: stepSystem, schema: StepDetailSchema, name: "submit_to_be_step", maxTokens: STEP_MAX_TOKENS },
+        } as const;
+        const tools = Object.fromEntries(Object.entries(kinds).map(([key, kind]) =>
+          [key, { name: kind.name, input_schema: { ...z.toJSONSchema(kind.schema), type: "object" } } satisfies Anthropic.Tool]));
+        const design = designInput;
+        const payload = await runDesign(design, designReferences, {
+          parallelism: config.AI_DESIGN_PARALLELISM,
+          invalid: () => fail("AI_INVALID_OUTPUT"),
+          record: (issues) => { metrics.validationErrors.push(...issues); metrics.attemptIssues!.push(issues); },
+          ask: async (substage, request) => {
+            const kind = kinds[substage];
+            const output = await generate({ system: kind.system, user: JSON.stringify(request), tool: tools[substage]!, maxTokens: kind.maxTokens,
+              guard: true, thinkingOff: noThinking.has(substage) || noThinking.has("to_be"), substage });
+            signal.throwIfAborted();
+            return output;
+          },
+        });
+        return { payload: payload as Payloads[S], metrics };
+      }
+
+      const [system, template] = interviewInput ? [await call(() =>
+        readFile(new URL(stage === "extraction_turn" ? "../../../prompts/discovery_extraction.system.md" : "../../../prompts/discovery_interview.system.md", import.meta.url), "utf8")), ""] : await call(() => Promise.all([
+        readFile(new URL("../../../prompts/problem_analysis.system.md", import.meta.url), "utf8"),
+        readFile(new URL("../../../prompts/problem_analysis.user.md", import.meta.url), "utf8"),
+      ]));
+      if (analysisInput && (!template.includes("{{input}}") || !template.includes("{{validationErrors}}"))) throw fail("AI_PROVIDER_ERROR");
+      const jsonSchema = z.toJSONSchema(interviewInput ? (stage === "extraction_turn" ? ExtractionToolSchema : InterviewChatToolSchema) : ProblemAnalysisSchema);
+      const tool: Anthropic.Tool = { name: interviewInput ? (stage === "extraction_turn" ? "submit_extraction" : "submit_interview_turn") : "submit_analysis",
+        input_schema: { ...jsonSchema, type: "object" } };
+      let errors: ValidationIssue[] = [];
+      for (let repair = 0; repair < 2; repair++) {
+        // One replacement pass prevents client text containing template markers from being interpreted.
+        const user = interviewInput ? JSON.stringify({ input: stage === "extraction_turn" ? extractionModelView(interviewInput) : chatModelView(interviewInput), validationErrors: errors })
+          : template.replace(/\{\{(input|validationErrors)\}\}/g, (_, key: string) =>
+            key === "input" ? JSON.stringify({ ...analysisInput, inputTruncated }) : JSON.stringify(errors));
         let output: unknown;
         if (provider === "stub") {
           metrics.attempts++;
@@ -263,33 +331,12 @@ export function createStageRunner(config: Config, options: Options = {}) {
           output = inject && parts?.[1] === "invalid" ? {} : JSON.parse(await call(() =>
             readFile(new URL("../../../fixtures/ai/problem_analysis/default.json", import.meta.url), "utf8")));
         } else {
-          const message = await transport((signal) => {
-            metrics.attempts++;
-            // Streaming keeps the connection alive during long generations; finalMessage() assembles the same Message.
-            return client!.messages.stream({ model, max_tokens: designInput ? 24000 : interviewInput ? INTERVIEW_MAX_TOKENS : 12000, system,
-              messages, tools, ...(metrics.thinkingDisabled ? { thinking: { type: "disabled" as const } } : {}),
-              // Sonnet 5.5 rejects forced tool selection. The prompt requests the
-              // tool; validation still requires exactly one complete tool payload.
-              tool_choice: toolChoice }, { signal, timeout: isDesign ? designCallTimeout : callTimeout }).finalMessage();
-          }, isDesign ? designCallTimeout : callTimeout);
-          const usage = z.object({ input_tokens: z.number().int().nonnegative(), output_tokens: z.number().int().nonnegative(),
-            cache_creation_input_tokens: z.number().int().nonnegative().nullish(), cache_read_input_tokens: z.number().int().nonnegative().nullish(),
-          }).safeParse(message.usage);
-          if (!usage.success) throw fail("AI_PROVIDER_ERROR");
-          metrics.inputTokens += usage.data.input_tokens + (usage.data.cache_creation_input_tokens ?? 0) + (usage.data.cache_read_input_tokens ?? 0);
-          metrics.outputTokens += usage.data.output_tokens;
-          metrics.stopReasons!.push(message.stop_reason ?? null);
-          const toolCalls = message.content.filter((block) => block.type === "tool_use");
-          output = message.stop_reason === "tool_use" && toolCalls.length === 1 && toolCalls[0]!.name === tool ? toolCalls[0]!.input
-            : interviewInput && !toolCalls.length ? jsonFromText(message.content) : null;
-          if (interviewInput && !toolCalls.length && output !== null) metrics.textFallbacks! += 1;
+          // Interview requests are counted whole (never truncated); problem analysis truncates its input up front instead.
+          output = await generate({ system, user, tool, maxTokens: interviewInput ? INTERVIEW_MAX_TOKENS : 12000,
+            guard: !!interviewInput, thinkingOff: !!metrics.thinkingDisabled, textFallback: !!interviewInput });
         }
         signal.throwIfAborted();
-        if (designInput) {
-          const result = validateToBeOutput(designInput, output, designReferences);
-          if (result.success) return { payload: result.data as Payloads[S], metrics };
-          errors = result.errors;
-        } else if (interviewInput) {
+        if (interviewInput) {
           const result = (stage === "extraction_turn" ? validateExtraction : validateChatTurn)(interviewInput, output);
           if (result.success) { metrics.warnings = result.warnings; return { payload: result.data as Payloads[S], metrics }; }
           errors = result.errors;

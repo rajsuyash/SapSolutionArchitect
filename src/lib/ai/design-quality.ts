@@ -1,10 +1,11 @@
 import { z } from "zod";
 
-const text = z.string().trim().min(1).max(8000);
-const id = z.string().regex(/^[A-Za-z0-9_-]{1,64}$/);
-const ids = z.array(id).max(200);
+export const text = z.string().trim().min(1).max(8000);
+export const id = z.string().regex(/^[A-Za-z0-9_-]{1,64}$/);
+export const ids = z.array(id).max(200);
 const texts = z.array(text).min(1).max(100);
-const list = <T extends z.ZodType>(schema: T) => z.array(schema).max(200);
+export const list = <T extends z.ZodType>(schema: T) => z.array(schema).max(200);
+export const IMPLEMENTATION_KINDS = ["STANDARD", "CONFIGURATION", "EXTENSION", "INTEGRATION", "MANUAL", "NEEDS_VALIDATION"] as const;
 
 export const FIT_TYPES = ["STANDARD", "CONFIGURATION", "EXTENSION", "INTEGRATION", "MANUAL", "LICENSE_DEPENDENT"] as const;
 
@@ -49,7 +50,7 @@ export const DetailedDesignSchema = z.strictObject({
     masterData: list(z.strictObject({ object: text, fields: texts, owner: text })).min(1),
     effects: z.strictObject({ inventory: text, financial: text, ownership: text }),
     implementation: z.strictObject({
-      kind: z.enum(["STANDARD", "CONFIGURATION", "EXTENSION", "INTEGRATION", "MANUAL", "NEEDS_VALIDATION"]),
+      kind: z.enum(IMPLEMENTATION_KINDS),
       detail: text, referenceIds: ids,
     }),
     /** Open decisions (decisionRegister ids) this step is held on or conditional on. */
@@ -78,7 +79,7 @@ const MAX_DRAFT_ERRORS = 20;
 const SAFE_NAME = /^[A-Za-z][A-Za-z0-9_]{0,40}$/;
 /** Locate a strict-parse failure for the repair loop: real path, issue code and
  * key names/expected types only. Model-supplied values are never echoed. */
-function draftIssues(issues: z.core.$ZodIssue[]): Issue[] {
+export function draftIssues(issues: z.core.$ZodIssue[]): Issue[] {
   return issues.slice(0, MAX_DRAFT_ERRORS).map(issue => {
     const path = ["draft", ...issue.path.filter(part => typeof part === "number" || (typeof part === "string" && SAFE_NAME.test(part)))].join(".");
     const extra = issue.code === "unrecognized_keys" ? issue.keys.slice(0, 5).map(key => SAFE_NAME.test(key) ? key : "<unsafe_key>").join(", ")

@@ -16,9 +16,12 @@ const modelPrices = z.preprocess((value) => {
 }, z.record(z.string().trim().min(1), z.tuple([z.number().positive().max(1000), z.number().positive().max(1000)])).default({}));
 /** The AI stages the runner knows; runStage derives its Stage type from this list. */
 export const STAGE_NAMES = ["problem_analysis", "to_be", "interview_turn", "extraction_turn"] as const;
-// Comma-separated stage names; blank or unset means none. Unknown names are rejected.
+/** The To-Be stage runs as an outline call plus one call per step; each can have reasoning switched off on its own
+ * ("to_be" covers both). They are request kinds inside one stage, so they are not in STAGE_NAMES. */
+export const TO_BE_SUBSTAGES = ["to_be_outline", "to_be_step"] as const;
+// Comma-separated stage or To-Be substage names; blank or unset means none. Unknown names are rejected.
 const stageList = z.preprocess((value) => typeof value === "string"
-  ? value.split(",").map((name) => name.trim()).filter(Boolean) : value, z.array(z.enum(STAGE_NAMES)).default([]));
+  ? value.split(",").map((name) => name.trim()).filter(Boolean) : value, z.array(z.enum([...STAGE_NAMES, ...TO_BE_SUBSTAGES])).default([]));
 const schema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
   DATABASE_URL: z.url({ protocol: /^postgres(ql)?$/ }),
@@ -41,6 +44,8 @@ const schema = z.object({
   AI_STAGE_BUDGET_SECONDS: seconds(300, 60, 1800),
   AI_CALL_TIMEOUT_SECONDS: seconds(120, 30, 1500),
   AI_DESIGN_CALL_TIMEOUT_SECONDS: seconds(240, 30, 1500),
+  // To-Be step calls in flight at once within one design stage (whole number, not seconds). Held under the stage's single AI_MAX_CONCURRENCY permit.
+  AI_DESIGN_PARALLELISM: seconds(4, 1, 16),
   // Stages run with model reasoning off (DeepInfra only; `thinking: {type: "disabled"}`). Empty = every stage keeps default reasoning.
   AI_NO_THINKING_STAGES: stageList,
   AI_FAULT_INJECTION: z.string().regex(
