@@ -277,7 +277,7 @@ describe("outline validation and repair", () => {
   it("fails with AI_INVALID_OUTPUT, before any step call, when the outline is still invalid", async () => {
     const wrong = { ...split.outline, conflictDecisions: [{ conflictId: "CON-1", decisionId: "FAKE-APPROVAL" }] };
     const h = harness({ outline: () => wrong });
-    await expect(h.run()).rejects.toMatchObject({ code: "AI_INVALID_OUTPUT", metrics: { attempts: 2 } });
+    await expect(h.run()).rejects.toMatchObject({ code: "AI_INVALID_OUTPUT", metrics: { attempts: 3 } }); // first answer plus AI_TO_BE_OUTLINE_REPAIRS=2
     expect(h.stepCalls).toHaveLength(0);
   });
   it("checks catalog-only reference ids and the fit ladder on the outline", async () => {
@@ -474,9 +474,9 @@ describe("output ceilings and truncation", () => {
   it("reports a max_tokens outline as OUTPUT_TRUNCATED and asks the repair for a shorter answer, without echoing the cut text", async () => {
     const h = harness({ outline: () => cut("submit_to_be_outline") });
     const error = await h.run().then(() => null, e => e);
-    expect(error).toMatchObject({ code: "AI_INVALID_OUTPUT", metrics: { attempts: 2, stopReasons: ["max_tokens", "max_tokens"] } });
-    expect(error.metrics.attemptIssues).toEqual([[{ path: "to_be_outline", code: "OUTPUT_TRUNCATED" }], [{ path: "to_be_outline", code: "OUTPUT_TRUNCATED" }]]);
-    expect(error.metrics.substages.to_be_outline.calls).toBe(2);
+    expect(error).toMatchObject({ code: "AI_INVALID_OUTPUT", metrics: { attempts: 3, stopReasons: ["max_tokens", "max_tokens", "max_tokens"] } });
+    expect(error.metrics.attemptIssues).toEqual(Array(3).fill([{ path: "to_be_outline", code: "OUTPUT_TRUNCATED" }]));
+    expect(error.metrics.substages.to_be_outline.calls).toBe(3);
     const first = h.outlineCalls[0]!.messages[0]!.content, repair = h.outlineCalls[1]!.messages[0]!.content;
     expect(first).not.toContain("repairNote");
     expect(repair).toContain("OUTPUT_TRUNCATED"); expect(repair).toContain("cut off"); expect(repair).toContain("more concisely");
@@ -529,9 +529,9 @@ describe("model slips in tool inputs", () => {
     const eval_ = harness({ outline: () => bad });
     const failed = await createStageRunner(settings(), { fetch: eval_.fetch, captureRaw: true })("to_be", fixture()).then(() => null, e => e);
     expect(failed.code).toBe("AI_INVALID_OUTPUT");
-    expect(failed.metrics.rawFailures).toHaveLength(2);
+    expect(failed.metrics.rawFailures).toHaveLength(3);
     expect(failed.metrics.rawFailures[0]).toMatchObject({ substage: "to_be_outline", key: "outline", attempt: 1, truncated: true });
-    expect(failed.metrics.rawFailures[0].json.length).toBe(20000); expect(failed.metrics.rawFailures[1].attempt).toBe(2);
+    expect(failed.metrics.rawFailures[0].json.length).toBe(20000); expect(failed.metrics.rawFailures[1].attempt).toBe(2); expect(failed.metrics.rawFailures[2].attempt).toBe(3);
     const prod = harness({ outline: () => bad });
     const failedProd = await prod.run().then(() => null, e => e);
     expect(failedProd.metrics.rawFailures).toBeUndefined();

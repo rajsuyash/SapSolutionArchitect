@@ -52,6 +52,8 @@ const schema = z.object({
   AI_DESIGN_CALL_TIMEOUT_SECONDS: seconds(240, 30, 1500),
   // To-Be step calls in flight at once within one design stage (whole number, not seconds). Held under the stage's single AI_MAX_CONCURRENCY permit.
   AI_DESIGN_PARALLELISM: seconds(4, 1, 16),
+  // Outline repair calls after the first outline answer (0-2). The second repair only runs while more than half of AI_STAGE_BUDGET_SECONDS remains.
+  AI_TO_BE_OUTLINE_REPAIRS: whole(2, 0, 2),
   // Output-token ceilings (max_tokens) of the three To-Be request kinds. Reasoning tokens count against them, so a model that
   // thinks needs room above the visible JSON (outline ~3k, step ~3k, register group ~3.5k tokens without reasoning).
   AI_TO_BE_OUTLINE_MAX_TOKENS: whole(16000, 1000, 64000),

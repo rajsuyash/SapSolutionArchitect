@@ -49,7 +49,7 @@ export class AIStageError extends Error {
   }
 }
 type Config = Pick<Environment, "NODE_ENV" | "AI_PROVIDER" | "ANTHROPIC_API_KEY" | "DEEPINFRA_API_KEY" | "OPENROUTER_API_KEY" | "AI_REASONING_EFFORT" | "AI_MODEL" | "AI_MODEL_DESIGN" | "AI_MAX_INPUT_TOKENS" | "AI_MAX_CONCURRENCY" | "AI_CHAT_CONCURRENCY" | "AI_FAULT_INJECTION"
-  | "AI_NO_THINKING_STAGES" | "AI_STAGE_BUDGET_SECONDS" | "AI_CALL_TIMEOUT_SECONDS" | "AI_DESIGN_CALL_TIMEOUT_SECONDS" | "AI_DESIGN_PARALLELISM" | "AI_TO_BE_OUTLINE_MAX_TOKENS" | "AI_TO_BE_STEP_MAX_TOKENS" | "AI_TO_BE_REGISTERS_MAX_TOKENS">;
+  | "AI_NO_THINKING_STAGES" | "AI_STAGE_BUDGET_SECONDS" | "AI_CALL_TIMEOUT_SECONDS" | "AI_DESIGN_CALL_TIMEOUT_SECONDS" | "AI_DESIGN_PARALLELISM" | "AI_TO_BE_OUTLINE_REPAIRS" | "AI_TO_BE_OUTLINE_MAX_TOKENS" | "AI_TO_BE_STEP_MAX_TOKENS" | "AI_TO_BE_REGISTERS_MAX_TOKENS">;
 const SDK_TIMEOUT_MARGIN_MS = 5000;
 /** OpenRouter has no count_tokens endpoint: input size is estimated locally. 3.5 chars/token is deliberately below the ~4 of English prose
  * (JSON, SAP codes and non-English text tokenize worse), so the AI_MAX_INPUT_TOKENS guard errs towards refusing. Not a measured count. */
@@ -320,6 +320,8 @@ export function createStageRunner(config: Config, options: Options = {}) {
         const design = designInput;
         const payload = await runDesign(design, designReferences, {
           parallelism: config.AI_DESIGN_PARALLELISM,
+          maxOutlineRepairs: config.AI_TO_BE_OUTLINE_REPAIRS,
+          remainingBudget: () => Math.max(0, 1 - (Date.now() - started) / stageBudget),
           invalid: () => fail("AI_INVALID_OUTPUT"),
           record: (issues) => { metrics.validationErrors.push(...issues); metrics.attemptIssues!.push(issues); },
           warn: (issues) => { metrics.warnings = [...(metrics.warnings ?? []), ...issues]; },

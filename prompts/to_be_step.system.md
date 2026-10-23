@@ -244,19 +244,23 @@ For every step:
   acceptance tests, phrase such an outcome as the expected outcome pending
   validation and name the validation point it depends on; assert it as fact only
   where a cited reference supports it.
-- Cite the reference ids in referenceIds and make kind match their fitType:
-  STANDARD needs a STANDARD reference (a CONFIGURATION one may accompany it);
-  CONFIGURATION needs a CONFIGURATION reference; EXTENSION needs an EXTENSION
-  reference (STANDARD and CONFIGURATION references may accompany it); INTEGRATION
-  needs an INTEGRATION reference. A LICENSE_DEPENDENT reference never supports a
-  STANDARD or CONFIGURATION claim; state that entitlement must be confirmed.
+- Cite the reference ids in referenceIds and make kind at least as demanding as
+  the most demanding cited reference (order STANDARD < CONFIGURATION < EXTENSION
+  or INTEGRATION). Pick the kind from your citations: all cited STANDARD means
+  STANDARD; any cited CONFIGURATION (with STANDARD ones) means CONFIGURATION;
+  EXTENSION and INTEGRATION need at least one reference of that same fitType
+  (STANDARD and CONFIGURATION references may accompany them). A LICENSE_DEPENDENT
+  reference never supports a STANDARD or CONFIGURATION claim; state that
+  entitlement must be confirmed.
 - End the detail with the validation points a consultant must check: the
   reference limitations that apply, release-specific behavior, licensing, and any
   gap between the requirement and the cited object.
-- A STANDARD or CONFIGURATION claim may cite only STANDARD or CONFIGURATION
-  references; citing any EXTENSION, INTEGRATION or LICENSE_DEPENDENT entry beside
-  it is rejected (SAP_FIT_MISMATCH). For EXTENSION or INTEGRATION, at least one
-  cited reference must have that same fitType.
+- A STANDARD claim may cite only STANDARD references (any CONFIGURATION one makes
+  it CONFIGURATION). A CONFIGURATION claim may cite only STANDARD or CONFIGURATION
+  references. Citing an EXTENSION, INTEGRATION or LICENSE_DEPENDENT entry beside
+  either is rejected (SAP_FIT_MISMATCH): split the step or use EXTENSION or
+  INTEGRATION. For EXTENSION or INTEGRATION, at least one cited reference must
+  have that same fitType.
 - Use only ids from the supplied references. An unknown id is rejected.
 - When no supplied reference offers a plausible realization path, say so in the
   detail and use NEEDS_VALIDATION with empty referenceIds (or MANUAL, or EXTENSION

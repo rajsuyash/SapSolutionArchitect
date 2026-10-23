@@ -205,7 +205,7 @@ describe("trusted SAP reference applicability", () => {
   }
 
   it("accepts a step citing a verified, release-matching reference with consistent fit", () => {
-    for (const [kind, ids] of [["STANDARD", ["REF-STD"]], ["STANDARD", ["REF-STD", "REF-CFG"]], ["CONFIGURATION", ["REF-CFG"]],
+    for (const [kind, ids] of [["STANDARD", ["REF-STD"]], ["CONFIGURATION", ["REF-STD"]], ["CONFIGURATION", ["REF-CFG"]],
       ["CONFIGURATION", ["REF-STD", "REF-CFG"]], ["EXTENSION", ["REF-STD", "REF-EXT"]], ["INTEGRATION", ["REF-INT"]]] as const) {
       const result = setup(kind, [...ids]);
       expect(result.stepErrors, `${kind} ${ids}`).toEqual([]);
@@ -219,7 +219,10 @@ describe("trusted SAP reference applicability", () => {
     expect(setup("STANDARD", ["REF-EXT"]).stepErrors).toContain("SAP_FIT_MISMATCH");
     expect(setup("STANDARD", ["REF-LIC"]).stepErrors).toContain("SAP_FIT_MISMATCH");
     expect(setup("STANDARD", ["REF-STD", "REF-EXT"]).stepErrors).toContain("SAP_FIT_MISMATCH");
-    expect(setup("CONFIGURATION", ["REF-STD"]).stepErrors).toContain("SAP_FIT_MISMATCH");
+    expect(setup("STANDARD", ["REF-STD", "REF-CFG"]).stepErrors).toContain("SAP_FIT_MISMATCH");
+    expect(setup("STANDARD", ["REF-CFG"]).stepErrors).toContain("SAP_FIT_MISMATCH");
+    expect(setup("CONFIGURATION", ["REF-STD", "REF-INT"]).stepErrors).toContain("SAP_FIT_MISMATCH");
+    expect(setup("CONFIGURATION", ["REF-CFG", "REF-LIC"]).stepErrors).toContain("SAP_FIT_MISMATCH");
     expect(setup("EXTENSION", ["REF-STD"]).stepErrors).toContain("SAP_FIT_MISMATCH");
   });
   it("rejects a release or product mismatch and an unverified entry", () => {

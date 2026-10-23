@@ -215,9 +215,9 @@ export function evaluateDesign(input: unknown, value: unknown): DesignEvaluation
     if (cited.some(reference => reference.fitType === "LICENSE_DEPENDENT")) block("LICENSE_ENTITLEMENT_UNCONFIRMED", `${path}.implementation`);
     if (implementation.kind === "STANDARD" || implementation.kind === "CONFIGURATION") {
       if (!applicable) error("SAP_APPLICABILITY_UNVERIFIED", `${path}.implementation`);
-      // Standard/configuration may be realized by either, never by an extension or license-gated entry.
-      else if (cited.some(reference => reference.fitType !== "STANDARD" && reference.fitType !== "CONFIGURATION") ||
-          !cited.some(reference => reference.fitType === implementation.kind)) fitMismatch();
+      // The kind must be at least as demanding as the most demanding cited reference (STANDARD < CONFIGURATION < the rest).
+      // A CONFIGURATION claim over STANDARD references is conservative and accepted; a STANDARD claim may cite only STANDARD.
+      else if (cited.some(reference => reference.fitType !== "STANDARD" && !(implementation.kind === "CONFIGURATION" && reference.fitType === "CONFIGURATION"))) fitMismatch();
     } else if (implementation.kind === "EXTENSION" || implementation.kind === "INTEGRATION") {
       if (!cited.length) block("SAP_REFERENCE_MISSING", `${path}.implementation`);
       else if (!applicable) error("SAP_APPLICABILITY_UNVERIFIED", `${path}.implementation`);

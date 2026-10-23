@@ -87,8 +87,8 @@ describe("detailed generation protocol", () => {
     if (kind === "unverified SAP") wrong.steps[0]!.implementation = { kind: "STANDARD", detail: "Claimed standard", referenceIds: [] };
     const h = harness(() => response(wrong, kind === "truncated" ? "max_tokens" : kind === "no tool" ? "end_turn" : "tool_use",
       kind === "wrong tool" ? "other_tool" : "submit_to_be"));
-    await expect(h.generate(fixture())).rejects.toMatchObject({ code: "AI_INVALID_OUTPUT", metrics: { attempts: 2 } });
-    expect(h.sent).toHaveLength(2);
+    await expect(h.generate(fixture())).rejects.toMatchObject({ code: "AI_INVALID_OUTPUT", metrics: { attempts: 3 } });
+    expect(h.sent).toHaveLength(3); // first answer plus two outline repairs
   });
   it.each([1, 2])("rejects oversized complete request on attempt %i without truncation", async overflowAt => {
     const h = harness(() => response({}), attempt => attempt === overflowAt ? 60001 : 1000);
@@ -215,7 +215,7 @@ describe("trusted SAP references in generation", () => {
       await mkdir(join(other, "s4hana-2023"), { recursive: true });
       await writeFile(join(other, "s4hana-2023", "reference-catalog.json"), JSON.stringify(extension));
       const h = harness(() => response(designCiting("STANDARD")), () => 1000, other);
-      await expect(h.generate(withRelease())).rejects.toMatchObject({ code: "AI_INVALID_OUTPUT", metrics: { attempts: 2 } });
+      await expect(h.generate(withRelease())).rejects.toMatchObject({ code: "AI_INVALID_OUTPUT", metrics: { attempts: 3 } });
       expect(h.sent[1]!.messages[0]!.content).toContain("SAP_FIT_MISMATCH");
     } finally { await rm(other, { recursive: true, force: true }); }
   });

@@ -4,7 +4,7 @@ import { DetailedDesignSchema, IMPLEMENTATION_KINDS, draftIssues, evaluateDesign
   type DesignContext, type DetailedDesign } from "./design-quality";
 import { REGISTER_GROUPS, REGISTER_GROUP_NAMES, RegisterGroupSchemas, groupOf, type RegisterGroup, type RegisterPayloads } from "./design-registers";
 import type { ValidationIssue } from "./problem-analysis";
-import { repairOutlineShape } from "./outline-repair";
+import { repairOutlineShape, restoreFromPrevious } from "./outline-repair";
 import { noCatalogNote } from "../sap-releases";
 import { normalizeToolInput } from "./tool-input-normalizer";
 import { toBeContext, validateToBeOutput, type ToBeInput, type ToBeOutput } from "./to-be";
@@ -56,7 +56,7 @@ const describeIssue = ({ path, code, detail }: ValidationIssue): string => {
 const repairNotes = (errors: readonly ValidationIssue[]) => {
   if (!errors.length) return {};
   const lines = errors.filter(error => error.code !== OUTPUT_TRUNCATED).slice(0, MAX_NOTE_ISSUES).map(describeIssue);
-  const parts = [...(lines.length ? [`Fix exactly these fields of your previous answer: ${lines.join("; ")}.`] : []),
+  const parts = [...(lines.length ? [`Fix exactly these fields of your previous answer: ${lines.join("; ")}. Change only the listed fields; copy every other field exactly from your previous answer.`] : []),
     ...(errors.some(error => error.code === OUTPUT_TRUNCATED) ? [TRUNCATION_NOTE] : [])];
   return parts.length ? { repairNote: parts.join(" ") } : {};
 };
@@ -86,15 +86,18 @@ function skeleton(outline: Outline): DetailedDesign {
     coverage: outline.coverage, conflictDecisions: outline.conflictDecisions, openQuestions: outline.openQuestions };
 }
 
-export function validateOutline(input: ToBeInput, references: DesignContext["references"], raw: unknown):
-  { success: true; outline: Outline; warnings: ValidationIssue[] } | { success: false; errors: ValidationIssue[] } {
+/** `previous` is the shaped payload and issues of the attempt this one repairs; `shaped` is this attempt's payload after the deterministic repairs. */
+export type OutlinePrevious = { value: unknown; issues: readonly ValidationIssue[] };
+export function validateOutline(input: ToBeInput, references: DesignContext["references"], raw: unknown, previous?: OutlinePrevious):
+  { success: true; outline: Outline; warnings: ValidationIssue[]; shaped: unknown } | { success: false; errors: ValidationIssue[]; shaped: unknown } {
   const normalized = normalizeToolInput(OutlineSchema, raw, "outline");
-  const repaired = repairOutlineShape(input.discovery, new Set(references.map(reference => reference.id)), normalized.value);
+  const restored = previous ? restoreFromPrevious(previous, normalized.value) : { value: normalized.value, warnings: [] };
+  const repaired = repairOutlineShape(input.discovery, new Set(references.map(reference => reference.id)), restored.value);
   const parsed = OutlineSchema.safeParse(repaired.value);
-  if (!parsed.success) return { success: false, errors: rePath(draftIssues(parsed.error.issues), "draft", "outline") };
+  if (!parsed.success) return { success: false, errors: rePath(draftIssues(parsed.error.issues), "draft", "outline"), shaped: repaired.value };
   const evaluation = evaluateDesign(toBeContext(input, references), skeleton(parsed.data));
-  if (!evaluation.structurallyValid) return { success: false, errors: rePath(evaluation.errors, "draft", "outline").slice(0, MAX_ERRORS) };
-  return { success: true, outline: parsed.data, warnings: [...normalized.warnings, ...repaired.warnings] };
+  if (!evaluation.structurallyValid) return { success: false, errors: rePath(evaluation.errors, "draft", "outline").slice(0, MAX_ERRORS), shaped: repaired.value };
+  return { success: true, outline: parsed.data, warnings: [...normalized.warnings, ...restored.warnings, ...repaired.warnings], shaped: repaired.value };
 }
 
 /** Join the outline and the step bodies into a DetailedDesign. Parallel step calls cannot coordinate ids, so a business-rule or
@@ -228,21 +231,34 @@ export type DesignDeps = {
   /** Eval only: the raw payload of a call that failed validation, with the call it answered. */
   rawFailure?: (substage: Substage, key: string, payload: unknown) => void;
   parallelism: number;
+  /** Outline repairs allowed (AI_TO_BE_OUTLINE_REPAIRS). Default 2. */
+  maxOutlineRepairs?: number;
+  /** Fraction (0-1) of the stage budget still unspent. Default 1. */
+  remainingBudget?: () => number;
 };
+
+/** The first outline repair is always allowed; each further one only while more than this share of the stage budget remains. */
+export const EXTRA_OUTLINE_REPAIR_MIN_REMAINING = 0.5;
+export const outlineRepairAllowed = (done: number, max: number, remaining: number) =>
+  done < max && (done === 0 || remaining > EXTRA_OUTLINE_REPAIR_MIN_REMAINING);
 
 export async function runDesign(input: ToBeInput, references: DesignContext["references"], deps: DesignDeps): Promise<ToBeOutput> {
   let outlineRepairs = 0;
+  const canRepairOutline = () => outlineRepairAllowed(outlineRepairs, deps.maxOutlineRepairs ?? 2, deps.remainingBudget?.() ?? 1);
+  let lastShaped: unknown;
   const requestOutline = async (errors: ValidationIssue[]) => {
     const raw = await deps.ask("to_be_outline", outlineRequest(input, references, errors));
     const result = raw === TRUNCATED ? { success: false as const, errors: [{ path: "to_be_outline", code: OUTPUT_TRUNCATED }] }
-      : validateOutline(input, references, raw);
+      : validateOutline(input, references, raw, errors.length && lastShaped !== undefined ? { value: lastShaped, issues: errors } : undefined);
+    // A cut-off answer has no shaped payload; the last one stays the reference for the next restore.
+    if ("shaped" in result) lastShaped = result.shaped;
     if (!result.success) { deps.record(result.errors); if (raw !== TRUNCATED) deps.rawFailure?.("to_be_outline", "outline", raw); }
     else if (result.warnings.length) deps.warn?.(result.warnings);
     return result;
   };
-  // The outline gets one repair: errors only, never the model's own text.
+  // The outline gets up to maxOutlineRepairs repairs (the second only while the stage budget is more than half unspent): errors only, never the model's own text.
   let first = await requestOutline([]);
-  if (!first.success) { outlineRepairs++; first = await requestOutline(first.errors); }
+  while (!first.success && canRepairOutline()) { outlineRepairs++; first = await requestOutline(first.errors); }
   if (!first.success) throw deps.invalid();
   let outline = first.outline;
 
@@ -302,7 +318,7 @@ export async function runDesign(input: ToBeInput, references: DesignContext["ref
     for (const stepId of redo) markRetry(stepId);
     for (const group of redoGroups) markRetry(registerKey(group));
     if (global.length) {
-      if (outlineRepairs >= 1) throw deps.invalid();
+      if (!canRepairOutline()) throw deps.invalid();
       outlineRepairs++;
       const repaired = await requestOutline(global);
       if (!repaired.success) throw deps.invalid();

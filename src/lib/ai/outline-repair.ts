@@ -84,3 +84,37 @@ export function repairOutlineShape(input: Pick<ToBeInput["discovery"], "requirem
 
   return { value: { ...raw, steps, coverage: repairedCoverage, openQuestions: questions, eliminatedAsIsSteps: eliminated }, warnings };
 }
+
+/** The outline repair answer is a whole new outline, so a model asked to fix one field can break another that was fine. For a step
+ * (same id) whose list field is unusable now, was usable in the previous attempt and was not named by any issue of that attempt, the
+ * previous value is restored. Only requirementIds, asIsStepIds and implementation.referenceIds; ids copied, never invented. */
+export function restoreFromPrevious(previous: { value: unknown; issues: readonly ValidationIssue[] }, raw: unknown):
+  { value: unknown; warnings: ValidationIssue[] } {
+  const warnings: ValidationIssue[] = [];
+  if (!isObj(previous.value) || !Array.isArray(previous.value.steps) || !isObj(raw) || !Array.isArray(raw.steps)) return { value: raw, warnings };
+  const before = new Map(previous.value.steps.flatMap((step, i) => isObj(step) && typeof step.id === "string" ? [[step.id, { step, i }] as const] : []));
+  const named = (path: string) => previous.issues.some(issue => path === issue.path || path.startsWith(`${issue.path}.`));
+  const usable = (value: unknown) => (strings(value)?.length ?? 0) > 0;
+  const steps = raw.steps.map((step, i) => {
+    const old = isObj(step) && typeof step.id === "string" ? before.get(step.id) : undefined;
+    if (!isObj(step) || !old) return step;
+    let out: Obj = step;
+    const restore = (field: "requirementIds" | "asIsStepIds") => {
+      const path = `outline.steps.${old.i}.${field}`;
+      if (usable(step[field]) || !usable(old.step[field]) || named(path)) return;
+      warn(`outline.steps.${i}.${field}`);
+      out = { ...out, [field]: old.step[field] };
+    };
+    const warn = (path: string) => { warnings.push({ code: "REPAIRED_FROM_PREVIOUS_ATTEMPT", path }); };
+    restore("requirementIds"); restore("asIsStepIds");
+    const now = isObj(step.implementation) ? step.implementation : undefined, was = isObj(old.step.implementation) ? old.step.implementation : undefined;
+    const path = `outline.steps.${old.i}.implementation.referenceIds`;
+    const traced = now && ["STANDARD", "CONFIGURATION", "EXTENSION", "INTEGRATION"].includes(String(now.kind));
+    if (now && was && traced && !usable(now.referenceIds) && usable(was.referenceIds) && !named(path)) {
+      warn(`outline.steps.${i}.implementation.referenceIds`);
+      out = { ...out, implementation: { ...now, referenceIds: was.referenceIds } };
+    }
+    return out;
+  });
+  return warnings.length ? { value: { ...raw, steps }, warnings } : { value: raw, warnings };
+}
