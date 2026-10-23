@@ -1,11 +1,12 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { readFile } from "node:fs/promises";
 import { z } from "zod";
-import { parseEnvironment, STAGE_NAMES, type Environment } from "../env";
+import { parseEnvironment, STAGE_NAMES, TO_BE_SUBSTAGES, type Environment } from "../env";
 import { ProblemAnalysisInputSchema, ProblemAnalysisSchema, redactInput, schemaIssues, validateProblemAnalysis,
   type ProblemAnalysis, type ValidationIssue } from "./problem-analysis";
 import { createProviderClient, logProviderFailure, logStageTimeout, type Provider } from "./provider";
 import { loadToBeReferences, parseToBeInput, type ToBeOutput } from "./to-be";
+import { REGISTER_GROUP_NAMES, RegisterGroupSchemas } from "./design-registers";
 import { OutlineSchema, StepDetailSchema, runDesign, type Substage } from "./to-be-pipeline";
 import { interviewModelView } from "./interview-sentences";
 
@@ -50,6 +51,7 @@ const DESIGN_STAGES: ReadonlySet<Stage> = new Set<Stage>(["to_be"]);
 /** Output ceilings of the two To-Be request kinds (targets: outline under 6k tokens, step under 3k). */
 const OUTLINE_MAX_TOKENS = 8000;
 const STEP_MAX_TOKENS = 6000;
+const REGISTER_MAX_TOKENS = 6000;
 /** issueDetail: eval harness only. Adds the schema's own message (never the received value) to interview_turn issues
  * recorded in metrics; the issues sent back to the model and the production default are unchanged. */
 type Options = { fetch?: typeof fetch; sapCatalogDir?: string; issueDetail?: boolean };
@@ -145,7 +147,7 @@ export function createStageRunner(config: Config, options: Options = {}) {
     const model = isDesign ? config.AI_MODEL_DESIGN ?? config.AI_MODEL : config.AI_MODEL;
     const metrics: StageMetrics = { stage, provider, model, inputTokens: 0, outputTokens: 0,
       latencyMs: 0, attempts: 0, validationErrors: [], attemptIssues: [], stopReasons: [], textFallbacks: 0,
-      thinkingDisabled: noThinking.has(stage) || (stage === "to_be" && noThinking.has("to_be_outline") && noThinking.has("to_be_step")) };
+      thinkingDisabled: noThinking.has(stage) || (stage === "to_be" && TO_BE_SUBSTAGES.every(substage => noThinking.has(substage))) };
     const fail = (code: Code) => new AIStageError(code, metrics);
     const deadline = new AbortController();
     const timer = setTimeout(() => deadline.abort(fail("AI_TIMEOUT")), stageBudget);
@@ -279,13 +281,17 @@ export function createStageRunner(config: Config, options: Options = {}) {
         // The stage holds ONE AI_MAX_CONCURRENCY permit (acquired above) for the whole design; the outline call and the
         // step fan-out run under it and never acquire again, so AI_MAX_CONCURRENCY=1 cannot deadlock. Fan-out width is
         // AI_DESIGN_PARALLELISM, so provider requests in flight can reach AI_MAX_CONCURRENCY x AI_DESIGN_PARALLELISM.
-        const [outlineSystem, stepSystem] = await call(() => Promise.all([
+        const [outlineSystem, stepSystem, registersSystem] = await call(() => Promise.all([
           readFile(new URL("../../../prompts/to_be_outline.system.md", import.meta.url), "utf8"),
           readFile(new URL("../../../prompts/to_be_step.system.md", import.meta.url), "utf8"),
+          readFile(new URL("../../../prompts/to_be_registers.system.md", import.meta.url), "utf8"),
         ]));
+        // The four register groups share one system prompt (a stable prefix) and differ by tool.
         const kinds = {
           to_be_outline: { system: outlineSystem, schema: OutlineSchema, name: "submit_to_be_outline", maxTokens: OUTLINE_MAX_TOKENS },
           to_be_step: { system: stepSystem, schema: StepDetailSchema, name: "submit_to_be_step", maxTokens: STEP_MAX_TOKENS },
+          ...Object.fromEntries(REGISTER_GROUP_NAMES.map(group => [`to_be_registers:${group}`,
+            { system: registersSystem, schema: RegisterGroupSchemas[group], name: `submit_to_be_registers_${group}`, maxTokens: REGISTER_MAX_TOKENS }])),
         } as const;
         const tools = Object.fromEntries(Object.entries(kinds).map(([key, kind]) =>
           [key, { name: kind.name, input_schema: { ...z.toJSONSchema(kind.schema), type: "object" } } satisfies Anthropic.Tool]));
@@ -294,9 +300,10 @@ export function createStageRunner(config: Config, options: Options = {}) {
           parallelism: config.AI_DESIGN_PARALLELISM,
           invalid: () => fail("AI_INVALID_OUTPUT"),
           record: (issues) => { metrics.validationErrors.push(...issues); metrics.attemptIssues!.push(issues); },
-          ask: async (substage, request) => {
-            const kind = kinds[substage];
-            const output = await generate({ system: kind.system, user: JSON.stringify(request), tool: tools[substage]!, maxTokens: kind.maxTokens,
+          ask: async (substage, request, group) => {
+            const key = substage === "to_be_registers" ? `to_be_registers:${group}` : substage;
+            const kind = kinds[key as keyof typeof kinds];
+            const output = await generate({ system: kind.system, user: JSON.stringify(request), tool: tools[key]!, maxTokens: kind.maxTokens,
               guard: true, thinkingOff: noThinking.has(substage) || noThinking.has("to_be"), substage });
             signal.throwIfAborted();
             return output;

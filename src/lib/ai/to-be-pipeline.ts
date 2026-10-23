@@ -1,14 +1,17 @@
 import { z } from "zod";
+import { contextForStep } from "../company-context";
 import { DetailedDesignSchema, IMPLEMENTATION_KINDS, draftIssues, evaluateDesign, id, ids, list, text,
   type DesignContext, type DetailedDesign } from "./design-quality";
+import { REGISTER_GROUPS, REGISTER_GROUP_NAMES, RegisterGroupSchemas, groupOf, type RegisterGroup, type RegisterPayloads } from "./design-registers";
 import type { ValidationIssue } from "./problem-analysis";
 import { toBeContext, validateToBeOutput, type ToBeInput, type ToBeOutput } from "./to-be";
 
 /** Skeleton-then-expansion To-Be generation. A slow model cannot emit a whole design inside the stage budget, so the model
  * first returns an outline (steps, traceability, coverage, questions), then one small call per step fills in the operational
- * detail, in parallel. The assembled result is a plain DetailedDesign, validated by the same checks as a one-shot design. */
+ * detail, and four register calls (decisions, fit-gap, foundation, integration) add the solution-design registers, all in parallel.
+ * The assembled result is a schemaVersion 2 DetailedDesign, validated by the same checks as a one-shot design. */
 
-export type Substage = "to_be_outline" | "to_be_step";
+export type Substage = "to_be_outline" | "to_be_step" | "to_be_registers";
 
 export const OutlineSchema = z.strictObject({
   schemaVersion: z.literal(1), processName: text,
@@ -67,14 +70,16 @@ export function validateOutline(input: ToBeInput, references: DesignContext["ref
 
 /** Join the outline and the step bodies into a DetailedDesign. Parallel step calls cannot coordinate ids, so a business-rule or
  * test id already taken elsewhere is prefixed with its step id; a collision that cannot be fixed that way stays and fails validation. */
-export function assemble(outline: Outline, details: ReadonlyMap<string, StepDetail>): DetailedDesign {
+export function assemble(outline: Outline, details: ReadonlyMap<string, StepDetail>, registers?: ReadonlyMap<RegisterGroup, unknown>): DetailedDesign {
   const taken = new Set([...outline.steps.map(step => step.id), ...outline.openQuestions.map(question => question.id)]);
   const unique = (stepId: string, local: string) => {
     const candidate = taken.has(local) && `${stepId}-${local}`.length <= MAX_ID_LENGTH ? `${stepId}-${local}` : local;
     taken.add(candidate); return candidate;
   };
+  const merged = registers && REGISTER_GROUP_NAMES.every(group => registers.has(group))
+    ? Object.assign({}, ...REGISTER_GROUP_NAMES.map(group => registers.get(group))) as Partial<DetailedDesign> : undefined;
   return {
-    schemaVersion: 1, processName: outline.processName,
+    schemaVersion: merged ? 2 : 1, processName: outline.processName, ...merged,
     steps: outline.steps.map(step => {
       const { implementation, businessRules, acceptanceTests, ...rest } = details.get(step.id)!;
       return {
@@ -90,10 +95,10 @@ export function assemble(outline: Outline, details: ReadonlyMap<string, StepDeta
   };
 }
 
-/** Split whole-design errors into those a single step call can fix and those that need the outline. */
+/** Split whole-design errors into those a single step call or register call can fix and those that need the outline. */
 export function attributeErrors(errors: ValidationIssue[], design: DetailedDesign):
-  { byStep: Map<string, ValidationIssue[]>; global: ValidationIssue[] } {
-  const byStep = new Map<string, ValidationIssue[]>(), global: ValidationIssue[] = [];
+  { byStep: Map<string, ValidationIssue[]>; byGroup: Map<RegisterGroup, ValidationIssue[]>; global: ValidationIssue[] } {
+  const byStep = new Map<string, ValidationIssue[]>(), byGroup = new Map<RegisterGroup, ValidationIssue[]>(), global: ValidationIssue[] = [];
   const add = (index: number, issue: ValidationIssue) => {
     const stepId = design.steps[index]!.id;
     byStep.set(stepId, [...(byStep.get(stepId) ?? []), issue]);
@@ -101,7 +106,9 @@ export function attributeErrors(errors: ValidationIssue[], design: DetailedDesig
   for (const error of errors) {
     const step = /^draft\.steps\.(\d+)(?:\.|$)/.exec(error.path);
     const item = /^draft\.coverage\.(\d+)$/.exec(error.path);
-    if (step && design.steps[Number(step[1])]) add(Number(step[1]), error);
+    const group = groupOf(/^draft\.([A-Za-z]+)(?:\.|$)/.exec(error.path)?.[1] ?? "");
+    if (group) byGroup.set(group, [...(byGroup.get(group) ?? []), error]);
+    else if (step && design.steps[Number(step[1])]) add(Number(step[1]), error);
     else if (item && error.code === "CRITICAL_REQUIREMENT_UNTESTED" && design.coverage[Number(item[1])]) {
       const requirementId = design.coverage[Number(item[1])]!.requirementId;
       design.steps.forEach((candidate, i) => {
@@ -112,7 +119,7 @@ export function attributeErrors(errors: ValidationIssue[], design: DetailedDesig
       if (!design.steps.some(candidate => candidate.requirementIds.includes(requirementId))) global.push(error);
     } else global.push(error);
   }
-  return { byStep, global };
+  return { byStep, byGroup, global };
 }
 
 /** Per-step model input: the frozen outline plus only this step's requirements, the sources they quote, the references it cites. */
@@ -125,6 +132,7 @@ export function stepRequest(input: ToBeInput, references: DesignContext["referen
     targetProduct: input.targetProduct, targetRelease: discovery.targetRelease, variantName: discovery.variantName,
     ...(input.sharedRules && { sharedRules: input.sharedRules }),
     ...(input.decisionRegister && { decisionRegister: input.decisionRegister }),
+    ...(contextForStep(discovery.companyContext).length && { companyContext: contextForStep(discovery.companyContext) }),
     outline: { processName: outline.processName, steps: outline.steps,
       coverage: outline.coverage.filter(item => step.requirementIds.includes(item.requirementId)),
       conflictDecisions: outline.conflictDecisions, openQuestions: outline.openQuestions },
@@ -136,6 +144,21 @@ export function stepRequest(input: ToBeInput, references: DesignContext["referen
     inputOpenQuestions: discovery.openQuestions,
     references: references.filter(reference => step.implementation.referenceIds.includes(reference.id)),
     approvedDecisions: [], validationErrors,
+  };
+}
+
+/** Per-group register input: the frozen outline, every answered company-context field, all requirements and the catalog's
+ * objects. No source text, no evidence quotes, no step bodies (the step calls run in parallel and are not available yet). */
+export function registerRequest(input: ToBeInput, references: DesignContext["references"], outline: Outline, group: RegisterGroup, validationErrors: ValidationIssue[]) {
+  const { discovery } = input;
+  return {
+    group, registerKeys: REGISTER_GROUPS[group],
+    targetProduct: input.targetProduct, targetRelease: discovery.targetRelease, variantName: discovery.variantName,
+    companyContext: (discovery.companyContext ?? []).map(({ fieldId, label, value }) => ({ fieldId, label, value })),
+    outline: { processName: outline.processName, steps: outline.steps, coverage: outline.coverage, openQuestions: outline.openQuestions },
+    requirements: discovery.requirements.map(r => ({ id: r.id, asIsStepId: r.asIsStepId, critical: r.critical, kind: r.kind, statement: r.statement })),
+    references: references.map(({ id, fitType, capability, objects }) => ({ id, fitType, capability, objects })),
+    inputOpenQuestions: discovery.openQuestions, validationErrors,
   };
 }
 
@@ -153,7 +176,7 @@ export async function runPool<T>(items: readonly T[], limit: number, worker: (it
 
 export type DesignDeps = {
   /** One model call; resolves to the tool payload, or null when the provider did not return exactly one complete tool call. */
-  ask: (substage: Substage, user: unknown) => Promise<unknown>;
+  ask: (substage: Substage, user: unknown, group?: RegisterGroup) => Promise<unknown>;
   /** The error to throw for AI_INVALID_OUTPUT. */
   invalid: () => Error;
   /** Record the issues of one failed attempt in the stage metrics. */
@@ -175,10 +198,15 @@ export async function runDesign(input: ToBeInput, references: DesignContext["ref
   if (!first.success) throw deps.invalid();
   let outline = first.outline;
 
-  const details = new Map<string, StepDetail>(), retries = new Map<string, number>();
-  const expand = async (stepIds: readonly string[], errors: ReadonlyMap<string, ValidationIssue[]>) => {
+  const details = new Map<string, StepDetail>(), registers = new Map<RegisterGroup, unknown>(), retries = new Map<string, number>();
+  const registerKey = (group: RegisterGroup) => `register:${group}`;
+  // One re-request per call in total, whether the first answer failed its schema or the assembled design's checks.
+  const markRetry = (key: string) => { if ((retries.get(key) ?? 0) >= 1) throw deps.invalid(); retries.set(key, 1); };
+
+  /** Steps and register groups are independent calls over the frozen outline, so they share one bounded pool. */
+  const expand = async (stepIds: readonly string[], groups: readonly RegisterGroup[], errors: ReadonlyMap<string, ValidationIssue[]>) => {
     const current = outline;
-    await runPool(stepIds, deps.parallelism, async stepId => {
+    const expandStep = async (stepId: string) => {
       const index = current.steps.findIndex(step => step.id === stepId);
       let validationErrors = errors.get(stepId) ?? [];
       for (;;) {
@@ -188,39 +216,52 @@ export async function runDesign(input: ToBeInput, references: DesignContext["ref
         validationErrors = raw === null ? [{ path: `draft.steps.${index}`, code: "NO_TOOL_PAYLOAD" }]
           : rePath(draftIssues(parsed.error.issues), "draft", `draft.steps.${index}`);
         deps.record(validationErrors);
-        // One re-request per step in total, whether the first answer failed the schema or the assembled design's checks.
-        if ((retries.get(stepId) ?? 0) >= 1) throw deps.invalid();
-        retries.set(stepId, 1);
+        markRetry(stepId);
       }
-    });
+    };
+    const expandGroup = async (group: RegisterGroup) => {
+      let validationErrors = errors.get(registerKey(group)) ?? [];
+      for (;;) {
+        const raw = await deps.ask("to_be_registers", registerRequest(input, references, current, group, validationErrors), group);
+        const parsed = RegisterGroupSchemas[group].safeParse(raw);
+        if (parsed.success) { registers.set(group, parsed.data satisfies RegisterPayloads[RegisterGroup]); return; }
+        validationErrors = raw === null ? [{ path: "draft", code: "NO_TOOL_PAYLOAD" }] : draftIssues(parsed.error.issues);
+        deps.record(validationErrors);
+        markRetry(registerKey(group));
+      }
+    };
+    await runPool([...groups.map(group => () => expandGroup(group)), ...stepIds.map(stepId => () => expandStep(stepId))],
+      deps.parallelism, task => task());
   };
 
-  await expand(outline.steps.map(step => step.id), new Map());
+  await expand(outline.steps.map(step => step.id), REGISTER_GROUP_NAMES, new Map());
   for (let round = 0; ; round++) {
-    const design = assemble(outline, details);
+    const design = assemble(outline, details, registers);
     const result = validateToBeOutput(input, design, references);
     if (result.success) return result.data;
     deps.record(result.errors);
     if (round >= 1) throw deps.invalid();
-    const { byStep, global } = attributeErrors(result.errors, design);
-    const redo = new Set(byStep.keys());
-    for (const stepId of redo) {
-      if ((retries.get(stepId) ?? 0) >= 1) throw deps.invalid();
-      retries.set(stepId, 1);
-    }
+    const { byStep, byGroup, global } = attributeErrors(result.errors, design);
+    const redo = new Set(byStep.keys()), redoGroups = new Set(byGroup.keys());
+    for (const stepId of redo) markRetry(stepId);
+    for (const group of redoGroups) markRetry(registerKey(group));
     if (global.length) {
       if (outlineRepairs >= 1) throw deps.invalid();
       outlineRepairs++;
       const repaired = await requestOutline(global);
       if (!repaired.success) throw deps.invalid();
       // Frozen means unchanged steps keep their expansion; a step whose outline entry changed (or is new) is expanded again.
+      // The registers were written against the old outline, so they are all written again.
       const before = new Map(outline.steps.map(step => [step.id, JSON.stringify(step)]));
       outline = repaired.outline;
       for (const step of outline.steps) {
         if (before.get(step.id) !== JSON.stringify(step)) { details.delete(step.id); retries.delete(step.id); redo.add(step.id); }
       }
       for (const stepId of [...details.keys()]) if (!outline.steps.some(step => step.id === stepId)) details.delete(stepId);
+      registers.clear();
+      for (const group of REGISTER_GROUP_NAMES) { retries.delete(registerKey(group)); redoGroups.add(group); }
     }
-    await expand([...redo].filter(stepId => outline.steps.some(step => step.id === stepId)), byStep);
+    await expand([...redo].filter(stepId => outline.steps.some(step => step.id === stepId)), [...redoGroups],
+      new Map([...byStep, ...[...byGroup].map(([group, issues]) => [registerKey(group), issues] as const)]));
   }
 }

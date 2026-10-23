@@ -16,9 +16,9 @@ const modelPrices = z.preprocess((value) => {
 }, z.record(z.string().trim().min(1), z.tuple([z.number().positive().max(1000), z.number().positive().max(1000)])).default({}));
 /** The AI stages the runner knows; runStage derives its Stage type from this list. */
 export const STAGE_NAMES = ["problem_analysis", "to_be", "interview_turn", "extraction_turn"] as const;
-/** The To-Be stage runs as an outline call plus one call per step; each can have reasoning switched off on its own
+/** The To-Be stage runs as an outline call, one call per step and four register calls; each kind can have reasoning switched off on its own
  * ("to_be" covers both). They are request kinds inside one stage, so they are not in STAGE_NAMES. */
-export const TO_BE_SUBSTAGES = ["to_be_outline", "to_be_step"] as const;
+export const TO_BE_SUBSTAGES = ["to_be_outline", "to_be_step", "to_be_registers"] as const;
 // Comma-separated stage or To-Be substage names; blank or unset means none. Unknown names are rejected.
 const stageList = z.preprocess((value) => typeof value === "string"
   ? value.split(",").map((name) => name.trim()).filter(Boolean) : value, z.array(z.enum([...STAGE_NAMES, ...TO_BE_SUBSTAGES])).default([]));

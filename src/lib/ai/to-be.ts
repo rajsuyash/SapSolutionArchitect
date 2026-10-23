@@ -53,6 +53,7 @@ export function toBeContext(input: ToBeInput, references: DesignContext["referen
     // No approved-decision workflow exists yet; source notes and sharedRules/decisionRegister
     // cannot confer approval. References are trusted only via the curated catalog.
     approvedDecisions: [], references,
+    ...(discovery.companyContext && { companyContext: discovery.companyContext.map(({ fieldId, value }) => ({ fieldId, value })) }),
     ...(input.decisionRegister && { decisionRegister: input.decisionRegister.map(({ id }) => ({ id })) }),
   };
 }

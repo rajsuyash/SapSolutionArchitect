@@ -2,6 +2,8 @@
  * outline and per-step payloads the model is asked for, and route a fake provider's answer by requested tool. */
 import type { DetailedDesign } from "../../src/lib/ai/design-quality";
 import type { StepDetail } from "../../src/lib/ai/to-be-pipeline";
+import { rentalRegisterGroups } from "../../fixtures/ai/to-be/rental-registers";
+import type { RegisterGroup } from "../../src/lib/ai/design-registers";
 
 export type RequestBody = { model: string; system: string; messages: { content: string }[];
   tools: { name: string; input_schema: unknown }[]; tool_choice: unknown; thinking?: unknown };
@@ -23,8 +25,9 @@ export function splitDesign(design: DetailedDesign) {
   return { outline, details };
 }
 
-/** Which of the three tools a request asked the model to call. */
-export const toolOf = (body: RequestBody) => body.tools[0]!.name as "submit_to_be_outline" | "submit_to_be_step" | "submit_to_be";
+/** Which tool a request asked the model to call (a register call names its group in the tool). */
+export const toolOf = (body: RequestBody) => body.tools[0]!.name as "submit_to_be_outline" | "submit_to_be_step" | "submit_to_be" | `submit_to_be_registers_${RegisterGroup}`;
+export const registerGroupOf = (body: RequestBody) => (toolOf(body).startsWith("submit_to_be_registers_") ? toolOf(body).slice("submit_to_be_registers_".length) : undefined) as RegisterGroup | undefined;
 /** The step id a submit_to_be_step request is about (read from the request payload, never from the model). */
 export const stepIdOf = (body: RequestBody) => (JSON.parse(body.messages[0]!.content) as { step: { id: string } }).step.id;
 
@@ -40,6 +43,9 @@ export function toolResponse(output: unknown, name: string, stop = "tool_use", u
 export async function routeLegacyReply(reply: Response | Promise<Response>, body: RequestBody): Promise<Response> {
   const res = await reply;
   const name = toolOf(body);
+  const group = registerGroupOf(body);
+  // Register calls are not part of the legacy one-shot protocol: they always get the valid fixture registers.
+  if (group) return toolResponse(rentalRegisterGroups[group], name);
   if (name === "submit_to_be" || res.status !== 200) return res;
   const message = await res.clone().json() as { content: { type: string; name?: string; input?: unknown }[]; stop_reason: string; usage: { input_tokens: number; output_tokens: number } };
   const block = message.content[0];

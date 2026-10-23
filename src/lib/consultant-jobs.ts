@@ -35,7 +35,7 @@ const substageMetrics = z.strictObject({ calls: z.number().int().nonnegative(), 
 const metricsSchema = z.object({ stage: z.enum(["interview_turn", "extraction_turn", "to_be"]), provider: z.enum(["stub", "anthropic", "deepinfra"]),
   model: z.string().max(160), inputTokens: z.number().int().nonnegative(), outputTokens: z.number().int().nonnegative(),
   latencyMs: z.number().nonnegative(), attempts: z.number().int().nonnegative(), thinkingDisabled: z.boolean().optional(),
-  substages: z.strictObject({ to_be_outline: substageMetrics.optional(), to_be_step: substageMetrics.optional() }).optional(),
+  substages: z.strictObject({ to_be_outline: substageMetrics.optional(), to_be_step: substageMetrics.optional(), to_be_registers: substageMetrics.optional() }).optional(),
   validationErrors: z.array(z.strictObject({ path: z.string().max(200), code: z.string().max(80), detail: z.string().max(200).optional() })).max(1000) });
 type StoredJob = { id: string; org_id: string; project_id: string; variant_code: string; kind: "INTERVIEW" | "TO_BE";
   input_revision: number; message_id: string | null; snapshot_id: string | null; requested_by: string;

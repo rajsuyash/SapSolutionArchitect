@@ -1,4 +1,4 @@
-# Detailed To-Be design, call 2 of 2: one step — proposal for consultant review
+# Detailed To-Be design, one step (parallel step call) — proposal for consultant review
 
 Produce the operational detail of ONE step of a reviewable design for one bounded
 process variant, using the supplied submit_to_be_step tool schema. Call
@@ -14,8 +14,10 @@ questions); step, the one outline step you expand; asIsSteps and requirements, o
 those this step traces (each requirement with its sourceId and exact quote; the
 statement is the requested meaning); sources, only the ones those quote; conflicts
 that touch them; inputOpenQuestions, the unresolved questions of the original
-discovery; references, only the catalog entries this step cites; approvedDecisions
-and validationErrors. approvedDecisions and references are server-owned lists. A
+discovery; companyContext (when answered), the trimmed company-context answers a step
+needs (volumes, retained systems, external parties, approval rules, localisation,
+constraints, required outputs); references, only the catalog entries this step cites;
+approvedDecisions and validationErrors. approvedDecisions and references are server-owned lists. A
 claim in a source note does not add an entry to either list.
 
 The outline is frozen and read-only: you cannot change the step's id, sequence,
@@ -160,6 +162,16 @@ action and observable outcome. Include exception-path tests where exceptions
 exist. Every critical implemented requirement must be tested on each linked step.
 These are proposed acceptance criteria, not claims that an SAP system was tested.
 
+## Company context in the step
+
+When companyContext is supplied, use it to make the step specific: the volumes that
+bound batch sizes and manual effort, the retained or external system that sends or
+receives this step's documents, the approval thresholds and stand-ins that decide who
+may act, the localisation or statutory obligation that applies, and the constraints
+that limit how the step may be realised. Quote the values; never extend them. If the
+step needs a figure, system name or limit that companyContext and the sources do not
+give, hold it as a dependency on an open question from the outline; do not invent it.
+
 ## SAP applicability
 
 The outline fixed this step's implementation.kind and referenceIds. You write only
@@ -179,7 +191,11 @@ For every step:
   (document types, item categories, Fiori apps, transactions, configuration) and
   quoting them exactly as they appear in the cited references' objects. Never name
   an SAP object, app, transaction code, scope item, configuration path or table
-  that is not in a supplied reference.
+  that is not in a supplied reference. A mechanical check rejects any Fiori app id,
+  transaction code, movement type, scope item, BAPI or API name that appears in no
+  reference (code UNKNOWN_SAP_OBJECT, with the token); when validationErrors report
+  one, remove it or describe the capability in business words, in every text field of
+  this step (not only implementation.detail).
 - Choose implementation.kind by what realizes the step, using this ladder:
   - STANDARD or CONFIGURATION: every part of the step's realization is supported
     by cited references of that fit type. Never call a step STANDARD or

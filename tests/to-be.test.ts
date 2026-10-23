@@ -14,6 +14,7 @@ import { parseEnvironment } from "../src/lib/env";
 import { createStageRunner } from "../src/lib/ai/runStage";
 import { createToBeGenerator, parseToBeInput, toBeContext, validateToBeOutput, type ToBeInput } from "../src/lib/ai/to-be";
 import { rentalDraft } from "../fixtures/ai/to-be/rental-benchmark";
+import { rentalDraftV2 } from "../fixtures/ai/to-be/rental-registers";
 import { asStream } from "./support/sse";
 import { fixture } from "./support/to-be-input";
 import { routeLegacyReply } from "./support/to-be-split";
@@ -31,18 +32,22 @@ function response(output: unknown = rentalDraft, stop = "tool_use", name = "subm
 /** `reply` still answers with a whole design (as the one-shot protocol did); routeLegacyReply turns it into the outline or step payload the
  * pipeline asked for, so each test keeps expressing "the model produced this design". `attempt` counts every generation request. */
 function harness(reply: (attempt: number) => Response | Promise<Response> = () => response(), count: (attempt: number) => number = () => 1000, sapCatalogDir?: string, overrides = {}) {
-  const sent: Body[] = [], counted: Body[] = [];
+  // The four register calls are answered with valid fixture registers and kept out of `sent`/`counted`, which describe the outline and step protocol.
+  const sent: Body[] = [], counted: Body[] = [], registerCalls: Body[] = [];
+  const isRegister = (body: Body) => body.tools[0]!.name.startsWith("submit_to_be_registers_");
   const fetch = vi.fn<typeof globalThis.fetch>(async (url, init) => {
     expect(String(url)).toMatch(/^https:\/\/api\.anthropic\.com\/v1\/messages/);
     const body = JSON.parse(String(init?.body)) as Body;
     if (String(url).includes("count_tokens")) {
+      if (isRegister(body)) return new Response(JSON.stringify({ input_tokens: 1000 }), { headers: { "content-type": "application/json" } });
       counted.push(body);
       return new Response(JSON.stringify({ input_tokens: count(counted.length) }), { headers: { "content-type": "application/json" } });
     }
+    if (isRegister(body)) { registerCalls.push(body); return asStream(routeLegacyReply(response(), body)); }
     sent.push(body); return asStream(routeLegacyReply(reply(sent.length), body));
   });
   const runner = createStageRunner(settings(overrides), { fetch, sapCatalogDir });
-  return { sent, counted, fetch, generate: (input: unknown, signal?: AbortSignal) => runner("to_be", input, signal) };
+  return { sent, counted, registerCalls, fetch, generate: (input: unknown, signal?: AbortSignal) => runner("to_be", input, signal) };
 }
 
 describe("detailed generation protocol", () => {
@@ -57,12 +62,14 @@ describe("detailed generation protocol", () => {
     expect(h.sent[0]!.tools[0]!.name).toBe("submit_to_be_outline");
     expect(h.sent.slice(1).map(body => body.tools[0]!.name)).toEqual(["submit_to_be_step", "submit_to_be_step", "submit_to_be_step"]);
     expect(h.sent[0]!.tool_choice).toEqual({ type: "auto", disable_parallel_tool_use: true });
-    expect(result.payload.design).toEqual(rentalDraft);
+    expect(result.payload.design).toEqual(rentalDraftV2);
     expect(result.payload.unresolvedInputQuestions).toEqual(input.discovery.openQuestions);
     expect(result.payload.evaluation).toMatchObject({ structurallyValid: true, reviewStatus: "BLOCKED",
       blockers: expect.arrayContaining([{ code: "INPUT_QUESTION_UNRESOLVED", path: "input.openQuestions.0" }]) });
     // One outline call plus one call per step (3), each reported as 100 in / 200 out.
-    expect(result.metrics).toMatchObject({ stage: "to_be", attempts: 4, inputTokens: 400, outputTokens: 800 });
+    expect(result.metrics.substages).toMatchObject({ to_be_registers: { calls: 4 } });
+    expect(h.registerCalls.map(body => body.tools[0]!.name).sort()).toEqual(["decisions", "fitgap", "foundation", "integration"].map(group => `submit_to_be_registers_${group}`));
+    expect(result.metrics).toMatchObject({ stage: "to_be", attempts: 8, inputTokens: 800, outputTokens: 1600 });
   });
   it("repairs incomplete coverage once without echoing model prose", async () => {
     const wrong = structuredClone(rentalDraft); wrong.coverage.pop(); wrong.processName = "private-invalid-model-output";
@@ -72,7 +79,7 @@ describe("detailed generation protocol", () => {
     expect(h.sent).toHaveLength(5); expect(h.counted).toHaveLength(5);
     expect(h.sent[1]!.messages[0]!.content).toContain("REQUIREMENT_UNDISPOSITIONED");
     expect(h.sent[1]!.messages[0]!.content).not.toContain("private-invalid-model-output");
-    expect(result.metrics).toMatchObject({ attempts: 5, inputTokens: 500, outputTokens: 1000 });
+    expect(result.metrics).toMatchObject({ attempts: 9, inputTokens: 900, outputTokens: 1800 });
   });
   it.each(["invented approval", "unverified SAP", "truncated", "wrong tool", "no tool"])("rejects %s after bounded repair", async kind => {
     const wrong = structuredClone(rentalDraft);
@@ -120,7 +127,7 @@ describe("detailed generation protocol", () => {
       await vi.advanceTimersByTimeAsync(30000);
       await vi.waitFor(() => expect(h.sent).toHaveLength(4));
       await vi.advanceTimersByTimeAsync(150000);
-      expect((await pending).payload.design).toEqual(rentalDraft);
+      expect((await pending).payload.design).toEqual(rentalDraftV2);
     } finally { vi.useRealTimers(); }
   });
   it.each(["call", "job"])("enforces the %s deadline for detailed generation", async boundary => {

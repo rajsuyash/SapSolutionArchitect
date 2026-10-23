@@ -1,13 +1,11 @@
 import { z } from "zod";
 
-export const text = z.string().trim().min(1).max(8000);
-export const id = z.string().regex(/^[A-Za-z0-9_-]{1,64}$/);
-export const ids = z.array(id).max(200);
-const texts = z.array(text).min(1).max(100);
-export const list = <T extends z.ZodType>(schema: T) => z.array(schema).max(200);
-export const IMPLEMENTATION_KINDS = ["STANDARD", "CONFIGURATION", "EXTENSION", "INTEGRATION", "MANUAL", "NEEDS_VALIDATION"] as const;
+import { FIT_TYPES, id, ids, list, text, texts } from "./design-primitives";
+import { checkRegisters, RegistersShape } from "./design-registers";
+import { lintSapObjects } from "./sap-object-lint";
 
-export const FIT_TYPES = ["STANDARD", "CONFIGURATION", "EXTENSION", "INTEGRATION", "MANUAL", "LICENSE_DEPENDENT"] as const;
+export { id, ids, list, text, FIT_TYPES };
+export const IMPLEMENTATION_KINDS = ["STANDARD", "CONFIGURATION", "EXTENSION", "INTEGRATION", "MANUAL", "NEEDS_VALIDATION"] as const;
 
 /** A reference is trusted only because a server-side curated catalog supplied it. */
 export const TrustedReferenceSchema = z.strictObject({
@@ -35,10 +33,14 @@ export const DesignContextSchema = z.strictObject({
   references: list(TrustedReferenceSchema),
   /** Ids of OPEN decisions supplied as guidance (never approvals). Omitted on the hosted path. */
   decisionRegister: list(z.strictObject({ id })).optional(),
+  /** Answered company-context fields. Registers are checked against what the user actually said. */
+  companyContext: list(z.strictObject({ fieldId: id, value: text })).optional(),
 });
 
+/** Version 1 designs (steps only) stay readable forever; version 2 adds the solution-design registers. evaluateDesign enforces
+ * which version carries which: a version 2 design needs every register, a version 1 design carries none. */
 export const DetailedDesignSchema = z.strictObject({
-  schemaVersion: z.literal(1), processName: text,
+  schemaVersion: z.union([z.literal(1), z.literal(2)]), processName: text, ...RegistersShape,
   steps: list(z.strictObject({
     id, sequence: z.number().int().positive(), title: text,
     asIsStepIds: ids, requirementIds: ids.min(1), actor: text, trigger: text,
@@ -111,6 +113,7 @@ export function evaluateDesign(input: unknown, value: unknown): DesignEvaluation
   if (!parsedInput.success || !parsedDraft.success) return result();
   const context = parsedInput.data;
   const draft = parsedDraft.data;
+  for (const hit of lintSapObjects(draft, context.references)) error("UNKNOWN_SAP_OBJECT", hit.path, `${hit.kind} ${hit.token}`);
   const unique = (values: string[], path: string, code: string) => {
     if (new Set(values).size !== values.length) error(code, path);
   };
@@ -263,6 +266,12 @@ export function evaluateDesign(input: unknown, value: unknown): DesignEvaluation
     if (question.affectedStepIds.some(ref => !steps.has(ref))) error("UNKNOWN_STEP", path);
     block("OPEN_QUESTION", path);
   });
+  checkRegisters(draft, {
+    requirements: new Map(context.requirements.map(item => [item.id, { critical: item.critical }])),
+    stepIds: new Set(steps.keys()), referenceIds: new Set(references.keys()), companyContext: context.companyContext ?? [],
+    takenIds: new Set([...steps.keys(), ...draft.steps.flatMap(step => [...step.businessRules.map(rule => rule.id), ...step.acceptanceTests.map(test => test.id)]),
+      ...draft.openQuestions.map(question => question.id)]),
+  }, error);
   return result();
 }
 
