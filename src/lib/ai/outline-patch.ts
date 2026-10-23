@@ -11,7 +11,9 @@ const isObj = (value: unknown): value is Obj => typeof value === "object" && val
 /** Sections a patch can carry and the key that identifies an item in each. */
 export const PATCH_KEYS = { steps: "id", coverage: "requirementId", openQuestions: "id", eliminatedAsIsSteps: "asIsStepId" } as const;
 export type PatchSection = keyof typeof PATCH_KEYS;
-export type OutlinePatch = Partial<Record<PatchSection, Obj[]>>;
+/** Items a patch deletes, by the same keys. Without this a wrong extra row or step could only be replaced, never removed. */
+export const REMOVE_KEYS = { coverageRequirementIds: "coverage", stepIds: "steps", openQuestionIds: "openQuestions" } as const;
+export type OutlinePatch = Partial<Record<PatchSection, Obj[]>> & { remove?: Partial<Record<keyof typeof REMOVE_KEYS, string[]>> };
 
 /** Error paths (outline-relative) that a patch can fix, with the section whose item the first capture indexes. */
 const OWN = /^outline\.(steps|coverage|openQuestions|eliminatedAsIsSteps)\.(\d+)(?:\.|$)/;
@@ -37,7 +39,7 @@ export function isPatchable(errors: readonly ValidationIssue[], base: unknown): 
   });
 }
 
-/** Merge a patch onto the outline: an item with a matching id or key is replaced in place, any other is appended. Sections the patch
+/** Merge a patch onto the outline: an item with a matching id or key is replaced in place, any other is appended; then items named in `remove` are deleted. Sections the patch
  * does not name are returned as they were. The base is never mutated. */
 export function applyOutlinePatch(base: unknown, patch: OutlinePatch): unknown {
   if (!isObj(base)) return base;
@@ -51,6 +53,12 @@ export function applyOutlinePatch(base: unknown, patch: OutlinePatch): unknown {
       if (at < 0) list.push(item); else list[at] = item;
     }
     merged[section] = list;
+  }
+  // Removal runs after the merge, so an id both replaced and removed is removed.
+  for (const [field, section] of Object.entries(REMOVE_KEYS) as [keyof typeof REMOVE_KEYS, PatchSection][]) {
+    const ids = patch.remove?.[field];
+    if (!ids?.length || !Array.isArray(merged[section])) continue;
+    merged[section] = (merged[section] as unknown[]).filter(item => !(isObj(item) && ids.includes(item[PATCH_KEYS[section]] as string)));
   }
   return merged;
 }

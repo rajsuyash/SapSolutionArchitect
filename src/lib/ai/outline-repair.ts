@@ -23,7 +23,18 @@ export function repairOutlineShape(input: Pick<ToBeInput["discovery"], "requirem
     warn("REPAIRED_DUPLICATE_TRACE", path);
     return [...new Set(list)];
   };
-  const coverage: Obj[] = Array.isArray(raw.coverage) && raw.coverage.every(isObj) ? raw.coverage : [];
+  // A coverage row for an id that is not an input requirement is an invention, and a second row for one requirement is a repeat: the
+  // row is dropped (the first of a repeat is kept), never renamed. Skipped when no requirements are supplied, as there is nothing to compare.
+  const inputIds = new Set(input.requirements.map(requirement => requirement.id)), checkIds = inputIds.size > 0;
+  const seen = new Set<unknown>();
+  const rawCoverage: unknown = checkIds && Array.isArray(raw.coverage) && raw.coverage.every(isObj)
+    ? raw.coverage.filter((item, i) => {
+      const drop = !inputIds.has(item.requirementId as string) || seen.has(item.requirementId);
+      seen.add(item.requirementId);
+      if (drop) warn("REPAIRED_UNKNOWN_COVERAGE_ROW", `outline.coverage.${i}`);
+      return !drop;
+    }) : raw.coverage;
+  const coverage: Obj[] = Array.isArray(rawCoverage) && rawCoverage.every(isObj) ? rawCoverage : [];
   const traced = coverage.filter(item => typeof item.requirementId === "string" && TRACED.has(String(item.disposition)));
 
   let steps = raw.steps.map((step, i): Obj => {
@@ -34,6 +45,8 @@ export function repairOutlineShape(input: Pick<ToBeInput["discovery"], "requirem
     const known = strings(referenceIds)?.filter(ref => catalogIds.has(ref));
     if (known?.length && known.length !== (referenceIds as string[]).length) { warn("REPAIRED_UNKNOWN_REFERENCE", `${path}.implementation`); referenceIds = known; }
     let requirementIds = dedupe(step.requirementIds, path);
+    const refs = strings(requirementIds), valid = checkIds ? refs?.filter(ref => inputIds.has(ref)) : refs;
+    if (refs && valid && valid.length !== refs.length) { warn("REPAIRED_UNKNOWN_REQUIREMENT_REF", `${path}.requirementIds`); requirementIds = valid; }
     if (!strings(requirementIds)?.length && typeof step.id === "string") {
       const derived = traced.filter(item => strings(item.stepIds)?.includes(step.id as string)).map(item => item.requirementId as string);
       if (derived.length) { warn("REPAIRED_STEP_REQUIREMENTS", path); requirementIds = [...new Set(derived)]; }
@@ -56,7 +69,7 @@ export function repairOutlineShape(input: Pick<ToBeInput["discovery"], "requirem
   const stepsOf = (requirementId: string) => steps.flatMap(step => strings(step.requirementIds)?.includes(requirementId) ? [step.id] : []);
 
   // Coverage lists exactly the steps whose requirementIds contain the requirement. Only re-derived when a step lists it.
-  const repairedCoverage = !Array.isArray(raw.coverage) || !raw.coverage.every(isObj) ? raw.coverage : coverage.map((item, i) => {
+  const repairedCoverage = !Array.isArray(rawCoverage) || !rawCoverage.every(isObj) ? rawCoverage : coverage.map((item, i) => {
     if (typeof item.requirementId !== "string" || !TRACED.has(String(item.disposition))) return item;
     const derived = stepsOf(item.requirementId), current = strings(item.stepIds);
     if (!derived.length || (current?.length === derived.length && derived.every(stepId => current.includes(stepId as string)))) return item;

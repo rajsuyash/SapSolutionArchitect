@@ -62,6 +62,50 @@ describe("allowedKinds", () => {
   ])("cited %j allows %j", (cited, allowed) => { expect(allowedKinds(cited)).toEqual(allowed); });
 });
 
+describe("applyOutlinePatch remove", () => {
+  it("deletes coverage rows, steps and open questions by key, after the merge, without touching the base", () => {
+    const frozen = structuredClone(base);
+    const merged = applyOutlinePatch(base, { steps: [{ id: "B", n: 9 }], remove: { coverageRequirementIds: ["R1", "nope"], stepIds: ["A"], openQuestionIds: ["Q1"] } }) as typeof base;
+    expect(base).toEqual(frozen);
+    expect(merged.steps).toEqual([{ id: "B", n: 9 }]);
+    expect(merged.coverage).toEqual([]);
+    expect(merged.openQuestions).toEqual([]);
+    expect(merged.eliminatedAsIsSteps).toEqual(base.eliminatedAsIsSteps);
+  });
+  it("removal alone is a valid patch; an id both replaced and removed is removed; an empty remove is not a patch", () => {
+    expect((applyOutlinePatch(base, { coverage: [{ requirementId: "R1", v: 2 }], remove: { coverageRequirementIds: ["R1"] } }) as typeof base).coverage).toEqual([]);
+    expect(OutlinePatchSchema.safeParse({ remove: { coverageRequirementIds: ["R1"] } }).success).toBe(true);
+    expect(OutlinePatchSchema.safeParse({ remove: {} }).success).toBe(false);
+    expect(OutlinePatchSchema.safeParse({ remove: { coverageRequirementIds: ["R1"], extra: ["x"] } }).success).toBe(false);
+  });
+});
+
+describe("REPAIRED_UNKNOWN_COVERAGE_ROW and REPAIRED_UNKNOWN_REQUIREMENT_REF", () => {
+  const raw = () => ({
+    steps: [{ id: "A", sequence: 1, asIsStepIds: [], requirementIds: ["R1", "RX"], implementation: { referenceIds: [] } },
+      { id: "B", sequence: 2, asIsStepIds: [], requirementIds: ["RX"], implementation: { referenceIds: [] } }],
+    coverage: [{ requirementId: "R1", disposition: "IMPLEMENTED", stepIds: ["A"] }, { requirementId: "R1_NA", disposition: "IMPLEMENTED", stepIds: ["A"] },
+      { requirementId: "R1", disposition: "IMPLEMENTED", stepIds: ["B"] }, { requirementId: "R2", disposition: "IMPLEMENTED", stepIds: ["B"] }],
+    openQuestions: [], eliminatedAsIsSteps: [],
+  });
+  const run = (value: unknown, requirements = [{ id: "R1", asIsStepId: "S" }, { id: "R2", asIsStepId: "S" }]) => repairOutlineShape({ requirements } as never, new Set(), value);
+  it("drops unknown and repeated coverage rows (first kept) and unknown step requirement ids, reporting paths only, never renaming", () => {
+    const out = run(raw()), v = out.value as ReturnType<typeof raw>;
+    expect(v.coverage.map(c => c.requirementId)).toEqual(["R1", "R2"]);
+    expect(v.coverage[0]!.stepIds).toEqual(["A"]);
+    expect(v.steps[0]!.requirementIds).toEqual(["R1"]);
+    expect(v.steps[1]!.requirementIds).toEqual(["R2"]); // emptied, then re-derived from the R2 coverage row by the existing repair
+    expect(out.warnings.filter(w => w.code.startsWith("REPAIRED_UNKNOWN"))).toEqual([
+      { code: "REPAIRED_UNKNOWN_COVERAGE_ROW", path: "outline.coverage.1" }, { code: "REPAIRED_UNKNOWN_COVERAGE_ROW", path: "outline.coverage.2" },
+      { code: "REPAIRED_UNKNOWN_REQUIREMENT_REF", path: "outline.steps.0.requirementIds" }, { code: "REPAIRED_UNKNOWN_REQUIREMENT_REF", path: "outline.steps.1.requirementIds" }]);
+  });
+  it("leaves a clean outline alone and does nothing when no requirements are supplied", () => {
+    const clean = { ...raw(), steps: [{ ...raw().steps[0]!, requirementIds: ["R1"] }], coverage: [raw().coverage[0]!] };
+    expect(run(clean).warnings.filter(w => w.code.startsWith("REPAIRED_UNKNOWN"))).toEqual([]);
+    expect((run(raw(), []).value as ReturnType<typeof raw>).coverage).toHaveLength(4);
+  });
+});
+
 describe("OutlinePatchSchema", () => {
   it("is strict, needs at least one non-empty section and takes whole step objects", () => {
     expect(OutlinePatchSchema.safeParse({}).success).toBe(false);

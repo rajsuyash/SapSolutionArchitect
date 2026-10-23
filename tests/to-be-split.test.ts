@@ -739,8 +739,8 @@ describe("tool input schemas sent to the provider", () => {
     await createStageRunner(settings(), { fetch: spy })("to_be", fixture());
     const tools = new Map(seen.flatMap(body => body.tools ?? []).map((tool: { name: string; input_schema: unknown }) => [tool.name, tool.input_schema as Node] as const));
     expect([...tools.keys()].sort()).toEqual(["submit_to_be_outline", "submit_to_be_outline_patch", ...REGISTER_GROUP_NAMES.map(group => `submit_to_be_registers_${group}`), "submit_to_be_step"].sort());
-    // The patch's four sections are each optional (a patch names only what it replaces); the items inside them must be fully required.
-    const patchSections = ["steps", "coverage", "openQuestions", "eliminatedAsIsSteps"].map(key => `submit_to_be_outline_patch.${key}`);
+    // The patch's four sections and its remove block (with its three key lists) are each optional (a patch names only what it changes); the items inside the sections must be fully required.
+    const patchSections = ["steps", "coverage", "openQuestions", "eliminatedAsIsSteps", "remove", "remove.coverageRequirementIds", "remove.stepIds", "remove.openQuestionIds"].map(key => `submit_to_be_outline_patch.${key}`);
     for (const [name, schema] of tools) expect(missing(schema, name).filter(path => !patchSections.includes(path)), name).toEqual([]);
     expect(missing(tools.get("submit_to_be_outline_patch")!, "submit_to_be_outline_patch").sort()).toEqual([...patchSections].sort());
     expect(tools.get("submit_to_be_outline_patch")!.properties!.steps!.items!.required).toEqual(expect.arrayContaining(["id", "sequence", "implementation"]));

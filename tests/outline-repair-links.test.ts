@@ -145,3 +145,29 @@ describe("replay of the second live run (no decision register)", async () => {
     expect(result.warnings.every(w => Object.keys(w).sort().join() === "code,path")).toBe(true);
   });
 });
+
+/** Third live run (4a864f4): the model wrote a 14th coverage row whose requirementId is an input id plus "_NA". The raw first attempt
+ * parsed whole (16247 characters), so it is stored unrepaired. The patch repair could not delete the row, so all three attempts failed. */
+describe("replay of the third live run (a coverage row for an invented requirement)", async () => {
+  const { input, references, requirementOf, live, replay } = await liveReplay("live3-outline", 1);
+  it("maps every live requirement; the raw payload carries 14 coverage rows for 13 requirements", () => {
+    expect(live).toHaveLength(13);
+    expect([...requirementOf.values()].every(Boolean)).toBe(true);
+    expect(input.discovery.requirements).toHaveLength(13);
+  });
+  it("attempt 1: the invented row is dropped by the server; the one error left is the patchable fit mismatch, and a stub patch for it validates", () => {
+    const result = replay(1), shaped = (result as { shaped: unknown }).shaped;
+    expect(left(result)).toEqual(["SAP_FIT_MISMATCH@outline.steps.9.implementation"]);
+    const errors = result.success ? [] : result.errors;
+    expect(isPatchable(errors, shaped)).toBe(true);
+    const steps = (shaped as { steps: Record<string, unknown>[] }).steps;
+    const merged = applyOutlinePatch(shaped, { steps: [{ ...steps[9]!, implementation: { kind: "NEEDS_VALIDATION", referenceIds: [] } }] });
+    const fixed = validateOutline(input, references, merged);
+    expect(left(fixed)).toEqual([]);
+    if (!fixed.success) return;
+    expect(fixed.outline.coverage).toHaveLength(13);
+    // The warning belongs to the first validation (the shaped payload no longer holds the row); the shaped payload proves it was dropped.
+    expect((shaped as { coverage: { requirementId: string }[] }).coverage).toHaveLength(13);
+    expect(JSON.stringify(shaped)).not.toContain("_NA");
+  });
+});

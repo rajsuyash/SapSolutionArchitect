@@ -41,7 +41,13 @@ export const OutlinePatchSchema = z.strictObject({
   coverage: z.array(OutlineSchema.shape.coverage.element).min(1).max(200).optional(),
   openQuestions: z.array(OutlineSchema.shape.openQuestions.element).min(1).max(200).optional(),
   eliminatedAsIsSteps: z.array(OutlineSchema.shape.eliminatedAsIsSteps.element).min(1).max(200).optional(),
-}).refine(patch => Object.values(patch).some(items => items?.length), "a patch must replace or add at least one item");
+  remove: z.strictObject({
+    coverageRequirementIds: z.array(z.string()).min(1).max(200).optional(),
+    stepIds: z.array(z.string()).min(1).max(200).optional(),
+    openQuestionIds: z.array(z.string()).min(1).max(200).optional(),
+  }).optional(),
+}).refine(patch => [patch.steps, patch.coverage, patch.openQuestions, patch.eliminatedAsIsSteps, ...Object.values(patch.remove ?? {})].some(items => items?.length),
+  "a patch must replace, add or remove at least one item");
 type OutlineStep = Outline["steps"][number];
 
 /** Everything in a design step that the outline does not already fix. Derived from DetailedDesignSchema so the two cannot drift. */
@@ -111,7 +117,7 @@ function patchNotes(errors: readonly ValidationIssue[], outline: unknown, input:
       default: return `${describeIssue(error)} (${label}).`;
     }
   });
-  return `Fix exactly these items of your previous outline (supplied as "outline"), and only these: ${lines.join(" ")} Answer with submit_to_be_outline_patch holding a replacement for each flagged item, and nothing else: a complete step object per flagged step (matched by id), a coverage row per flagged requirement (matched by requirementId), open questions (matched by id; a new id adds a question) and eliminatedAsIsSteps (matched by asIsStepId). The server merges the patch onto the outline, so do not resend items that are not listed.`;
+  return `Fix exactly these items of your previous outline (supplied as "outline"), and only these: ${lines.join(" ")} Answer with submit_to_be_outline_patch holding a replacement for each flagged item, and nothing else: a complete step object per flagged step (matched by id), a coverage row per flagged requirement (matched by requirementId), open questions (matched by id; a new id adds a question) and eliminatedAsIsSteps (matched by asIsStepId). To delete an item that should not exist (for example a coverage row whose requirementId is not an input requirement, or a surplus step or question), list its key under remove: coverageRequirementIds, stepIds or openQuestionIds. The server merges the patch onto the outline, so do not resend items that are not listed.`;
 }
 
 /** What the patch call sees of the last outline: each flagged item in full (the model has to change it) and every other item reduced to
