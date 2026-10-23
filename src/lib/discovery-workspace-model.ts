@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { CompanyContext } from "./company-context";
 import { validateDiscovery, type DiscoveryInput } from "./discovery";
 import { REASK_AFTER_USER_TURNS, REASK_SUFFIX, STEP_GAP_PREFIX, STEP_KEYS as stepKeys, STEP_QUESTIONS as stepQuestions,
   WORKSPACE_FIELDS } from "./workspace-fields";
@@ -544,6 +545,8 @@ export function compileDiscovery(rawState: WorkspaceState): DiscoveryInput {
         statement: draft.statement.value!, evidence: draft.statement.evidence! };
     })],
     conflicts: [],
+    companyContext: state.facts.flatMap(f => f.status === "KNOWN" ? [{ fieldId: f.id as CompanyContext[number]["fieldId"], label: WORKSPACE_FIELDS.find(def => def.id === f.id)!.label,
+      value: f.value!, evidence: f.evidence! }] : []),
     openQuestions: state.facts.filter(f => ["UNKNOWN", "OWNER_PENDING"].includes(f.status)).map(f => ({
       id: `q_${f.id}`, question: WORKSPACE_FIELDS.find(def => def.id === f.id)!.question,
       owner: f.owner ?? "Process owner",

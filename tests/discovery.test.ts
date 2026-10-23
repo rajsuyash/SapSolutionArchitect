@@ -31,6 +31,17 @@ describe("discovery input validation", () => {
     expect(validateDiscovery(input).sources[0]!.text).toContain("\r\n");
     expect(validateDiscovery(input).asIsSteps[0]!.evidence.quote).not.toBe(input.requirements[0]!.evidence.quote);
   });
+  it("keeps a frozen revision without company context loadable and checks the context evidence when present", () => {
+    const frozen = fixture();
+    expect(frozen).not.toHaveProperty("companyContext");
+    expect(validateDiscovery(frozen)).toEqual(frozen);
+    const quote = "block completion if the return date is missing.";
+    const item = { fieldId: "constraints" as const, label: "Constraints", value: "Standard SAP only", evidence: { sourceId: "SRC-1", quote } };
+    expect(validateDiscovery({ ...frozen, companyContext: [item] }).companyContext).toEqual([item]);
+    expect(() => validateDiscovery({ ...frozen, companyContext: [{ ...item, evidence: { sourceId: "SRC-1", quote: "never said" } }] })).toThrow("Check discovery fields");
+    expect(() => validateDiscovery({ ...frozen, companyContext: [item, item] })).toThrow("Check discovery fields");
+    expect(() => validateDiscovery({ ...frozen, companyContext: [{ ...item, fieldId: "not_a_field" }] })).toThrow("Check discovery fields");
+  });
   it.each(["approvedDecisions", "references", "status", "orgId", "targetProduct"])("rejects client-supplied trusted field %s", key => {
     expect(() => validateDiscovery({ ...fixture(), [key]: [] })).toThrow("Check discovery fields");
   });

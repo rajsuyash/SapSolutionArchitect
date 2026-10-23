@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
 import { AuthError, type AuthService, type SessionUser } from "./auth";
+import { CompanyContextSchema } from "./company-context";
 import { withTenantSession } from "./tenant";
 
 const id = z.string().regex(/^[A-Za-z0-9_-]{1,64}$/);
@@ -29,6 +30,8 @@ export const DiscoveryInputSchema = z.strictObject({
     id, question: text, sourceIds: z.array(id).min(1).max(20),
   })).max(100),
   openQuestions: z.array(z.strictObject({ id, question: text, owner: label })).max(100),
+  // Answered company-context fields (design input). Optional so frozen revisions saved before it existed still load.
+  companyContext: CompanyContextSchema.optional(),
 });
 const SaveSchema = z.strictObject({
   expectedVersion: z.number().int().min(0).max(2147483646), input: DiscoveryInputSchema,
@@ -62,6 +65,8 @@ export function validateDiscovery(value: unknown): DiscoveryInput {
     if (!steps.has(requirement.asIsStepId)) throw invalid(`requirements.${i}.asIsStepId`);
     checkEvidence(requirement.evidence, `requirements.${i}.evidence`);
   });
+  unique((input.companyContext ?? []).map(item => item.fieldId), "companyContext");
+  (input.companyContext ?? []).forEach((item, i) => checkEvidence(item.evidence, `companyContext.${i}.evidence`));
   input.conflicts.forEach((conflict, i) => {
     unique(conflict.sourceIds, `conflicts.${i}.sourceIds`);
     if (conflict.sourceIds.some(sourceId => !sources.has(sourceId))) throw invalid(`conflicts.${i}.sourceIds`);

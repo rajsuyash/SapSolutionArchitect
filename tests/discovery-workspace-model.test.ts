@@ -113,6 +113,12 @@ describe("discovery workspace model", () => {
     const compiled = compileDiscovery(state);
     expect(compiled.asIsSteps[0]?.description).toBe(step.description);
     expect(compiled.requirements[0]?.kind).toBe("PAIN_POINT");
+    // Answered company-context fields become typed design input with the evidence that proves them; unanswered ones are left out.
+    const context = compiled.companyContext!;
+    expect(context.map(item => item.fieldId)).toEqual(expect.arrayContaining(["operating_scale", "retained_systems", "kpi_targets", "constraints"]));
+    expect(context.find(item => item.fieldId === "operating_scale")).toMatchObject({ label: "Operating scale and volumes", value: "Answer for Operating scale and volumes" });
+    expect(compiled.sources.find(s => s.id === context[0]!.evidence.sourceId)?.text).toContain(context[0]!.evidence.quote);
+    expect(context.some(item => item.fieldId === "current_financial")).toBe(true);
     expect(compiled.sources.find(s => s.id === compiled.requirements[0]?.evidence.sourceId)?.text)
       .toContain(compiled.requirements[0]!.evidence.quote);
     state = applyWorkspaceCommand(state, { type: "CONFIRM" }, meta());
