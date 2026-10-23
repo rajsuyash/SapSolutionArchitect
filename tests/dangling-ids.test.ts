@@ -6,7 +6,7 @@ import { rentalDraftV3 } from "../fixtures/ai/to-be/rental-registers";
 
 const design = (change: (draft: DetailedDesign) => void) => { const draft = structuredClone(rentalDraftV3); change(draft); return draft; };
 const dangling = (draft: DetailedDesign, context = rentalContext) =>
-  evaluateDesign(context, draft).errors.filter(item => item.code === "DANGLING_ID_REFERENCE").map(item => `${item.path} ${item.detail}`);
+  evaluateDesign(context, draft).blockers.filter(item => item.code === "DANGLING_ID_REFERENCE").map(item => `${item.path} ${item.detail}`);
 
 describe("DANGLING_ID_REFERENCE: an id the text cites in this design's own id pattern that does not exist", () => {
   it("the fixture, which cites only ids it has, has none", () => {
@@ -41,9 +41,10 @@ describe("DANGLING_ID_REFERENCE: an id the text cites in this design's own id pa
     const idsOnly = design(draft => { draft.steps[0]!.decisionIds = ["TB-9"]; });
     expect(dangling(idsOnly)).toEqual([]); // a bad id in an id field is another check's error
   });
-  it("is a structural error: the design is not valid with it", () => {
+  it("is a heuristic blocker, not a structural error: the design stays valid but BLOCKED (the fix pass sends the part back)", () => {
     const result = evaluateDesign(rentalContext, design(draft => { draft.steps[0]!.effects.financial = "Needs TB-9."; }));
-    expect(result.structurallyValid).toBe(false);
+    expect(result.structurallyValid).toBe(true);
+    expect(result.reviewStatus).toBe("BLOCKED");
   });
   it("danglingIdHits has no hit when the design has no id family to compare with", () => {
     expect(danglingIdHits({ note: "see AB-12" }, [], new Set())).toEqual([]);

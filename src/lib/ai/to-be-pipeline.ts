@@ -2,16 +2,17 @@ import { z } from "zod";
 import { contextForStep } from "../company-context";
 import { phase } from "./design-primitives";
 import { DetailedDesignSchema, EFFECTS_SHAPE, IMPLEMENTATION_KINDS, STEP_TYPES, draftIssues, evaluateDesign, id, ids, list, text,
-  type DesignContext, type DetailedDesign } from "./design-quality";
+  inputIds, type DesignContext, type DetailedDesign } from "./design-quality";
 import { LATE_GROUPS, REGISTER_GROUPS, REGISTER_GROUP_NAMES, RegisterGroupSchemas, groupOf, type RegisterGroup, type RegisterPayloads } from "./design-registers";
 import type { ValidationIssue } from "./problem-analysis";
 import { repairOutlineLinks, repairOutlineShape, restoreFromPrevious } from "./outline-repair";
 import { allowedKinds, applyOutlinePatch, isPatchable, locate, type OutlinePatch } from "./outline-patch";
 import { noCatalogNote } from "../sap-releases";
 import { normalizeToolInput } from "./tool-input-normalizer";
+import { repairIdVariants } from "./id-variant-repair";
 import { repairRegisterGroup, repairStepBody } from "./part-repair";
 import { toBeContext, validateToBeOutput, type ToBeInput, type ToBeOutput } from "./to-be";
-import { extractSapCodes, textFields } from "./design-text-lint";
+import { extractSapCodes, textFields, designIds } from "./design-text-lint";
 import { ReviewSchema, compactDesign, partKey, repairNote, routeFindings, reviewBlockers, type Part, type RoutedFinding, type ReviewOutcome } from "./to-be-review";
 import { collectTargets, explainBlocker, findingLine, fixNote, newStepNote, partPath } from "./to-be-fix";
 
@@ -190,11 +191,16 @@ export function validateOutline(input: ToBeInput, references: DesignContext["ref
   const repaired = repairOutlineShape(input.discovery, new Set(references.map(reference => reference.id)), restored.value,
     new Set((input.decisionRegister ?? []).map(decision => decision.id)));
   const linked = repairOutlineLinks({ product: input.targetProduct, release: input.discovery.targetRelease ?? "UNKNOWN" }, references, repaired.value);
-  const parsed = OutlineSchema.safeParse(linked.value);
-  if (!parsed.success) return { success: false, errors: rePath(draftIssues(parsed.error.issues), "draft", "outline"), shaped: linked.value };
-  const evaluation = evaluateDesign(toBeContext(input, references), skeleton(parsed.data));
-  if (!evaluation.structurallyValid) return { success: false, errors: rePath(evaluation.errors, "draft", "outline").slice(0, MAX_ERRORS), shaped: linked.value };
-  return { success: true, outline: parsed.data, warnings: [...normalized.warnings, ...restored.warnings, ...repaired.warnings, ...linked.warnings], shaped: linked.value };
+  const shapedOk = OutlineSchema.safeParse(linked.value);
+  if (!shapedOk.success) return { success: false, errors: rePath(draftIssues(shapedOk.error.issues), "draft", "outline"), shaped: linked.value };
+  // Only an outline that already parses is respelled: the variant repair changes free text, never what the schema checks.
+  const context = toBeContext(input, references);
+  const respelled = repairIdVariants(linked.value, [...inputIds(context), ...designIds(linked.value), ...(context.decisionRegister ?? []).map(item => item.id)], "outline");
+  const parsed = OutlineSchema.safeParse(respelled.value);
+  if (!parsed.success) return { success: false, errors: rePath(draftIssues(parsed.error.issues), "draft", "outline"), shaped: respelled.value };
+  const evaluation = evaluateDesign(context, skeleton(parsed.data));
+  if (!evaluation.structurallyValid) return { success: false, errors: rePath(evaluation.errors, "draft", "outline").slice(0, MAX_ERRORS), shaped: respelled.value };
+  return { success: true, outline: parsed.data, warnings: [...normalized.warnings, ...restored.warnings, ...repaired.warnings, ...linked.warnings, ...respelled.warnings], shaped: respelled.value };
 }
 
 /** Join the outline and the step bodies into a DetailedDesign. Parallel step calls cannot coordinate ids, so a business-rule or
@@ -446,21 +452,25 @@ export async function runDesign(input: ToBeInput, references: DesignContext["ref
     retries.set(key, done + 1);
   };
 
+  /** Every id a part's text may cite: the input's, the frozen outline's, and those of the step bodies and register groups accepted so far and of the answer itself. */
+  const citable = (current: Outline, answer: unknown) => [...inputIds(toBeContext(input, references)), ...decisionIds, ...designIds([current, [...details.values()], [...registers.values()], answer])];
   /** One step answer, read the way every step answer is: normalised, its decision ids repaired, parsed. `errors` is what the next request carries when it does not parse. */
   const readStep = (current: Outline, stepId: string, raw: unknown) => {
     const index = current.steps.findIndex(step => step.id === stepId), path = `draft.steps.${index}`;
     const normalized = normalizeToolInput(StepDetailSchema, raw, path);
     const repaired = repairStepBody(normalized.value, decisionIds, path);
-    const parsed = StepDetailSchema.safeParse(repaired.value);
-    if (parsed.success) return { ok: true as const, value: parsed.data, warnings: [normalized.warnings, repaired.warnings] };
+    const respelled = repairIdVariants(repaired.value, citable(current, repaired.value), path);
+    const parsed = StepDetailSchema.safeParse(respelled.value);
+    if (parsed.success) return { ok: true as const, value: parsed.data, warnings: [normalized.warnings, repaired.warnings, respelled.warnings] };
     return { ok: false as const, errors: raw === TRUNCATED ? [{ path, code: OUTPUT_TRUNCATED }] : raw === null ? [{ path, code: "NO_TOOL_PAYLOAD" }] : rePath(draftIssues(parsed.error.issues), "draft", path) };
   };
   /** The same for one register group. */
   const readGroup = (current: Outline, group: RegisterGroup, raw: unknown) => {
     const normalized = normalizeToolInput(RegisterGroupSchemas[group], raw, "draft");
     const repaired = repairRegisterGroup(normalized.value, { requirementIds, stepIds: new Set(current.steps.map(step => step.id)), decisionIds });
-    const parsed = RegisterGroupSchemas[group].safeParse(repaired.value);
-    if (parsed.success) return { ok: true as const, value: parsed.data satisfies RegisterPayloads[RegisterGroup], warnings: [normalized.warnings, repaired.warnings] };
+    const respelled = repairIdVariants(repaired.value, citable(current, repaired.value), "draft");
+    const parsed = RegisterGroupSchemas[group].safeParse(respelled.value);
+    if (parsed.success) return { ok: true as const, value: parsed.data satisfies RegisterPayloads[RegisterGroup], warnings: [normalized.warnings, repaired.warnings, respelled.warnings] };
     return { ok: false as const, errors: raw === TRUNCATED ? [{ path: "draft", code: OUTPUT_TRUNCATED }] : raw === null ? [{ path: "draft", code: "NO_TOOL_PAYLOAD" }] : draftIssues(parsed.error.issues) };
   };
 

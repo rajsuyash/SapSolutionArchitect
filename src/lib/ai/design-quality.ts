@@ -119,6 +119,9 @@ export function draftIssues(issues: z.core.$ZodIssue[]): Issue[] {
     return { code: "INVALID_DRAFT", path: path.slice(0, 200), detail: `${issue.code}${extra ? `: ${extra}` : ""}`.slice(0, 200) };
   });
 }
+/** Every id of the input that text may cite: requirements, As-Is steps, sources, conflicts, decisions, references, company-context fields. */
+export const inputIds = (context: DesignContext): string[] => [...context.requirements.map(item => item.id), ...context.asIsSteps.map(item => item.id), ...context.sources.map(item => item.id),
+  ...context.conflicts.map(item => item.id), ...context.approvedDecisions.map(item => item.id), ...context.references.map(item => item.id), ...(context.companyContext ?? []).map(item => item.fieldId)];
 export type DesignEvaluation = {
   structurallyValid: boolean; errors: Issue[]; blockers: Issue[];
   reviewStatus: "BLOCKED" | "HUMAN_REVIEW_REQUIRED";
@@ -146,11 +149,10 @@ export function evaluateDesign(input: unknown, value: unknown): DesignEvaluation
   for (const hit of lintSapObjects(draft, context.references)) error("UNKNOWN_SAP_OBJECT", hit.path, `${hit.kind} ${hit.token}`);
   // The generator's working vocabulary in client text is a review finding, never a reason to reject the design.
   for (const hit of internalTermHits(draft)) block("INTERNAL_TERM", hit.path, hit.term);
-  // An id the text cites that follows this design's own id pattern but names nothing is a structural error: the part that cites it is sent back to be repaired.
+  // An id the text cites that follows this design's own id pattern but names nothing is a heuristic blocker (the fix pass sends the part back); the id-list fields have their own UNKNOWN_* errors.
   const ownIds = [...designIds(draft), ...(context.decisionRegister ?? []).map(item => item.id)];
-  const knownIds = new Set([...ownIds, ...context.requirements.map(item => item.id), ...context.asIsSteps.map(item => item.id), ...context.sources.map(item => item.id),
-    ...context.conflicts.map(item => item.id), ...context.approvedDecisions.map(item => item.id), ...context.references.map(item => item.id), ...(context.companyContext ?? []).map(item => item.fieldId)]);
-  for (const hit of danglingIdHits(draft, ownIds, knownIds)) error("DANGLING_ID_REFERENCE", hit.path, `${hit.token} does not exist in this design`);
+  const knownIds = new Set([...ownIds, ...inputIds(context)]);
+  for (const hit of danglingIdHits(draft, ownIds, knownIds)) block("DANGLING_ID_REFERENCE", hit.path, `${hit.token} does not exist in this design`);
   const unique = (values: string[], path: string, code: string) => {
     if (new Set(values).size !== values.length) error(code, path);
   };

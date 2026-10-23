@@ -128,14 +128,13 @@ describe("replay of the second live run (no decision register)", async () => {
 
   it("attempt 2: two patchable errors remain (a fit mismatch and an As-Is step nobody traces); the decision ids are repaired away", () => {
     const { r, shaped } = outlineOf(2);
-    // The live outline also cites "ETO-5" (the steps are ETO-05) and a control id nothing defines: dangling ids, now structural errors on the two items that cite them.
-    expect(left(r)).toEqual(["DANGLING_ID_REFERENCE@outline.coverage.11", "DANGLING_ID_REFERENCE@outline.openQuestions.10",
-      "SAP_FIT_MISMATCH@outline.steps.11.implementation", "AS_IS_UNCOVERED@input.asIsSteps.10"]);
+    // The live outline cites "ETO-5" (the steps are ETO-05): respelled deterministically (REPAIRED_ID_VARIANT), so it is no error. The control id "ETO-C-2" that nothing defines
+    // is a free-text dangling id: a fixable blocker for the fix pass, no longer an error that could sink the whole run on a formatting slip.
+    expect(left(r)).toEqual(["SAP_FIT_MISMATCH@outline.steps.11.implementation", "AS_IS_UNCOVERED@input.asIsSteps.10"]);
+    expect(JSON.stringify(shaped)).not.toMatch(/ETO-5\b/);
     const errors = r.success ? [] : r.errors;
     expect(isPatchable(errors, shaped)).toBe(true);
-    const fixToken = (item: unknown) => JSON.parse(JSON.stringify(item).replace(/ETO-C-2/g, "ETO-OQ-1").replace(/ETO-5\b/g, "ETO-05"));
-    const outline = shaped as { coverage: unknown[]; openQuestions: unknown[] };
-    const merged = applyOutlinePatch(shaped, { steps: [asManual(stepAt(shaped, 11))], coverage: [fixToken(outline.coverage[11])], openQuestions: [fixToken(outline.openQuestions[10])],
+    const merged = applyOutlinePatch(shaped, { steps: [asManual(stepAt(shaped, 11))],
       eliminatedAsIsSteps: [{ asIsStepId: input.discovery.asIsSteps[10]!.id, reason: "Stub patch: not part of the To-Be process." }] });
     expect(left(validateOutline(input, references, merged))).toEqual([]);
   });

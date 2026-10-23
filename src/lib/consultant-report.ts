@@ -79,6 +79,7 @@ export const REVIEW_FINDINGS: Record<string, string> = {
   CONFIG_CONFIRMATION_UNSUPPORTED: "A configuration item is marked as confirmed in the SAP catalog, but no catalog reference it cites mentions it.",
   KPI_VALUE_IGNORED: "A KPI shows a baseline or target as not provided, although the company-context answers give a value for this measure.",
   INTERNAL_TERM: "Text meant for the client uses a working term of the generation process (for example \"outline\" or \"register call\"). Reword it in business language.",
+  DANGLING_ID_REFERENCE: "Text cites an id in this design's own pattern (a step, rule, test, question or register row) that does not exist. Correct the id or remove the reference.",
   ...REVIEW_PASS_FINDINGS,
 };
 const BLOCKERS: Record<string, { category: string; label: string }> = {
