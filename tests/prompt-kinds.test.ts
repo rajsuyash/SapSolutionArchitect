@@ -1,6 +1,8 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { IMPLEMENTATION_KINDS } from "../src/lib/ai/design-quality";
+import { FIT_CLASSES } from "../src/lib/ai/design-registers";
+import { RegisterGroupSchemas } from "../src/lib/ai/design-registers";
 
 /** The kind ladder in the To-Be prompts must only ever name legal values of implementation.kind. A reference's fitType
  * (notably LICENSE_DEPENDENT) is not a kind: a model told to use it as one fails the enum (seen live, 2026-10-23). */
@@ -36,3 +38,23 @@ for (const name of ["outline", "step"]) {
     });
   });
 }
+
+describe("prompts/to_be_registers.system.md fit-gap classes", () => {
+  const prompt = readFileSync("prompts/to_be_registers.system.md", "utf8");
+  const section = prompt.slice(prompt.indexOf("classification, in the order you must prefer:"), prompt.indexOf("justification says why this class"));
+  // A class entry is a numbered line that opens with a class word: "3. STANDARD_INTEGRATION: ..."
+  const heads = [...section.matchAll(/^\d+\. ([A-Z_]+):/gm)].map(match => match[1]!);
+  it("lists exactly the FIT_CLASSES enum, in order, and finds something (a parse that finds nothing proves nothing)", () => {
+    expect(heads.length).toBeGreaterThanOrEqual(6);
+    expect(heads).toEqual([...FIT_CLASSES]);
+  });
+  it("the enum in the fit-gap tool schema is the same list, and an integration through a released API has a class of its own", () => {
+    const classes = (RegisterGroupSchemas.fitgap.shape.fitGap.element as unknown as { shape: { classification: { options: string[] } } }).shape.classification.options;
+    expect(classes).toEqual([...FIT_CLASSES]);
+    expect(section).toMatch(/STANDARD_INTEGRATION[^]*released\s+standard SAP API/);
+    expect(section).toMatch(/INTEGRATION\s+maps here/);
+  });
+  it("the check goes red on an invented class", () => {
+    expect([...heads, "INTEGRATION"]).not.toEqual([...FIT_CLASSES]);
+  });
+});

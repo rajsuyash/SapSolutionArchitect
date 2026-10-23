@@ -35,7 +35,7 @@ const FIT_LABELS: Record<string, string> = { STANDARD: "Standard SAP", CONFIGURA
   INTEGRATION: "Integration", MANUAL: "Manual process", LICENSE_DEPENDENT: "Licence-dependent", NEEDS_VALIDATION: "Needs SAP validation" };
 const DISPOSITION_LABELS = { IMPLEMENTED: "Implemented in the To-Be design", DEFERRED: "Deferred (approved decision)", REJECTED: "Rejected (approved decision)",
   CONDITIONAL: "Conditional on an open decision (partly designed)" } as const;
-const FIT_CLASS_LABELS: Record<string, string> = { STANDARD: "Standard", CONFIGURATION: "Configuration", KEY_USER_EXTENSION: "Key-user extension",
+const FIT_CLASS_LABELS: Record<string, string> = { STANDARD: "Standard", CONFIGURATION: "Configuration", STANDARD_INTEGRATION: "Standard integration (released SAP API)", KEY_USER_EXTENSION: "Key-user extension",
   SIDE_BY_SIDE_BTP: "Side-by-side (BTP)", CLASSIC_RICEFW: "Classic custom development (RICEFW)", MANUAL_WORKAROUND: "Manual workaround" };
 const DIRECTION_LABELS: Record<string, string> = { INBOUND: "Into SAP", OUTBOUND: "From SAP", BIDIRECTIONAL: "Both ways" };
 const contextLabel = (fieldId: string) => WORKSPACE_FIELDS.find(field => field.id === fieldId)?.label ?? "Company context";

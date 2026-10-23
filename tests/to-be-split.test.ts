@@ -255,11 +255,33 @@ describe("per-step repair", () => {
     expect(h.stepCalls.filter(call => call.id === "TB-3")[1]!.body.messages[0]!.content).toContain("TEST_TRACE_MISMATCH");
     expect(result.payload.design).toEqual(rentalDraftV2);
   });
-  it("fails with AI_INVALID_OUTPUT when the step is still invalid after its one retry", async () => {
+  it("fails with AI_INVALID_OUTPUT when the step is still invalid after its AI_TO_BE_PART_REPAIRS=2 retries", async () => {
     const h = harness({ step: id => id === "TB-1" ? { oops: true } : split.details[id] });
     await expect(h.run()).rejects.toMatchObject({ code: "AI_INVALID_OUTPUT" });
-    expect(h.stepCount["TB-1"]).toBe(2);
+    expect(h.stepCount["TB-1"]).toBe(3);
     expect(h.outlineCalls).toHaveLength(1);
+  });
+  it("recovers a step whose body comes back incomplete twice (seen live: EX-09 without effects.financial, addedValue, acceptanceTests, implementation)", async () => {
+    const partial = Object.fromEntries(Object.entries(split.details["TB-2"]!).filter(([key]) => !["effects", "addedValue", "acceptanceTests", "implementation"].includes(key)));
+    const h = harness({ step: (id, nth) => id === "TB-2" && nth < 3 ? partial : split.details[id] });
+    const result = await h.run();
+    expect(h.stepCount["TB-2"]).toBe(3);
+    expect(h.stepCalls.filter(call => call.id === "TB-2")[2]!.body.messages[0]!.content).toContain("INVALID_DRAFT");
+    expect(result.payload.design).toEqual(rentalDraftV2);
+  });
+  it("AI_TO_BE_PART_REPAIRS=1 allows one retry and 0 allows none", async () => {
+    for (const [repairs, calls] of [["1", 2], ["0", 1]] as const) {
+      const h = harness({ step: id => id === "TB-1" ? { oops: true } : split.details[id], overrides: { AI_TO_BE_PART_REPAIRS: repairs } });
+      await expect(h.run()).rejects.toMatchObject({ code: "AI_INVALID_OUTPUT" });
+      expect(h.stepCount["TB-1"]).toBe(calls);
+    }
+  });
+  it("a register group wrapped as {parameter: '<JSON>'} is unwrapped and accepted on the first call, with a warning (seen live)", async () => {
+    const h = harness({ registers: group => group === "fitgap" ? { parameter: JSON.stringify(rentalRegisterGroups.fitgap) } : rentalRegisterGroups[group] });
+    const result = await h.run();
+    expect(h.registerCount.fitgap).toBe(1);
+    expect(result.metrics.warnings).toEqual(expect.arrayContaining([{ code: "REPAIRED_WRAPPED_PAYLOAD", path: "draft", detail: "parameter" }]));
+    expect(result.payload.design).toEqual(rentalDraftV2);
   });
   it("sends a global error back to the outline once, then re-expands only the steps whose outline entry changed", async () => {
     // A step body valid on its own but breaking a coverage rule can only be fixed in the outline: here the outline omits R-6 on its first answer.
@@ -418,10 +440,10 @@ describe("register calls: repair and checks", () => {
     expect(repair).not.toContain("private-register-output");
     expect(result.payload.design).toEqual(rentalDraftV2);
   });
-  it("fails with AI_INVALID_OUTPUT when a register group is still invalid after its retry", async () => {
+  it("fails with AI_INVALID_OUTPUT when a register group is still invalid after its retries", async () => {
     const h = harness({ registers: group => group === "decisions" ? { oops: true } : rentalRegisterGroups[group] });
     await expect(h.run()).rejects.toMatchObject({ code: "AI_INVALID_OUTPUT" });
-    expect(h.registerCount.decisions).toBe(2);
+    expect(h.registerCount.decisions).toBe(3);
   });
   it("sends a missing critical fit-gap row back to the fit-gap group only", async () => {
     const short = { fitGap: rentalRegisterGroups.fitgap.fitGap.filter(row => row.requirementId !== "R-3") };
@@ -592,11 +614,11 @@ describe("To-Be answers without a tool call", () => {
     expect(result.payload.design).toEqual(rentalDraftV2);
   });
 
-  it("does not trust text that is invalid for the schema: it is repaired once, then fails closed", async () => {
+  it("does not trust text that is invalid for the schema: it is repaired twice, then fails closed", async () => {
     const wrong = { ...split.details[STEP_IDS[0]!]!, actions: [] };
     const h = harness({ step: id => id === STEP_IDS[0] ? textMessage(JSON.stringify(wrong)) : split.details[id] });
     await expect(h.run()).rejects.toMatchObject({ code: "AI_INVALID_OUTPUT" });
-    expect(h.stepCount[STEP_IDS[0]!]).toBe(2);
+    expect(h.stepCount[STEP_IDS[0]!]).toBe(3);
   });
 
   it("treats prose, two text blocks and a text block next to a tool call as no payload", async () => {
@@ -621,5 +643,38 @@ describe("To-Be answers without a tool call", () => {
     expect(kept.noToolPayload).toMatchObject({ stopReason: "end_turn", blocks: [{ type: "thinking" }, { type: "text", head: "Here is my plan, not JSON." }] });
     expect(on.rawFailures![0]!.json).not.toContain("private reasoning");
     expect((await run(false)).rawFailures).toBeUndefined();
+  });
+});
+
+describe("tool input schemas sent to the provider", () => {
+  type Node = { properties?: Record<string, Node>; required?: string[]; items?: Node; anyOf?: Node[] };
+  /** Properties a model may legitimately omit (the schema's .optional()/.default() fields); everything else must be listed in `required`. */
+  const OPTIONAL = new Set(["decisionIds", "questionIds", "enablesStepIds"]);
+  const missing = (node: Node | undefined, path: string, out: string[] = [], seen = { objects: 0 }): string[] => {
+    if (!node) return out;
+    if (node.properties) {
+      seen.objects++;
+      for (const key of Object.keys(node.properties)) if (!OPTIONAL.has(key) && !node.required?.includes(key)) out.push(`${path}.${key}`);
+      for (const [key, child] of Object.entries(node.properties)) missing(child, `${path}.${key}`, out, seen);
+    }
+    missing(node.items, `${path}[]`, out, seen);
+    for (const branch of node.anyOf ?? []) missing(branch, path, out, seen);
+    return out;
+  };
+  it("lists every non-optional field as required in the outline, step and all four register tools (nested objects included)", async () => {
+    const seen: RequestBody[] = [];
+    const h = harness();
+    const spy = vi.fn<typeof globalThis.fetch>(async (url, init) => { seen.push(JSON.parse(String(init?.body))); return h.fetch(url, init); });
+    await createStageRunner(settings(), { fetch: spy })("to_be", fixture());
+    const tools = new Map(seen.flatMap(body => body.tools ?? []).map((tool: { name: string; input_schema: unknown }) => [tool.name, tool.input_schema as Node] as const));
+    expect([...tools.keys()].sort()).toEqual(["submit_to_be_outline", "submit_to_be_registers_decisions", "submit_to_be_registers_fitgap",
+      "submit_to_be_registers_foundation", "submit_to_be_registers_integration", "submit_to_be_step"]);
+    for (const [name, schema] of tools) expect(missing(schema, name), name).toEqual([]);
+    const step = tools.get("submit_to_be_step")!;
+    expect(step.required).toEqual(expect.arrayContaining(["effects", "addedValue", "acceptanceTests", "implementation"]));
+    expect(step.properties!.effects!.required).toEqual(expect.arrayContaining(["financial", "ownership"]));
+    // A tool whose required list has been dropped must be caught by the same walker.
+    const stripped = structuredClone(step); delete stripped.properties!.effects!.required;
+    expect(missing(stripped, "step").length).toBeGreaterThan(0);
   });
 });

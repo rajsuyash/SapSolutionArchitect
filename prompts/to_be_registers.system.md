@@ -75,14 +75,21 @@ classification, in the order you must prefer:
 
 1. STANDARD: delivered standard behaviour covers it.
 2. CONFIGURATION: customising or master-data setup covers it.
-3. KEY_USER_EXTENSION: custom fields, custom logic or custom business objects for key
+3. STANDARD_INTEGRATION: a retained or external system is connected through a released
+   standard SAP API, event or business-partner/ordering interface, with no custom code
+   in SAP (middleware mapping and monitoring are configuration). This is where an
+   integration with a retained system goes; a reference with fit type INTEGRATION
+   maps here. It is not CLASSIC_RICEFW and it is not SIDE_BY_SIDE_BTP.
+4. KEY_USER_EXTENSION: custom fields, custom logic or custom business objects for key
    users, upgrade-stable.
-4. SIDE_BY_SIDE_BTP: logic or UI outside the core on the platform, connected by APIs
-   or events.
-5. CLASSIC_RICEFW: classic custom development in the core, only when 1 to 4 cannot
-   deliver and the client constraints allow it. ricefwType is then REPORT, INTERFACE,
-   CONVERSION, ENHANCEMENT, FORM or WORKFLOW; for every other classification it is null.
-6. MANUAL_WORKAROUND: a defined manual procedure; no SAP reference is needed.
+5. SIDE_BY_SIDE_BTP: logic or UI outside the core on the platform, connected by APIs
+   or events (new application logic, not just a connection).
+6. CLASSIC_RICEFW: classic custom development in the core, only when 1 to 5 cannot
+   deliver and the client constraints allow it. This includes an interface that needs
+   custom code (a custom API, an unreleased interface, a BAdI). ricefwType is then
+   REPORT, INTERFACE, CONVERSION, ENHANCEMENT, FORM or WORKFLOW; for every other
+   classification it is null.
+7. MANUAL_WORKAROUND: a defined manual procedure; no SAP reference is needed.
 
 justification says why this class and why not the cleaner one above it. Cite the
 catalog references that support it in referenceIds; a classification above

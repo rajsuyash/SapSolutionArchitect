@@ -40,6 +40,12 @@ describe("fit-gap checks", () => {
     expect(codes(design(draft => { draft.fitGap![4]!.ricefwType = null; }))).toEqual(["RICEFW_TYPE_MISSING@draft.fitGap.4"]);
     expect(codes(design(draft => { draft.fitGap![0]!.ricefwType = "REPORT"; }))).toEqual(["RICEFW_TYPE_UNEXPECTED@draft.fitGap.0"]);
   });
+  it("accepts STANDARD_INTEGRATION without a ricefwType, and rejects one that carries it", () => {
+    expect(codes(design(draft => { draft.fitGap![0]!.classification = "STANDARD_INTEGRATION" as never; }))).toEqual([]);
+    expect(codes(design(draft => { draft.fitGap![0]!.classification = "STANDARD_INTEGRATION" as never; draft.fitGap![0]!.ricefwType = "INTERFACE"; })))
+      .toEqual(["RICEFW_TYPE_UNEXPECTED@draft.fitGap.0"]);
+    expect(codes(design(draft => { draft.fitGap![0]!.classification = "INTEGRATION" as never; }))).not.toEqual([]); // the live failure value is still rejected
+  });
   it("rejects duplicate, unknown and untraceable rows", () => {
     expect(codes(design(draft => { draft.fitGap![1]!.requirementId = "R-1"; }))).toEqual(expect.arrayContaining(["DUPLICATE_DISPOSITION@draft.fitGap", "FIT_GAP_MISSING@draft.fitGap"]));
     expect(codes(design(draft => { draft.fitGap![0]!.requirementId = "R-99"; }))).toEqual(expect.arrayContaining(["UNKNOWN_REQUIREMENT@draft.fitGap.0"]));

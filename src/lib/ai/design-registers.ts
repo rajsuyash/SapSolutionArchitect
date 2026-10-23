@@ -4,7 +4,7 @@ import { FIT_TYPES, id, ids, list, text } from "./design-primitives";
 /** The solution-design registers a principal consultant's blueprint carries beyond the step walkthrough (schemaVersion 2).
  * Every row traces to requirements, company-context field ids and/or steps; every SAP object it names comes from the curated
  * catalog (`referenceIds`) or is flagged `needsValidation` with a reason. */
-export const FIT_CLASSES = ["STANDARD", "CONFIGURATION", "KEY_USER_EXTENSION", "SIDE_BY_SIDE_BTP", "CLASSIC_RICEFW", "MANUAL_WORKAROUND"] as const;
+export const FIT_CLASSES = ["STANDARD", "CONFIGURATION", "STANDARD_INTEGRATION", "KEY_USER_EXTENSION", "SIDE_BY_SIDE_BTP", "CLASSIC_RICEFW", "MANUAL_WORKAROUND"] as const;
 export const RICEFW_TYPES = ["REPORT", "INTERFACE", "CONVERSION", "ENHANCEMENT", "FORM", "WORKFLOW"] as const;
 export const NOT_PROVIDED = "not provided";
 

@@ -91,3 +91,17 @@ describe("outline repair budget", () => {
     expect(await calls({ maxOutlineRepairs: 0 })).toBe(1);
   });
 });
+describe("part repair budget (AI_TO_BE_PART_REPAIRS)", () => {
+  it("validates the setting (default 2, range 0-2)", () => {
+    expect(settings().AI_TO_BE_PART_REPAIRS).toBe(2);
+    expect(settings({ AI_TO_BE_PART_REPAIRS: " " }).AI_TO_BE_PART_REPAIRS).toBe(2);
+    expect(settings({ AI_TO_BE_PART_REPAIRS: "0" }).AI_TO_BE_PART_REPAIRS).toBe(0);
+    for (const bad of ["3", "-1", "1.5", "x"]) expect(() => settings({ AI_TO_BE_PART_REPAIRS: bad })).toThrow("AI_TO_BE_PART_REPAIRS");
+  });
+  it("the step and register retry gate is the same rule: second retry only above half the stage budget", () => {
+    expect(outlineRepairAllowed(0, 2, 0.1)).toBe(true);
+    expect(outlineRepairAllowed(1, 2, 0.4)).toBe(false);
+    expect(outlineRepairAllowed(1, 2, 0.6)).toBe(true);
+  });
+});
+

@@ -2,9 +2,9 @@ import { z } from "zod";
 import { id } from "./design-primitives";
 import type { ValidationIssue } from "./problem-analysis";
 
-/** Deterministic pre-parse repair of tool inputs from providers that mishandle nested schema fields. Two slips only, both
+/** Deterministic pre-parse repair of tool inputs from providers that mishandle nested schema fields. Three slips only, all
  * mechanical and lossless: (1) a field the schema types as an array or object arrives as a JSON-encoded string that parses
- * to exactly that type; (2) an id array arrives as one bare id string that matches the id pattern (wrapped in an array).
+ * to exactly that type; (2) an id array arrives as one bare id string that matches the id pattern (wrapped in an array); (3) the whole payload arrives under one invented wrapper key (REPAIRED_WRAPPED_PAYLOAD).
  * Nothing is ever invented: anything else is left as is and fails validation as before. Each repair is reported as a warning
  * (code REPAIRED_STRINGIFIED_JSON / REPAIRED_BARE_ID, path, no model text). */
 type Def = { type: string; innerType?: z.ZodType; element?: z.ZodType; shape?: Record<string, z.ZodType> };
@@ -20,8 +20,28 @@ function decode(value: string, want: "array" | "object"): unknown {
   } catch { return undefined; }
 }
 
-export function normalizeToolInput(schema: z.ZodType, raw: unknown, root: string): { value: unknown; warnings: ValidationIssue[] } {
+const WRAPPER_NAME = /^[a-z_]{1,30}$/;
+
+/** (3) A model that wraps the whole payload under one invented key ({"parameter": "<JSON of the payload>"} or {"input": {...}}):
+ * the single unexpected key's value, decoded if it is a string, is an object whose keys are all top-level keys of the schema. */
+function unwrap(schema: z.ZodType, raw: unknown): { value: unknown; wrapper: string } | undefined {
+  const shape = defOf(schema).shape;
+  if (!shape || typeof raw !== "object" || raw === null || Array.isArray(raw)) return undefined;
+  const entries = Object.entries(raw);
+  if (entries.length !== 1 || Object.hasOwn(shape, entries[0]![0])) return undefined;
+  const [wrapper, inner] = entries[0]!;
+  const value = typeof inner === "string" ? decode(inner, "object") : inner;
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
+  const keys = Object.keys(value);
+  return keys.length && keys.every(key => Object.hasOwn(shape, key)) ? { value, wrapper } : undefined;
+}
+
+export function normalizeToolInput(schema: z.ZodType, input: unknown, root: string): { value: unknown; warnings: ValidationIssue[] } {
   const warnings: ValidationIssue[] = [];
+  const wrapped = unwrap(schema, input);
+  // The wrapper key name is recorded only when it is a plain word, so no model text can leak into stored metrics.
+  if (wrapped) warnings.push({ code: "REPAIRED_WRAPPED_PAYLOAD", path: root, ...(WRAPPER_NAME.test(wrapped.wrapper) && { detail: wrapped.wrapper }) });
+  const raw = wrapped ? wrapped.value : input;
   const walk = (node: z.ZodType, value: unknown, path: string): unknown => {
     const def = defOf(node);
     if ((def.type === "optional" || def.type === "nullable" || def.type === "default") && def.innerType) return value === null ? value : walk(def.innerType, value, path);

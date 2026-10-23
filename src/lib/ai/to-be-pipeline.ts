@@ -239,6 +239,8 @@ export type DesignDeps = {
   parallelism: number;
   /** Outline repairs allowed (AI_TO_BE_OUTLINE_REPAIRS). Default 2. */
   maxOutlineRepairs?: number;
+  /** Re-requests allowed per step or register call (AI_TO_BE_PART_REPAIRS). Default 2. */
+  maxPartRepairs?: number;
   /** Fraction (0-1) of the stage budget still unspent. Default 1. */
   remainingBudget?: () => number;
 };
@@ -270,8 +272,13 @@ export async function runDesign(input: ToBeInput, references: DesignContext["ref
 
   const details = new Map<string, StepDetail>(), registers = new Map<RegisterGroup, unknown>(), retries = new Map<string, number>();
   const registerKey = (group: RegisterGroup) => `register:${group}`;
-  // One re-request per call in total, whether the first answer failed its schema or the assembled design's checks.
-  const markRetry = (key: string) => { if ((retries.get(key) ?? 0) >= 1) throw deps.invalid(); retries.set(key, 1); };
+  // Re-requests per call in total (AI_TO_BE_PART_REPAIRS, the second only while the stage budget is more than half unspent),
+  // whether the answer failed its schema or the assembled design's checks.
+  const markRetry = (key: string) => {
+    const done = retries.get(key) ?? 0;
+    if (!outlineRepairAllowed(done, deps.maxPartRepairs ?? 2, deps.remainingBudget?.() ?? 1)) throw deps.invalid();
+    retries.set(key, done + 1);
+  };
 
   /** Steps and register groups are independent calls over the frozen outline, so they share one bounded pool. */
   const expand = async (stepIds: readonly string[], groups: readonly RegisterGroup[], errors: ReadonlyMap<string, ValidationIssue[]>) => {
