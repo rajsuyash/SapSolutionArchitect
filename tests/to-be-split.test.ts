@@ -526,7 +526,11 @@ describe("register calls: repair and checks", () => {
       : { interfaces: nth === 1 ? rows.slice(0, 1) : rows, kpis: [] } });
     const result = await h.run(withRetained);
     expect(h.registerCount.integration).toBe(2);
-    expect(h.registerCalls.filter(call => call.group === "integration")[1]!.body.messages[0]!.content).toContain("RETAINED_SYSTEM_UNCOVERED");
+    const repair = JSON.parse(h.registerCalls.filter(call => call.group === "integration")[1]!.body.messages[0]!.content) as { repairNote: string };
+    expect(repair.repairNote).toContain("RETAINED_SYSTEM_UNCOVERED");
+    // The code alone does not say what is missing: the note names every retained system and the two things a row must carry.
+    expect(repair.repairNote).toContain('"customer portal"'); expect(repair.repairNote).toContain('"legacy dispatch system"');
+    expect(repair.repairNote).toContain("counterpartSystem"); expect(repair.repairNote).toContain('"retained_systems"');
     expect(result.payload.design.interfaces).toHaveLength(2);
   });
   it("sends an SAP object outside the catalog back to the step that named it, with the token", async () => {
@@ -542,6 +546,13 @@ describe("register calls: repair and checks", () => {
     expect(repair).toContain("draft.steps.1.effects.financial");
     expect(repair).toContain("F9999");
     expect(result.payload.design).toEqual(rentalDraftV3);
+  });
+  it("sends placeholder text in a step back to that step alone, with the field named", async () => {
+    const h = harness({ step: (id, nth) => id === STEP_IDS[1] && nth === 1 ? { ...split.details[id]!, outputDocuments: ["Placeholder"] } : split.details[id] });
+    await h.run();
+    expect(h.stepCount[STEP_IDS[1]!]).toBe(2);
+    expect(STEP_IDS.filter(id => h.stepCount[id] !== 1)).toEqual([STEP_IDS[1]]);
+    expect(h.stepCalls.filter(call => call.id === STEP_IDS[1])[1]!.body.messages[0]!.content).toContain("placeholder text in field outputDocuments");
   });
   it("sends an SAP object outside the catalog in a register back to that register group", async () => {
     const h = harness({ registers: (group, nth) => group === "decisions" && nth === 1
@@ -568,13 +579,41 @@ describe("output ceilings and truncation", () => {
   it("reports a max_tokens outline as OUTPUT_TRUNCATED and asks the repair for a shorter answer, without echoing the cut text", async () => {
     const h = harness({ outline: () => cut("submit_to_be_outline") });
     const error = await h.run().then(() => null, e => e);
-    expect(error).toMatchObject({ code: "AI_INVALID_OUTPUT", metrics: { attempts: 3, stopReasons: ["max_tokens", "max_tokens", "max_tokens"] } });
-    expect(error.metrics.attemptIssues).toEqual(Array(3).fill([{ path: "to_be_outline", code: "OUTPUT_TRUNCATED" }]));
-    expect(error.metrics.substages.to_be_outline.calls).toBe(3);
+    // The first two cut-off answers are free (16000 -> 32000 -> 64000); at the cap the two ordinary repairs follow.
+    expect(error).toMatchObject({ code: "AI_INVALID_OUTPUT", metrics: { attempts: 5, stopReasons: Array(5).fill("max_tokens") } });
+    expect(error.metrics.attemptIssues).toEqual(Array(5).fill([{ path: "to_be_outline", code: "OUTPUT_TRUNCATED" }]));
+    expect(error.metrics.substages.to_be_outline.calls).toBe(5);
+    expect(h.outlineCalls.map(maxTokens)).toEqual([16000, 32000, 64000, 64000, 64000]);
     const first = h.outlineCalls[0]!.messages[0]!.content, repair = h.outlineCalls[1]!.messages[0]!.content;
     expect(first).not.toContain("repairNote");
     expect(repair).toContain("OUTPUT_TRUNCATED"); expect(repair).toContain("cut off"); expect(repair).toContain("more concisely");
     expect(repair).not.toContain("private-cut-off-text");
+  });
+  const callsOf = (calls: { body: RequestBody }[]) => calls.map(call => maxTokens(call.body));
+  it("doubles a step's ceiling after each cut-off answer, up to the 64000 cap, and a cut-off answer costs no repair", async () => {
+    const h = harness({ step: (id, n) => id === STEP_IDS[0] && n <= 3 ? cut("submit_to_be_step") : split.details[id] });
+    const result = await h.run();
+    expect(callsOf(h.stepCalls.filter(call => call.id === STEP_IDS[0]))).toEqual([8000, 16000, 32000, 64000]);
+    expect(callsOf(h.stepCalls.filter(call => call.id === STEP_IDS[1]))).toEqual([8000]); // another step keeps its own ceiling
+    expect(result.metrics.warnings!.filter(w => w.code === "OUTPUT_CEILING_RAISED").map(w => w.path)).toEqual(Array(3).fill("draft.steps.0"));
+  });
+  it("keeps the repairs a genuinely invalid draft needs after a cut-off answer", async () => {
+    const h = harness({ step: (id, n) => id !== STEP_IDS[0] ? split.details[id] : n === 1 ? cut("submit_to_be_step") : n <= 4 ? {} : split.details[id] });
+    await h.run();
+    expect(callsOf(h.stepCalls.filter(call => call.id === STEP_IDS[0]))).toEqual([8000, 16000, 16000, 16000, 16000]); // cut, two repairs, the thinking retry, and it fits
+  });
+  it("never asks for more than the cap and gives up once the cap is reached and the repairs are spent", async () => {
+    const h = harness({ overrides: { AI_TO_BE_STEP_MAX_TOKENS: "40000" }, step: (id) => id === STEP_IDS[0] ? cut("submit_to_be_step") : split.details[id] });
+    await expect(h.run()).rejects.toMatchObject({ code: "AI_INVALID_OUTPUT" });
+    expect(callsOf(h.stepCalls.filter(call => call.id === STEP_IDS[0]))).toEqual([40000, 64000, 64000, 64000, 64000]);
+  });
+  it("raises a register group's ceiling after an answer with no tool payload", async () => {
+    const empty = () => new Response(JSON.stringify({ id: "m", type: "message", role: "assistant", model: "synthetic", content: [{ type: "text", text: "no tool" }],
+      stop_reason: "end_turn", usage: { input_tokens: 100, output_tokens: 200 } }), { headers: { "content-type": "application/json" } });
+    const h = harness({ registers: (group, n) => group === "decisions" && n <= 2 ? empty() : rentalRegisterGroups[group] });
+    await h.run();
+    expect(callsOf(h.registerCalls.filter(call => call.group === "decisions"))).toEqual([8000, 16000, 32000]);
+    expect(callsOf(h.registerCalls.filter(call => call.group === "governance"))).toEqual([8000]);
   });
   it("recovers when the repaired outline fits, and marks a truncated step for a concise retry", async () => {
     const h = harness({ outline: n => n === 1 ? cut("submit_to_be_outline") : split.outline,

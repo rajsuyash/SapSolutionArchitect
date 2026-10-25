@@ -87,8 +87,10 @@ describe("detailed generation protocol", () => {
     if (kind === "unverified SAP") wrong.steps[0]!.implementation = { kind: "STANDARD", detail: "Claimed standard", referenceIds: [] };
     const h = harness(() => response(wrong, kind === "truncated" ? "max_tokens" : kind === "no tool" ? "end_turn" : "tool_use",
       kind === "wrong tool" ? "other_tool" : "submit_to_be"));
-    await expect(h.generate(fixture())).rejects.toMatchObject({ code: "AI_INVALID_OUTPUT", metrics: { attempts: 3 } });
-    expect(h.sent).toHaveLength(3); // first answer plus two outline repairs
+    // First answer plus two outline repairs; a cut-off outline is also asked twice more with its ceiling doubled (16000, 32000, 64000), which costs no repair.
+    const calls = kind === "truncated" ? 5 : 3;
+    await expect(h.generate(fixture())).rejects.toMatchObject({ code: "AI_INVALID_OUTPUT", metrics: { attempts: calls } });
+    expect(h.sent).toHaveLength(calls);
   });
   it.each([1, 2])("rejects oversized complete request on attempt %i without truncation", async overflowAt => {
     const h = harness(() => response({}), attempt => attempt === overflowAt ? 60001 : 1000);

@@ -3,7 +3,7 @@ import { contextForStep } from "../company-context";
 import { phase } from "./design-primitives";
 import { DetailedDesignSchema, EFFECTS_SHAPE, IMPLEMENTATION_KINDS, STEP_TYPES, draftIssues, evaluateDesign, id, ids, list, text,
   inputIds, type DesignContext, type DetailedDesign } from "./design-quality";
-import { LATE_GROUPS, REGISTER_GROUPS, REGISTER_GROUP_NAMES, RegisterGroupSchemas, groupOf, type RegisterGroup, type RegisterPayloads } from "./design-registers";
+import { LATE_GROUPS, REGISTER_GROUPS, REGISTER_GROUP_NAMES, RegisterGroupSchemas, groupOf, segments, type RegisterGroup, type RegisterPayloads } from "./design-registers";
 import type { ValidationIssue } from "./problem-analysis";
 import { repairOutlineLinks, repairOutlineShape, restoreFromPrevious } from "./outline-repair";
 import { allowedKinds, applyOutlinePatch, isPatchable, locate, type OutlinePatch } from "./outline-patch";
@@ -70,6 +70,7 @@ export type StepDetail = z.infer<typeof StepDetailSchema>;
 /** What `ask` resolves to when the provider stopped on max_tokens: the answer was cut off, so it is neither parsed nor trusted. */
 export const TRUNCATED = Symbol("truncated");
 export const OUTPUT_TRUNCATED = "OUTPUT_TRUNCATED";
+const NO_TOOL_PAYLOAD = "NO_TOOL_PAYLOAD";
 /** Added to a repair request whose previous answer was cut off. Fixed text: nothing the model wrote is echoed back. */
 const TRUNCATION_NOTE = "Your previous answer was cut off because it reached the output limit. Answer again, more concisely: shorter text values, no repetition, and keep any internal reasoning brief.";
 /** Tells the model, in every call, when no verified catalog backs this product and release. */
@@ -83,10 +84,10 @@ const describeIssue = ({ path, code, detail }: ValidationIssue): string => {
   return `${path}: ${kind ? `expected ${article(kind[1]!)}, got ${article(kind[2]!)}` : detail ? detail.replace(/^[a-z_]+: /, "") || code : code}`;
 };
 /** Added to a repair request: the paths and the kind of each issue (so the model can fix them) and, after a cut-off answer, how to shorten. */
-const repairNotes = (errors: readonly ValidationIssue[]) => {
+const repairNotes = (errors: readonly ValidationIssue[], hints: readonly string[] = []) => {
   if (!errors.length) return {};
   const lines = errors.filter(error => error.code !== OUTPUT_TRUNCATED).slice(0, MAX_NOTE_ISSUES).map(describeIssue);
-  const parts = [...(lines.length ? [`Fix exactly these fields of your previous answer: ${lines.join("; ")}. Change only the listed fields; copy every other field exactly from your previous answer.`] : []),
+  const parts = [...(lines.length ? [`Fix exactly these fields of your previous answer: ${lines.join("; ")}. Change only the listed fields; copy every other field exactly from your previous answer.`, ...hints] : []),
     ...(errors.some(error => error.code === OUTPUT_TRUNCATED) ? [TRUNCATION_NOTE] : [])];
   return parts.length ? { repairNote: parts.join(" ") } : {};
 };
@@ -317,6 +318,13 @@ export const stepDigest = (steps: DetailedDesign["steps"]) => steps.map(step => 
 /** Per-group register input: the frozen outline, every answered company-context field, all requirements and the catalog's
  * objects. No source text, no evidence quotes. The early groups see no step bodies (the step calls run in parallel and are not available
  * yet); the late groups also get the finished steps as a digest. */
+/** Register errors whose code alone does not say what is missing, said in words from the company context (names only, never anything the model wrote). */
+function registerHints(input: ToBeInput, errors: readonly ValidationIssue[]): string[] {
+  const retained = input.discovery.companyContext?.find(item => item.fieldId === "retained_systems")?.value;
+  return retained && errors.some(error => error.code === "RETAINED_SYSTEM_UNCOVERED")
+    ? [`RETAINED_SYSTEM_UNCOVERED: every retained system needs its own interface row whose counterpartSystem names it and whose contextFieldIds hold "retained_systems"; the retained systems are ${segments(retained).map(name => `"${name}"`).join(", ")}.`] : [];
+}
+
 export function registerRequest(input: ToBeInput, references: DesignContext["references"], outline: Outline, group: RegisterGroup, validationErrors: ValidationIssue[],
   steps?: DetailedDesign["steps"], repair?: PartRepair) {
   const { discovery } = input;
@@ -329,7 +337,7 @@ export function registerRequest(input: ToBeInput, references: DesignContext["ref
     // The catalog is the largest part of a register request. Scope and governance rows carry no SAP basis, so they are not sent it.
     ...(NO_CATALOG_GROUPS.includes(group) ? {} : { references: references.map(({ id, fitType, capability, objects }) => ({ id, fitType, capability, objects })) }),
     ...(steps && { steps: stepDigest(steps) }),
-    inputOpenQuestions: discovery.openQuestions, validationErrors, ...catalogNote(input, references), ...repairNotes(validationErrors),
+    inputOpenQuestions: discovery.openQuestions, validationErrors, ...catalogNote(input, references), ...repairNotes(validationErrors, registerHints(input, validationErrors)),
     ...(repair && { repairNote: repair.note, currentAnswer: repair.current }),
   };
 }
@@ -359,7 +367,9 @@ export async function runPool<T>(items: readonly T[], limit: number, worker: (it
 
 export type DesignDeps = {
   /** One model call; resolves to the tool payload, null when the provider did not return exactly one complete tool call, or TRUNCATED when it stopped on max_tokens. */
-  ask: (substage: Substage, user: unknown, group?: RegisterGroup | "patch", options?: { thinking?: boolean }) => Promise<unknown>;
+  ask: (substage: Substage, user: unknown, group?: RegisterGroup | "patch", options?: { thinking?: boolean; outputScale?: number }) => Promise<unknown>;
+  /** The output ceiling (max_tokens) a call of this kind runs with at this multiplier of its configured one. Absent: ceilings are fixed and a cut-off answer is only re-asked. */
+  maxTokens?: (substage: Substage, group: RegisterGroup | "patch" | undefined, scale: number) => number;
   /** The error to throw for AI_INVALID_OUTPUT. */
   invalid: () => Error;
   /** Record the issues of one failed attempt in the stage metrics. */
@@ -406,20 +416,34 @@ export async function runDesign(input: ToBeInput, references: DesignContext["ref
     else if (result.warnings.length) deps.warn?.(result.warnings);
     return result;
   };
+  /** Output-ceiling multiplier per call (a step id, "register:<group>", "outline"): doubled after a cut-off or empty answer, so the re-ask has room. */
+  const scales = new Map<string, number>();
+  const ask = (key: string, substage: Substage, request: unknown, group?: RegisterGroup | "patch", options?: { thinking?: boolean }) =>
+    deps.ask(substage, request, group, scales.has(key) ? { ...options, outputScale: scales.get(key)! } : options);
+  /** True when `errors` hold a cut-off or empty answer and the call's ceiling could still be doubled (it now is): the re-ask is then free, as it spends none of the repairs a draft that is wrong needs.
+   * Bounded by the cap, not by a count: a ceiling that cannot grow any more falls back to the ordinary repairs. */
+  const raiseCeiling = (key: string, substage: Substage, group: RegisterGroup | "patch" | undefined, path: string, errors: readonly ValidationIssue[]) => {
+    if (!deps.maxTokens || !errors.some(error => error.code === OUTPUT_TRUNCATED || error.code === NO_TOOL_PAYLOAD)) return false;
+    const scale = scales.get(key) ?? 1, grown = deps.maxTokens(substage, group, scale * 2);
+    if (grown <= deps.maxTokens(substage, group, scale)) return false;
+    scales.set(key, scale * 2);
+    deps.warn?.([{ code: "OUTPUT_CEILING_RAISED", path, detail: `${grown} tokens` }]);
+    return true;
+  };
   const requestOutline = async (errors: ValidationIssue[]) => {
-    const raw = await deps.ask("to_be_outline", outlineRequest(input, references, errors));
+    const raw = await ask("outline", "to_be_outline", outlineRequest(input, references, errors));
     return settle(raw, "outline", raw === TRUNCATED ? { success: false as const, errors: [{ path: "to_be_outline", code: OUTPUT_TRUNCATED }], shaped: lastShaped }
       : validateOutline(input, references, raw, errors.length && lastShaped !== undefined ? { value: lastShaped, issues: errors } : undefined));
   };
   /** Ask for a patch of the flagged items, merge it onto the last outline and validate the merge. A patch that is cut off, missing or
    * fails its schema is a failed repair that leaves the errors (and the last outline) as they were. */
   const requestPatch = async (errors: ValidationIssue[]) => {
-    const raw = await deps.ask("to_be_outline", outlinePatchRequest(input, references, lastShaped, errors), "patch");
+    const raw = await ask("outline", "to_be_outline", outlinePatchRequest(input, references, lastShaped, errors), "patch");
     const normalized = raw === TRUNCATED || raw === null ? undefined : normalizeToolInput(OutlinePatchSchema, raw, "outline.patch");
     const parsed = normalized ? OutlinePatchSchema.safeParse(normalized.value) : undefined;
     if (!normalized || !parsed || !parsed.success) {
       const issues = raw === TRUNCATED ? [{ path: "to_be_outline", code: OUTPUT_TRUNCATED }] : parsed && !parsed.success
-        ? rePath(draftIssues(parsed.error.issues), "draft", "outline.patch") : [{ path: "to_be_outline", code: "NO_TOOL_PAYLOAD" }];
+        ? rePath(draftIssues(parsed.error.issues), "draft", "outline.patch") : [{ path: "to_be_outline", code: NO_TOOL_PAYLOAD }];
       deps.record(issues);
       if (raw !== TRUNCATED && raw !== null) deps.rawFailure?.("to_be_outline", "outline-patch", raw);
       return { success: false as const, errors, shaped: lastShaped };
@@ -434,7 +458,11 @@ export async function runDesign(input: ToBeInput, references: DesignContext["ref
   };
   // The outline gets up to maxOutlineRepairs repairs (the second only while the stage budget is more than half unspent): errors only, never the model's own text.
   let first = await requestOutline([]);
-  while (!first.success && canRepairOutline()) { outlineRepairs++; first = await repairOutline(first.errors); }
+  while (!first.success) {
+    // A cut-off outline is asked again with a larger ceiling before it costs a repair.
+    if (!raiseCeiling("outline", "to_be_outline", undefined, "to_be_outline", first.errors)) { if (!canRepairOutline()) break; outlineRepairs++; }
+    first = await repairOutline(first.errors);
+  }
   if (!first.success) throw deps.invalid();
   let outline = first.outline;
 
@@ -462,7 +490,7 @@ export async function runDesign(input: ToBeInput, references: DesignContext["ref
     const respelled = repairIdVariants(repaired.value, citable(current, repaired.value), path);
     const parsed = StepDetailSchema.safeParse(respelled.value);
     if (parsed.success) return { ok: true as const, value: parsed.data, warnings: [normalized.warnings, repaired.warnings, respelled.warnings] };
-    return { ok: false as const, errors: raw === TRUNCATED ? [{ path, code: OUTPUT_TRUNCATED }] : raw === null ? [{ path, code: "NO_TOOL_PAYLOAD" }] : rePath(draftIssues(parsed.error.issues), "draft", path) };
+    return { ok: false as const, errors: raw === TRUNCATED ? [{ path, code: OUTPUT_TRUNCATED }] : raw === null ? [{ path, code: NO_TOOL_PAYLOAD }] : rePath(draftIssues(parsed.error.issues), "draft", path) };
   };
   /** The same for one register group. */
   const readGroup = (current: Outline, group: RegisterGroup, raw: unknown) => {
@@ -471,7 +499,7 @@ export async function runDesign(input: ToBeInput, references: DesignContext["ref
     const respelled = repairIdVariants(repaired.value, citable(current, repaired.value), "draft");
     const parsed = RegisterGroupSchemas[group].safeParse(respelled.value);
     if (parsed.success) return { ok: true as const, value: parsed.data satisfies RegisterPayloads[RegisterGroup], warnings: [normalized.warnings, repaired.warnings, respelled.warnings] };
-    return { ok: false as const, errors: raw === TRUNCATED ? [{ path: "draft", code: OUTPUT_TRUNCATED }] : raw === null ? [{ path: "draft", code: "NO_TOOL_PAYLOAD" }] : draftIssues(parsed.error.issues) };
+    return { ok: false as const, errors: raw === TRUNCATED ? [{ path: "draft", code: OUTPUT_TRUNCATED }] : raw === null ? [{ path: "draft", code: NO_TOOL_PAYLOAD }] : draftIssues(parsed.error.issues) };
   };
 
   /** Steps and register groups are independent calls over the frozen outline, so they share one bounded pool. */
@@ -481,12 +509,13 @@ export async function runDesign(input: ToBeInput, references: DesignContext["ref
       const index = current.steps.findIndex(step => step.id === stepId);
       let validationErrors = errors.get(stepId) ?? [], thinking = false;
       for (;;) {
-        const raw = await deps.ask("to_be_step", stepRequest(input, references, current, current.steps[index]!, validationErrors), undefined, thinking ? { thinking } : undefined);
+        const raw = await ask(stepId, "to_be_step", stepRequest(input, references, current, current.steps[index]!, validationErrors), undefined, thinking ? { thinking } : undefined);
         const result = readStep(current, stepId, raw);
         if (result.ok) { details.set(stepId, result.value); warnAll(...result.warnings); return; }
         if (raw !== TRUNCATED && raw !== null) deps.rawFailure?.("to_be_step", stepId, raw);
         validationErrors = result.errors;
         deps.record(validationErrors);
+        if (raiseCeiling(stepId, "to_be_step", undefined, `draft.steps.${index}`, validationErrors)) continue;
         if (!thinking && (deps.maxPartRepairs ?? 2) > 0 && !outlineRepairAllowed(retries.get(stepId) ?? 0, deps.maxPartRepairs ?? 2, deps.remainingBudget?.() ?? 1)
           && (deps.remainingBudget?.() ?? 1) > THINKING_RETRY_MIN_REMAINING) {
           // Retries spent: one more call with reasoning on, for this step only. Its failure ends the stage like any exhausted retry.
@@ -503,12 +532,13 @@ export async function runDesign(input: ToBeInput, references: DesignContext["ref
       // A late group reads the finished steps; by the time it runs every step of `current` is in `details`.
       const steps = isLate(group) ? assemble(current, details).steps : undefined;
       for (;;) {
-        const raw = await deps.ask("to_be_registers", registerRequest(input, references, current, group, validationErrors, steps), group);
+        const raw = await ask(registerKey(group), "to_be_registers", registerRequest(input, references, current, group, validationErrors, steps), group);
         const result = readGroup(current, group, raw);
         if (result.ok) { registers.set(group, result.value); warnAll(...result.warnings); return; }
         if (raw !== TRUNCATED && raw !== null) deps.rawFailure?.("to_be_registers", group, raw);
         validationErrors = result.errors;
         deps.record(validationErrors);
+        if (raiseCeiling(registerKey(group), "to_be_registers", group, `draft.${group}`, validationErrors)) continue;
         markRetry(registerKey(group));
       }
     };

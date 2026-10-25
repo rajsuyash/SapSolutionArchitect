@@ -96,7 +96,7 @@ export type RegisterPayloads = { [G in RegisterGroup]: z.infer<(typeof RegisterG
 type Draft = { schemaVersion: 1 | 2 | 3 } & { [K in RegisterKey]?: unknown[] };
 
 /** Lines and semicolon items of a free-text answer that a register must account for. Headings ("Systems we keep:") are skipped. */
-const segments = (value: string, needsDigit = false) => value.split(/\r?\n|;/).map(norm).filter(part =>
+export const segments = (value: string, needsDigit = false) => value.split(/\r?\n|;/).map(norm).filter(part =>
   part.length >= 3 && !part.endsWith(":") && (!needsDigit || /\d/.test(part)));
 
 /** Checks the registers of a schemaVersion 2 design. A version 1 design must carry none. Codes only: no model text is echoed. */

@@ -1,10 +1,10 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { readFile } from "node:fs/promises";
 import { z } from "zod";
-import { parseEnvironment, STAGE_NAMES, TO_BE_SUBSTAGES, type Environment } from "../env";
+import { parseEnvironment, STAGE_NAMES, TO_BE_MAX_TOKENS_CAP, TO_BE_SUBSTAGES, type Environment } from "../env";
 import { ProblemAnalysisInputSchema, ProblemAnalysisSchema, redactInput, schemaIssues, validateProblemAnalysis,
   type ProblemAnalysis, type ValidationIssue } from "./problem-analysis";
-import { classifyProviderError, createProviderClient, logProviderFailure, logProviderRetry, logStageTimeout, type Provider } from "./provider";
+import { classifyProviderError, createProviderClient, logProviderFailure, logOutputCeilingRaised, logProviderRetry, logStageTimeout, type Provider } from "./provider";
 import { withProviderRetry } from "./retry";
 import { loadToBeReferences, parseToBeInput, type ToBeOutput } from "./to-be";
 import { REGISTER_GROUP_NAMES, RegisterGroupSchemas } from "./design-registers";
@@ -337,6 +337,11 @@ export function createStageRunner(config: Config, options: Options = {}) {
         const tools = Object.fromEntries(Object.entries(kinds).map(([key, kind]) =>
           [key, { name: kind.name, input_schema: { ...z.toJSONSchema(kind.schema), type: "object" } } satisfies Anthropic.Tool]));
         const design = designInput;
+        // A patch call uses the outline patch tool; a fix call (substage to_be_fix) uses the tool of the part it repairs: a register group, the outline patch, or a step.
+        const kindKey = (substage: Substage, group?: string) => group === "patch" ? "to_be_outline_patch" : substage === "to_be_registers" || (substage === "to_be_fix" && group) ? `to_be_registers:${group}`
+          : substage === "to_be_fix" ? "to_be_step" : substage;
+        /** The call's max_tokens: the configured ceiling times the pipeline's multiplier (raised after a cut-off answer), never above the cap. */
+        const ceilingOf = (key: string, scale: number) => Math.min(TO_BE_MAX_TOKENS_CAP, kinds[key as keyof typeof kinds].maxTokens * scale);
         const keepRaw = (substage: Substage, key: string, payload: unknown) => {
           const failures = metrics.rawFailures ??= [];
           if (failures.length >= RAW_FAILURE_MAX_ENTRIES) return;
@@ -354,13 +359,14 @@ export function createStageRunner(config: Config, options: Options = {}) {
           record: (issues) => { metrics.validationErrors.push(...issues); metrics.attemptIssues!.push(issues); },
           warn: (issues) => { metrics.warnings = [...(metrics.warnings ?? []), ...issues]; },
           ...(options.captureRaw && { rawFailure: keepRaw }),
+          maxTokens: (substage, group, scale) => ceilingOf(kindKey(substage, group), scale),
           ask: async (substage, request, group, askOptions) => {
-            // A patch call uses the outline patch tool; a fix call (substage to_be_fix) uses the tool of the part it repairs: a register group, the outline patch, or a step.
-            const key = group === "patch" ? "to_be_outline_patch" : substage === "to_be_registers" || (substage === "to_be_fix" && group) ? `to_be_registers:${group}`
-              : substage === "to_be_fix" ? "to_be_step" : substage;
+            const key = kindKey(substage, group);
             const kind = kinds[key as keyof typeof kinds];
+            const maxTokens = ceilingOf(key, askOptions?.outputScale ?? 1);
+            if (maxTokens > kind.maxTokens) logOutputCeilingRaised(provider, model, stage, substage, maxTokens);
             const rawKeyOf = group && group !== "patch" ? String(group) : substage === "to_be_step" || (substage === "to_be_fix" && !group) ? (request as { step: { id: string } }).step.id : substage === "to_be_review" ? "review" : group === "patch" ? "outline-patch" : "outline";
-            const output = await generate({ system: kind.system, user: JSON.stringify(request), tool: tools[key]!, maxTokens: kind.maxTokens,
+            const output = await generate({ system: kind.system, user: JSON.stringify(request), tool: tools[key]!, maxTokens,
               // A thinking retry (one last call for a step that kept failing) sends the request without thinking-disabled; an operator's AI_REASONING_EFFORT=none still wins.
               guard: true, thinkingOff: reasoningOff || (!askOptions?.thinking && (noThinking.has(substage) || noThinking.has("to_be") || expansionThinkingOff(substage))),
               // A model that ends its turn with the payload as a JSON text block instead of calling the tool is accepted exactly as in the interview.

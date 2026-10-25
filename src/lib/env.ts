@@ -4,6 +4,8 @@ const required = z.string().trim().min(1);
 export const REASONING_EFFORTS = ["none", "low", "medium", "high", "max"] as const;
 /** Model every stage runs on when AI_PROVIDER=openrouter and AI_MODEL is unset (list price USD per MTok: 0.15 in, 0.60 out). */
 const OPENROUTER_DEFAULT_PRICES: [number, number] = [0.15, 0.6];
+/** Highest output-token ceiling (max_tokens) of a To-Be call, as configured or after a cut-off answer doubles it. */
+export const TO_BE_MAX_TOKENS_CAP = 64000;
 export const OPENROUTER_DEFAULT_MODEL = "deepseek/deepseek-v4.1-flash-1017";
 const httpUrl = z.url({ protocol: /^https?$/ });
 // A blank variable means "use the default", not zero.
@@ -64,9 +66,10 @@ const schema = z.object({
   AI_TO_BE_FIX_MAX_PARTS: whole(8, 0, 20),
   // Output-token ceilings (max_tokens) of the three To-Be request kinds. Reasoning tokens count against them, so a model that
   // thinks needs room above the visible JSON (outline ~3k, step ~3k, register group ~3.5k tokens without reasoning).
-  AI_TO_BE_OUTLINE_MAX_TOKENS: whole(16000, 1000, 64000),
-  AI_TO_BE_STEP_MAX_TOKENS: whole(8000, 1000, 64000),
-  AI_TO_BE_REGISTERS_MAX_TOKENS: whole(8000, 1000, 64000),
+  // A call whose answer was cut off or empty is asked again with the ceiling doubled, up to TO_BE_MAX_TOKENS_CAP.
+  AI_TO_BE_OUTLINE_MAX_TOKENS: whole(16000, 1000, TO_BE_MAX_TOKENS_CAP),
+  AI_TO_BE_STEP_MAX_TOKENS: whole(8000, 1000, TO_BE_MAX_TOKENS_CAP),
+  AI_TO_BE_REGISTERS_MAX_TOKENS: whole(8000, 1000, TO_BE_MAX_TOKENS_CAP),
   // Stages run with model reasoning off (DeepInfra and OpenRouter; `thinking: {type: "disabled"}`). Empty = every stage keeps default reasoning.
   AI_NO_THINKING_STAGES: stageList,
   // OpenRouter only: reasoning effort sent as `output_config: {effort}` (OpenRouter maps it to its unified reasoning.effort); "none" sends

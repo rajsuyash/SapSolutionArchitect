@@ -87,6 +87,11 @@ export function logProviderRetry(provider: Provider, model: string, stage: strin
   console.error(JSON.stringify({ event: "ai_provider_retry", provider, model, stage, attempt, status, errorType, delayMs }));
 }
 
+/** One structured line per To-Be call that runs with a raised output ceiling after a cut-off or empty answer. Carries no prompt, user data or key. */
+export function logOutputCeilingRaised(provider: Provider, model: string, stage: string, substage: string, maxTokens: number) {
+  console.error(JSON.stringify({ event: "ai_output_ceiling_raised", provider, model, stage, substage, maxTokens }));
+}
+
 /** One structured line when the runner's whole-stage budget expires. Carries no prompt, user data or key. */
 export function logStageTimeout(provider: Provider, model: string, stage: string, elapsedMs: number, attempts: number) {
   console.error(JSON.stringify({ event: "ai_stage_timeout", provider, model, stage, elapsedMs, attempts }));
