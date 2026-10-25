@@ -9,15 +9,15 @@
 // Needs the provider's key in the environment (DEEPINFRA_API_KEY, or OPENROUTER_API_KEY with --provider openrouter, which also needs --model; cost is still priced at JUDGE_PRICE_PER_MTOK) (this script never reads .env files). --calibrate judges the hand-written
 // STRONG control (fixtures/eval/controls/pump-o2c.strong.json) and a WEAK plan mechanically derived from it, and says whether the
 // judge separates them. Flags: --provider <deepinfra|openrouter> (default deepinfra) --model <id> --runs N --concurrency N (default 1 on openrouter, 3 on deepinfra)
-// --min-runs N (default 2; fewer successful judgements = exit 1, "NOT A MEASUREMENT") --deadline-seconds N (default 1800; no retry starts after it, in-flight calls are aborted)
-// --call-timeout-seconds N (default 900) ; transient failures (5xx, 429, a connection cut mid-stream) are retried 3 times with 2/6/18 s backoff --max-cost <usd, default 1.00> --spread-flag <0.5>.
+// --min-runs N (default 2; fewer successful judgements = exit 1, "NOT A MEASUREMENT") --deadline-seconds N (default 1800 per wave of concurrent judgements, so 5400 for 3 runs at concurrency 1; no retry starts after it, in-flight calls are aborted)
+// --call-timeout-seconds N (default 900) --max-tokens N (output budget per call, default 20000; a judgement that stops at it without calling the tool is retried once at twice that, then fails as JUDGE_OUTPUT_TRUNCATED; OpenRouter reserves the budget's cost up front and a 402 "maximum cost exceeds your available credits" means add credit or lower this) ; transient failures (5xx, 429, a connection cut mid-stream) are retried 3 times with 2/6/18 s backoff --max-cost <usd, default 1.00> --spread-flag <0.5>.
 // Output: test-results/eval/judge-<timestamp>.json and .md (gitignored).
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import {
-  aggregateRuns, assessIndependence, assessJudgements, DEFAULT_DEADLINE_SECONDS, DEFAULT_JUDGE_CALL_TIMEOUT_MS, DEFAULT_MIN_RUNS, defaultConcurrency, runLimited, buildCaseBrief, calibrate, costUsd, DEFAULT_RUNS, DEFAULT_SPREAD_FLAG, defaultJudgeModel, degradeDesign, independenceLine, JudgeError, judgeOnce, loadToBe,
+  aggregateRuns, assessIndependence, assessJudgements, defaultDeadlineSeconds, DEFAULT_JUDGE_CALL_TIMEOUT_MS, DEFAULT_MIN_RUNS, defaultConcurrency, runLimited, buildCaseBrief, calibrate, costUsd, DEFAULT_RUNS, DEFAULT_SPREAD_FLAG, defaultJudgeModel, degradeDesign, independenceLine, JudgeError, judgeCreditHint, judgeOnce, loadToBe,
   RUBRIC, type Aggregate, type RunStatus, type Calibration, type CaseBrief, type Graded, type Independence, type ToBe, type Usage,
 } from "../src/lib/eval-judge";
-import { classifyProviderError, createProviderClient, creditHint, type Provider } from "../src/lib/ai/provider";
+import { classifyProviderError, createProviderClient, type Provider } from "../src/lib/ai/provider";
 import { loadSapReferences } from "../src/lib/ai/sap-references";
 
 const flag = (name: string) => { const i = process.argv.indexOf(`--${name}`); return i >= 0 ? process.argv[i + 1] : undefined; };
@@ -54,7 +54,7 @@ async function main() {
   const apiKey = process.env[keyName]?.trim();
   if (!apiKey) throw new Error(`${keyName} is not set`);
   const positive = (name: string, fallback: number) => { const value = Number(flag(name) ?? fallback); if (!(value > 0)) throw new Error(`--${name} must be a positive number`); return value; };
-  const concurrency = Math.floor(positive("concurrency", defaultConcurrency(judgeProvider))), minRuns = Math.floor(positive("min-runs", DEFAULT_MIN_RUNS)), deadlineSeconds = positive("deadline-seconds", DEFAULT_DEADLINE_SECONDS);
+  const concurrency = Math.floor(positive("concurrency", defaultConcurrency(judgeProvider))), minRuns = Math.floor(positive("min-runs", DEFAULT_MIN_RUNS)), deadlineSeconds = positive("deadline-seconds", defaultDeadlineSeconds(runs, concurrency)), maxTokens = Math.floor(positive("max-tokens", 20000));
   const callTimeoutMs = Math.round(positive("call-timeout-seconds", DEFAULT_JUDGE_CALL_TIMEOUT_MS / 1000) * 1000);
   if (minRuns > runs) throw new Error("--min-runs cannot exceed --runs");
   // The SDK timeout only has to outlast the per-call timeout judgeOnce passes with each request.
@@ -67,10 +67,15 @@ async function main() {
   async function judge(label: string, tobe: ToBe, caseBrief: CaseBrief): Promise<Judged> {
     // One deadline for the whole set: no retry starts after it, and calls still streaming are aborted at it.
     const deadlineAt = Date.now() + deadlineSeconds * 1000, signal = AbortSignal.timeout(deadlineSeconds * 1000);
+    // --max-cost also stops judgements that have not started once the finished ones have spent it (calls in flight still finish).
+    let setSpent = 0;
+    const charge = (u: Usage | null) => { if (u) setSpent += costUsd(u.inputTokens, u.outputTokens); };
     const settled = await runLimited(runs, concurrency, index => {
       if (signal.aborted) return Promise.reject(new Error("judge deadline reached before this judgement started"));
-      return judgeOnce(client, RUBRIC, caseBrief, tobe, { model, timeoutMs: callTimeoutMs, signal, deadlineAt,
-        onRetry: (retry, delayMs, error) => console.error(JSON.stringify({ event: "judge_retry", label, run: index + 1, retry, delayMs, error: message(error).slice(0, 120) })) });
+      if (spent + setSpent >= maxCost) return Promise.reject(new Error(`cost cap $${maxCost} reached before this judgement started`));
+      return judgeOnce(client, RUBRIC, caseBrief, tobe, { model, maxTokens, timeoutMs: callTimeoutMs, signal, deadlineAt,
+        onRetry: (retry, delayMs, error) => console.error(JSON.stringify({ event: "judge_retry", label, run: index + 1, retry, delayMs, error: message(error).slice(0, 120) })) })
+        .then(value => { charge(value.usage); return value; }, (error: unknown) => { charge(error instanceof JudgeError ? error.usage : null); throw error; });
     });
     const usage: Usage = { inputTokens: 0, outputTokens: 0, calls: 0 };
     const good: Graded[][] = [], failures: string[] = [], statuses: RunStatus[] = [];
@@ -80,7 +85,7 @@ async function main() {
       if (result.status === "fulfilled") { good.push(result.value.graded); statuses.push({ run: index, ok: true, detail: `total ${result.value.score.total}, ${result.value.usage.calls} calls` }); }
       else { failures.push(message(result.reason)); statuses.push({ run: index, ok: false, detail: message(result.reason) }); }
     });
-    if (settled.some(result => result.status === "rejected" && classifyProviderError(result.reason).category === "credit")) console.error(`eval-judge: ${creditHint(judgeProvider as Provider)}`);
+    if (settled.some(result => result.status === "rejected" && classifyProviderError(result.reason).category === "credit")) console.error(`eval-judge: ${judgeCreditHint(judgeProvider as Provider)}`);
     spent += costUsd(usage.inputTokens, usage.outputTokens);
     console.log(`${label}: ${good.length}/${runs} judgements ok, ${usage.calls} calls, ${usage.inputTokens} in / ${usage.outputTokens} out tokens, cumulative $${spent.toFixed(4)}`);
     const verdict = assessJudgements(statuses, minRuns);

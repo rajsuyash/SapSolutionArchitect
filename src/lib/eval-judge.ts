@@ -5,6 +5,7 @@
 // finished To-Be (never the generator's prompt or identity), and must cite a specific element for every credit.
 import type Anthropic from "@anthropic-ai/sdk";
 import { z } from "zod";
+import { creditHint, type Provider } from "./ai/provider";
 import { withProviderRetry, type RetryOptions } from "./ai/retry";
 import { WORKSPACE_FIELDS } from "./workspace-fields";
 
@@ -440,7 +441,7 @@ export function degradeDesign(design: Record<string, unknown>): Record<string, u
 
 // --- provider call -------------------------------------------------------------------------------------------
 
-export type JudgeMessage = { content: { type: string; name?: string; input?: unknown }[]; usage: { input_tokens: number; output_tokens: number; cache_creation_input_tokens?: number | null; cache_read_input_tokens?: number | null } };
+export type JudgeMessage = { stop_reason?: string | null; content: { type: string; name?: string; input?: unknown }[]; usage: { input_tokens: number; output_tokens: number; cache_creation_input_tokens?: number | null; cache_read_input_tokens?: number | null } };
 export type StreamParams = Parameters<Anthropic["messages"]["stream"]>[0];
 /** The slice of the Anthropic SDK client the judge needs; tests supply a mock. */
 export interface JudgeClient {
@@ -448,13 +449,19 @@ export interface JudgeClient {
 }
 export type Usage = { inputTokens: number; outputTokens: number; calls: number };
 export class JudgeError extends Error {
-  constructor(public readonly code: "JUDGE_INVALID_OUTPUT" | "JUDGE_NO_TOOL_CALL", public readonly usage: Usage, public readonly issues: Issue[] = []) {
+  constructor(public readonly code: "JUDGE_INVALID_OUTPUT" | "JUDGE_NO_TOOL_CALL" | "JUDGE_OUTPUT_TRUNCATED", public readonly usage: Usage, public readonly issues: Issue[] = []) {
     super(code + (issues.length ? `: ${issues.map(i => `${i.code} ${i.detail ?? i.path}`).slice(0, 5).join("; ")}` : ""));
     this.name = "JudgeError";
   }
 }
 /** Per-call timeout for a judgement: a ~100k-token design needs minutes of streaming, so never below 15 minutes by default. */
 export const DEFAULT_JUDGE_CALL_TIMEOUT_MS = 900_000;
+/** A reasoning model can spend the whole output budget before it calls the tool (stop_reason max_tokens). One retry gets this many times the budget. */
+export const TRUNCATION_RETRY_FACTOR = 2;
+/** Operator line for a credit failure of the judge. OpenRouter reserves a request's maximum output cost up front, so it can refuse a call the balance would have covered. */
+export function judgeCreditHint(provider: Provider): string {
+  return `${creditHint(provider)} OpenRouter reserves max tokens x price per request and answers 402 "maximum cost exceeds your available credits" when the balance is below that: add credit or lower --max-tokens (a truncated judgement is retried once at ${TRUNCATION_RETRY_FACTOR}x).`;
+}
 export type JudgeOptions = { model?: string; temperature?: number; maxTokens?: number; timeoutMs?: number; signal?: AbortSignal; maxAttempts?: number;
   /** Epoch ms after which no transient-failure retry starts (the judge deadline). */
   deadlineAt?: number; onRetry?: RetryOptions["onRetry"] };
@@ -467,16 +474,23 @@ export async function judgeOnce(client: JudgeClient, rubric: readonly Criterion[
   const tools: Anthropic.Tool[] = [{ name: JUDGE_TOOL, description: "Submit the verdicts for every rubric criterion.", input_schema: { ...jsonSchema, type: "object" } }];
   const system = buildSystemPrompt(rubric);
   const usage: Usage = { inputTokens: 0, outputTokens: 0, calls: 0 };
-  let issues: Issue[] = [];
+  let issues: Issue[] = [], tokens = maxTokens, retried = false, cut = false;
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     const userPrompt = buildUserPrompt(brief, tobe, issues);
     // Transient failures (5xx, 429, a connection cut mid-stream) re-send the same request: the retry policy runStage uses.
-    const message = await withProviderRetry(() => client.messages.stream({ model, max_tokens: maxTokens, temperature, system,
+    const message = await withProviderRetry(() => client.messages.stream({ model, max_tokens: tokens, temperature, system,
       messages: [{ role: "user", content: userPrompt }], tools, tool_choice: { type: "auto" } },
       { signal, timeout: timeoutMs }).finalMessage(), { signal, deadlineAt, callTimeoutMs: timeoutMs, onRetry });
     usage.calls++; usage.outputTokens += message.usage.output_tokens;
     // Cached prompt tokens are still prompt tokens (priced as input here, an upper bound), as runStage counts them.
     usage.inputTokens += message.usage.input_tokens + (message.usage.cache_creation_input_tokens ?? 0) + (message.usage.cache_read_input_tokens ?? 0);
+    // Out of output budget: the tool call is missing or cut off. Retry once with a bigger budget; a second cut is final.
+    cut = message.stop_reason === "max_tokens";
+    if (cut) {
+      if (retried) break;
+      retried = true; tokens = maxTokens * TRUNCATION_RETRY_FACTOR; issues = [];
+      continue;
+    }
     const calls = message.content.filter(block => block.type === "tool_use" && block.name === JUDGE_TOOL);
     if (calls.length !== 1) { issues = [{ path: "tool", code: "expected_exactly_one_tool_call", detail: String(calls.length) }]; continue; }
     const result = validateJudgeOutput(rubric, calls[0]!.input);
@@ -486,6 +500,7 @@ export async function judgeOnce(client: JudgeClient, rubric: readonly Criterion[
     }
     issues = result.issues;
   }
+  if (cut) throw new JudgeError("JUDGE_OUTPUT_TRUNCATED", usage, [{ path: "tool", code: "max_tokens", detail: String(tokens) }]);
   throw new JudgeError(issues[0]?.code === "expected_exactly_one_tool_call" ? "JUDGE_NO_TOOL_CALL" : "JUDGE_INVALID_OUTPUT", usage, issues);
 }
 
@@ -495,6 +510,8 @@ export async function judgeOnce(client: JudgeClient, rubric: readonly Criterion[
 export const DEFAULT_MIN_RUNS = 2;
 /** Default overall deadline for one set of judgements, in seconds. */
 export const DEFAULT_DEADLINE_SECONDS = 1800;
+/** Overall deadline when --deadline-seconds is not given: DEFAULT_DEADLINE_SECONDS per wave, so judgements run one at a time (OpenRouter) still all get their turn. */
+export function defaultDeadlineSeconds(runs: number, concurrency: number): number { return DEFAULT_DEADLINE_SECONDS * Math.ceil(runs / Math.max(1, concurrency)); }
 /** Long judgements (~100k input tokens) on OpenRouter were cut mid-stream when three ran at once; DeepInfra coped with all three. */
 export function defaultConcurrency(provider: "deepinfra" | "openrouter"): number { return provider === "openrouter" ? 1 : 3; }
 

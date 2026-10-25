@@ -3,7 +3,8 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { createProviderClient } from "../src/lib/ai/provider";
+import Anthropic from "@anthropic-ai/sdk";
+import { classifyProviderError, createProviderClient } from "../src/lib/ai/provider";
 import { messageEvents, sseResponse } from "./support/sse";
 import pharma from "../fixtures/eval/pharma-p2p.json";
 import services from "../fixtures/eval/services-r2r.json";
@@ -17,7 +18,7 @@ import { fixture as rentalInput } from "./support/to-be-input";
 import { ScoringCaseSchema } from "../src/lib/eval-score";
 import { STEP_KEYS, WORKSPACE_FIELDS } from "../src/lib/workspace-fields";
 import {
-  aggregateRuns, assessIndependence, assessJudgements, DEFAULT_JUDGE_CALL_TIMEOUT_MS, DEFAULT_MIN_RUNS, defaultConcurrency, runLimited, buildCaseBrief, buildSystemPrompt, buildUserPrompt, calibrate, citableIds, CHECKLIST_TEXT, costUsd, defaultJudgeModel, degradeDesign, gradeRun, independenceLine, modelFamily, isGrounded, JUDGE_TOOL, JudgeError, judgeOnce,
+  aggregateRuns, assessIndependence, assessJudgements, DEFAULT_JUDGE_CALL_TIMEOUT_MS, DEFAULT_MIN_RUNS, defaultConcurrency, defaultDeadlineSeconds, judgeCreditHint, runLimited, buildCaseBrief, buildSystemPrompt, buildUserPrompt, calibrate, citableIds, CHECKLIST_TEXT, costUsd, defaultJudgeModel, degradeDesign, gradeRun, independenceLine, modelFamily, isGrounded, JUDGE_TOOL, JudgeError, judgeOnce,
   loadToBe, median, parseRubric, RUBRIC, scoreGraded, validateJudgeOutput, type Criterion, type Graded, type JudgeClient, type JudgeMessage, type ToBe,
 } from "../src/lib/eval-judge";
 
@@ -563,5 +564,41 @@ describe("judge transport retry and run control", () => {
     expect(one.lines).toEqual(["  run 1: ok total 90", "  run 2: FAILED terminated", "  run 3: FAILED terminated"]);
     expect(assessJudgements(st(true, true, false), DEFAULT_MIN_RUNS)).toMatchObject({ valid: true, banner: null });
     expect(assessJudgements(st(true), 1).valid).toBe(true);
+  });
+});
+
+describe("judge truncation, deadline and credit", () => {
+  const cut = (outputTokens = 20000) => ({ ...msg([{ type: "text" }], 100, outputTokens), stop_reason: "max_tokens" });
+  it("a judgement that stops at max_tokens without a tool call is retried once with a larger output budget", async () => {
+    const { client, requests } = mockClient([cut(), msg([call(goodOutput)])]);
+    const result = await judgeOnce(client, tiny, brief, tobe);
+    expect(result.attempts).toBe(2);
+    expect(requests.map(r => r[0].max_tokens)).toEqual([20000, 40000]);
+  });
+  it("classifies two truncations as JUDGE_OUTPUT_TRUNCATED after exactly two calls, never a third", async () => {
+    const { client, requests } = mockClient([cut(), cut(40000), msg([call(goodOutput)])]);
+    const error = await judgeOnce(client, tiny, brief, tobe, { maxAttempts: 3 }).catch((e: unknown) => e);
+    expect(error).toMatchObject({ name: "JudgeError", code: "JUDGE_OUTPUT_TRUNCATED", usage: { calls: 2, outputTokens: 60000 } });
+    expect(requests.map(r => r[0].max_tokens)).toEqual([20000, 40000]);
+  });
+  it("a non-truncated reply without a tool call stays JUDGE_NO_TOOL_CALL and keeps the budget", async () => {
+    const { client, requests } = mockClient([msg([{ type: "text" }]), msg([{ type: "text" }])]);
+    await expect(judgeOnce(client, tiny, brief, tobe)).rejects.toMatchObject({ code: "JUDGE_NO_TOOL_CALL" });
+    expect(requests.map(r => r[0].max_tokens)).toEqual([20000, 20000]);
+  });
+  it("the default deadline covers every wave of judgements: 3 runs one at a time get 3 x 30 min, 3 at once 30 min", () => {
+    expect([defaultDeadlineSeconds(3, 1), defaultDeadlineSeconds(3, 3), defaultDeadlineSeconds(1, 1), defaultDeadlineSeconds(3, 2)]).toEqual([5400, 1800, 1800, 3600]);
+  });
+  it("OpenRouter's 402 'maximum cost exceeds your available credits' is a credit failure, is not retried, and the hint names max tokens and credit", async () => {
+    const body = { error: { code: 402, message: "This request's maximum cost exceeds your available credits", metadata: { reason: "weight_exceeds_budget" } } };
+    const error = Anthropic.APIError.generate(402, body, "402 This request's maximum cost exceeds your available credits", new Headers());
+    expect(classifyProviderError(error).category).toBe("credit");
+    let calls = 0;
+    const client: JudgeClient = { messages: { stream: () => { calls++; return { finalMessage: () => Promise.reject(error) }; } } };
+    await expect(judgeOnce(client, tiny, brief, tobe)).rejects.toBe(error);
+    expect(calls).toBe(1);
+    expect(judgeCreditHint("openrouter")).toMatch(/--max-tokens/);
+    expect(judgeCreditHint("openrouter")).toMatch(/credit/i);
+    expect(judgeCreditHint("deepinfra")).toContain("DeepInfra");
   });
 });

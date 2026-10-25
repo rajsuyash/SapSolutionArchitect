@@ -51,6 +51,8 @@ export const TranscriptSchema = z.object({
     /** The driver filled the template directly after the turn cap so the To-Be could still be measured. */
     forcedCompletion: z.boolean(), directEdits: count, blockers: z.array(z.string()),
   }),
+  /** --tobe-only: no interview ran, so the interview-only checks are n/a (absent in older transcripts). */
+  toBeOnly: z.boolean().optional(),
   toBe: z.object({
     attempted: z.boolean(), structurallyValid: z.boolean(), errorCode: z.string().nullable(),
     attempts: count, providerRetries: count.optional(), validationErrors: count, inputTokens: count, outputTokens: count,
@@ -209,16 +211,19 @@ export function scoreRun(rawTranscript: unknown, rawCase: unknown) {
   };
 
   const toBeValid = !!toBe?.attempted && toBe.structurallyValid && steps.length > 0;
-  const check = (name: string, pass: boolean, detail: string) => ({ name, pass, detail });
+  // Interview-only checks have no sample in a --tobe-only run: n/a, neither ok nor FAIL, and outside the verdict.
+  const toBeOnly = transcript.toBeOnly === true;
+  const check = (name: string, pass: boolean, detail: string, interview = false) =>
+    interview && toBeOnly ? { name, pass: false, na: true, detail: "n/a (--tobe-only: no interview)" } : { name, pass, na: false, detail };
   const checks = [
     check("readiness", turnsToReadiness !== null && turnsToReadiness <= passBar.maxTurnsToReadiness,
-      `${turnsToReadiness ?? "not reached"} turns (max ${passBar.maxTurnsToReadiness})`),
-    check("repeatedGapKeys", repeatedGapKeys.length <= passBar.maxRepeatedGapKeys, `${repeatedGapKeys.length} (max ${passBar.maxRepeatedGapKeys})`),
-    check("nearDuplicates", nearDuplicates.length <= passBar.maxNearDuplicates, `${nearDuplicates.length} pairs (max ${passBar.maxNearDuplicates})`),
-    check("semanticDuplicates", semanticDuplicates.length <= passBar.maxSemanticDuplicates,
-      `${semanticDuplicates.length} cross-turn pairs at Jaccard >= ${SEMANTIC_DUPLICATE_JACCARD} (max ${passBar.maxSemanticDuplicates})`),
+      `${turnsToReadiness ?? "not reached"} turns (max ${passBar.maxTurnsToReadiness})`, true),
+    check("repeatedGapKeys", turns.length > 0 && repeatedGapKeys.length <= passBar.maxRepeatedGapKeys, `${repeatedGapKeys.length} (max ${passBar.maxRepeatedGapKeys})`, true),
+    check("nearDuplicates", turns.length > 0 && nearDuplicates.length <= passBar.maxNearDuplicates, `${nearDuplicates.length} pairs (max ${passBar.maxNearDuplicates})`, true),
+    check("semanticDuplicates", turns.length > 0 && semanticDuplicates.length <= passBar.maxSemanticDuplicates,
+      `${semanticDuplicates.length} cross-turn pairs at Jaccard >= ${SEMANTIC_DUPLICATE_JACCARD} (max ${passBar.maxSemanticDuplicates})`, true),
     check("firstAttemptValid", turns.length > 0 && firstAttemptValidRate >= passBar.minFirstAttemptValidRate,
-      `${(firstAttemptValidRate * 100).toFixed(0)}% of ${turns.length} turns (min ${passBar.minFirstAttemptValidRate * 100}%)`),
+      `${(firstAttemptValidRate * 100).toFixed(0)}% of ${turns.length} turns (min ${passBar.minFirstAttemptValidRate * 100}%)`, true),
     check("toBeValid", !passBar.requireToBeValid || toBeValid, toBe ? (toBeValid ? "valid" : `invalid (${toBe.errorCode ?? "no steps"})`) : "To-Be not generated"),
     check("capabilities", capabilityCount >= passBar.minCapabilities, `${capabilityCount}/${capabilities.length} (min ${passBar.minCapabilities})`),
     check("kpis", kpiCount >= passBar.minKpis, `${kpiCount}/${kpis.length} (min ${passBar.minKpis})`),
@@ -248,14 +253,14 @@ export function scoreRun(rawTranscript: unknown, rawCase: unknown) {
     cleanFirstTryRate: turns.length ? Number((cleanTurns / turns.length).toFixed(3)) : 0,
     toBeValid, capabilities, capabilityCount, kpis, kpiCount, salesforce,
     outputTokens: turns.reduce((n, t) => n + t.outputTokens, 0) + (toBe?.outputTokens ?? 0),
-    aborted: transcript.aborted, checks, pass: checks.every(c => c.pass),
+    aborted: transcript.aborted, checks, pass: checks.every(c => c.na || c.pass),
   };
 }
 export type Score = ReturnType<typeof scoreRun>;
 
 export function summarize(score: Score): string {
   const lines = [`${score.pass ? "PASS" : "FAIL"}  ${score.caseId}  ${score.provider}/${score.model}`,
-    ...score.checks.map(c => `  ${c.pass ? "ok  " : "FAIL"} ${c.name}: ${c.detail}`)];
+    ...score.checks.map(c => `  ${c.na ? "n/a " : c.pass ? "ok  " : "FAIL"} ${c.name}: ${c.detail}`)];
   const missed = score.capabilities.filter(c => !c.covered).map(c => `${c.id} (${c.reason})`);
   if (missed.length) lines.push(`  capabilities missed: ${missed.join(", ")}`);
   if (score.turns.zeroQuestionTurnsWithGapsRemaining.length) {
