@@ -349,12 +349,45 @@ describe("judgeOnce", () => {
   });
 
   it("throws JudgeError carrying the spent usage when output stays malformed or no tool is called", async () => {
-    const bad = mockClient([msg([call({ verdicts: "no" })]), msg([call({ nope: 1 })])]);
-    await expect(judgeOnce(bad.client, tiny, brief, tobe)).rejects.toMatchObject({ name: "JudgeError", code: "JUDGE_INVALID_OUTPUT", usage: { calls: 2, inputTokens: 200 } });
+    const bad = mockClient([msg([call({ verdicts: "no" })]), msg([call({ nope: 1 })]), msg([call({})])]);
+    await expect(judgeOnce(bad.client, tiny, brief, tobe)).rejects.toMatchObject({ name: "JudgeError", code: "JUDGE_INVALID_OUTPUT", usage: { calls: 3, inputTokens: 300 } });
     const none = mockClient([msg([{ type: "text" }]), msg([{ type: "text" }])]);
     const error = await judgeOnce(none.client, tiny, brief, tobe).catch((e: unknown) => e);
     expect(error).toBeInstanceOf(JudgeError);
     expect((error as JudgeError).code).toBe("JUDGE_NO_TOOL_CALL");
+  });
+
+  describe("schema-invalid judgement", () => {
+    const missing = () => msg([call({})], 100, 10);
+    it("gets one fresh retry after the repair pass fails: same budget, no validationErrors, all three calls counted", async () => {
+      const { client, requests } = mockClient([missing(), missing(), msg([call(goodOutput)], 120, 20)]);
+      const result = await judgeOnce(client, tiny, brief, tobe);
+      expect(result.attempts).toBe(3);
+      expect(result.usage).toEqual({ inputTokens: 320, outputTokens: 40, calls: 3 });
+      const sent = requests.map(r => ({ tokens: r[0].max_tokens, errors: (JSON.parse((r[0].messages[0] as { content: string }).content) as { validationErrors: unknown[] }).validationErrors }));
+      expect(sent.map(x => x.tokens)).toEqual([20000, 20000, 20000]);
+      expect(sent.map(x => x.errors.length > 0)).toEqual([false, true, false]);
+    });
+    it("fails with JUDGE_INVALID_OUTPUT naming the missing path (no model text) after the fresh retry is also invalid", async () => {
+      const { client, requests } = mockClient([missing(), missing(), missing(), msg([call(goodOutput)])]);
+      const error = await judgeOnce(client, tiny, brief, tobe).catch((e: unknown) => e) as JudgeError;
+      expect(error).toMatchObject({ code: "JUDGE_INVALID_OUTPUT", usage: { calls: 3 } });
+      expect(error.message).toContain("invalid_type verdicts Invalid input: expected array, received undefined");
+      expect(requests).toHaveLength(3);
+    });
+    it("skips the fresh retry when canRetry says the cost cap is spent", async () => {
+      const seen: number[] = [];
+      const { client, requests } = mockClient([missing(), missing(), msg([call(goodOutput)])]);
+      await expect(judgeOnce(client, tiny, brief, tobe, { canRetry: u => { seen.push(u.calls); return false; } })).rejects.toMatchObject({ code: "JUDGE_INVALID_OUTPUT", usage: { calls: 2 } });
+      expect(seen).toEqual([2]);
+      expect(requests).toHaveLength(2);
+    });
+    it("a semantically invalid reply (missing criterion) is not retried fresh", async () => {
+      const partial = () => msg([call({ verdicts: [v("CL01", "PASS")] })]);
+      const { client, requests } = mockClient([partial(), partial(), msg([call(goodOutput)])]);
+      await expect(judgeOnce(client, tiny, brief, tobe)).rejects.toMatchObject({ code: "JUDGE_INVALID_OUTPUT", usage: { calls: 2 } });
+      expect(requests).toHaveLength(2);
+    });
   });
 
   it("scores an unjustified PASS as FAIL end to end", async () => {

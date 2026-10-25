@@ -74,6 +74,7 @@ async function main() {
       if (signal.aborted) return Promise.reject(new Error("judge deadline reached before this judgement started"));
       if (spent + setSpent >= maxCost) return Promise.reject(new Error(`cost cap $${maxCost} reached before this judgement started`));
       return judgeOnce(client, RUBRIC, caseBrief, tobe, { model, maxTokens, timeoutMs: callTimeoutMs, signal, deadlineAt,
+        canRetry: used => spent + setSpent + costUsd(used.inputTokens, used.outputTokens) < maxCost,
         onRetry: (retry, delayMs, error) => console.error(JSON.stringify({ event: "judge_retry", label, run: index + 1, retry, delayMs, error: message(error).slice(0, 120) })) })
         .then(value => { charge(value.usage); return value; }, (error: unknown) => { charge(error instanceof JudgeError ? error.usage : null); throw error; });
     });

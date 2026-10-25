@@ -296,9 +296,9 @@ export function isGrounded(citation: string, ids: ReadonlySet<string>): boolean 
 
 /** Checks the raw tool input against the schema and the rubric ids. Issues are fed back to the model on a repair attempt. */
 export function validateJudgeOutput(rubric: readonly Criterion[], raw: unknown):
-  { success: true; data: JudgeOutput } | { success: false; issues: Issue[] } {
+  { success: true; data: JudgeOutput } | { success: false; issues: Issue[]; schema: boolean } {
   const parsed = JudgeOutputSchema.safeParse(raw);
-  if (!parsed.success) return { success: false, issues: parsed.error.issues.slice(0, 20).map(i => ({ path: i.path.join("."), code: i.code, detail: i.message })) };
+  if (!parsed.success) return { success: false, schema: true, issues: parsed.error.issues.slice(0, 20).map(i => ({ path: i.path.join("."), code: i.code, detail: i.message })) };
   const issues: Issue[] = [];
   const seen = new Map<string, number>();
   for (const v of parsed.data.verdicts) seen.set(v.id, (seen.get(v.id) ?? 0) + 1);
@@ -307,7 +307,7 @@ export function validateJudgeOutput(rubric: readonly Criterion[], raw: unknown):
     if (!rubric.some(c => c.id === id)) issues.push({ path: "verdicts", code: "unknown_criterion", detail: id });
     else if (n > 1) issues.push({ path: "verdicts", code: "duplicate_criterion", detail: id });
   }
-  return issues.length ? { success: false, issues: issues.slice(0, 30) } : { success: true, data: parsed.data };
+  return issues.length ? { success: false, schema: false, issues: issues.slice(0, 30) } : { success: true, data: parsed.data };
 }
 
 export type Flag = "unjustified" | "no_citation" | "illegal_na";
@@ -450,7 +450,7 @@ export interface JudgeClient {
 export type Usage = { inputTokens: number; outputTokens: number; calls: number };
 export class JudgeError extends Error {
   constructor(public readonly code: "JUDGE_INVALID_OUTPUT" | "JUDGE_NO_TOOL_CALL" | "JUDGE_OUTPUT_TRUNCATED", public readonly usage: Usage, public readonly issues: Issue[] = []) {
-    super(code + (issues.length ? `: ${issues.map(i => `${i.code} ${i.detail ?? i.path}`).slice(0, 5).join("; ")}` : ""));
+    super(code + (issues.length ? `: ${issues.map(i => `${i.code} ${i.path ? `${i.path}${i.detail ? " " : ""}` : ""}${i.detail ?? ""}`.trim()).slice(0, 5).join("; ")}` : ""));
     this.name = "JudgeError";
   }
 }
@@ -464,18 +464,20 @@ export function judgeCreditHint(provider: Provider): string {
 }
 export type JudgeOptions = { model?: string; temperature?: number; maxTokens?: number; timeoutMs?: number; signal?: AbortSignal; maxAttempts?: number;
   /** Epoch ms after which no transient-failure retry starts (the judge deadline). */
-  deadlineAt?: number; onRetry?: RetryOptions["onRetry"] };
+  deadlineAt?: number; onRetry?: RetryOptions["onRetry"];
+  /** Asked with the usage so far before the one fresh retry of a schema-invalid judgement; false (e.g. the --max-cost cap is spent) skips it. */
+  canRetry?: (usage: Usage) => boolean };
 
 /** One judgement: up to `maxAttempts` calls, each repair attempt carrying the previous validation issues. */
 export async function judgeOnce(client: JudgeClient, rubric: readonly Criterion[], brief: CaseBrief, tobe: ToBe, options: JudgeOptions = {}):
   Promise<{ graded: Graded[]; score: RunScore; usage: Usage; attempts: number }> {
-  const { model = JUDGE_MODEL, temperature = 0.2, maxTokens = 20000, timeoutMs = DEFAULT_JUDGE_CALL_TIMEOUT_MS, signal, maxAttempts = 2, deadlineAt, onRetry } = options;
+  const { model = JUDGE_MODEL, temperature = 0.2, maxTokens = 20000, timeoutMs = DEFAULT_JUDGE_CALL_TIMEOUT_MS, signal, maxAttempts = 2, deadlineAt, onRetry, canRetry } = options;
   const jsonSchema = z.toJSONSchema(JudgeOutputSchema);
   const tools: Anthropic.Tool[] = [{ name: JUDGE_TOOL, description: "Submit the verdicts for every rubric criterion.", input_schema: { ...jsonSchema, type: "object" } }];
   const system = buildSystemPrompt(rubric);
   const usage: Usage = { inputTokens: 0, outputTokens: 0, calls: 0 };
-  let issues: Issue[] = [], tokens = maxTokens, retried = false, cut = false;
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+  let issues: Issue[] = [], tokens = maxTokens, retried = false, cut = false, freshRetried = false, limit = maxAttempts;
+  for (let attempt = 1; attempt <= limit; attempt++) {
     const userPrompt = buildUserPrompt(brief, tobe, issues);
     // Transient failures (5xx, 429, a connection cut mid-stream) re-send the same request: the retry policy runStage uses.
     const message = await withProviderRetry(() => client.messages.stream({ model, max_tokens: tokens, temperature, system,
@@ -499,6 +501,8 @@ export async function judgeOnce(client: JudgeClient, rubric: readonly Criterion[
       return { graded, score: scoreGraded(rubric, graded), usage, attempts: attempt };
     }
     issues = result.issues;
+    // The repair pass (which sends these issues back) did not fix a schema-invalid reply (e.g. no `verdicts` array at all): one fresh call, same budget, no issues.
+    if (result.schema && attempt === limit && !freshRetried && (canRetry?.(usage) ?? true)) { freshRetried = true; limit++; issues = []; }
   }
   if (cut) throw new JudgeError("JUDGE_OUTPUT_TRUNCATED", usage, [{ path: "tool", code: "max_tokens", detail: String(tokens) }]);
   throw new JudgeError(issues[0]?.code === "expected_exactly_one_tool_call" ? "JUDGE_NO_TOOL_CALL" : "JUDGE_INVALID_OUTPUT", usage, issues);
