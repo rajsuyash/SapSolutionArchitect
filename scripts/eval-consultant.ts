@@ -7,7 +7,8 @@
 // (runStage has no stub interviewer); --fake-model swaps in a scripted model to exercise the whole driver at zero cost.
 //
 // --tobe-only skips the interview: the discovery is entered from the fixture (As-Is steps, requirements, company context), confirmed,
-// and the real To-Be stage runs; the run file has the same format, so eval-judge.ts --run accepts it.
+// and the real To-Be stage runs; the run file has the same format, so eval-judge.ts --run accepts it. The interview-only checks
+// (readiness, repeated/near/semantic duplicates, firstAttemptValid) print n/a and stay out of the verdict and the exit code; the To-Be checks still gate.
 // --no-tobe makes the run interview-only: no forced completion, no CONFIRM, no To-Be (a diagnostic of the interviewer alone).
 //
 // --replay scores a saved transcript: no network, no database.
@@ -136,7 +137,7 @@ async function runOnce(fixture: Fixture, deps: { pool: Pool; provider: string; m
 
   const transcript: Transcript = { schemaVersion: 1, caseId: fixture.caseId, provider: deps.provider, model: deps.model,
     startedAt: new Date().toISOString(), turns: [],
-    readiness: { reached: false, atTurn: null, forcedCompletion: false, directEdits: 0, blockers: [] }, toBe: null, aborted: null };
+    readiness: { reached: false, atTurn: null, forcedCompletion: false, directEdits: 0, blockers: [] }, toBe: null, aborted: null, ...(deps.toBeOnly && { toBeOnly: true }) };
   if (deps.toBeOnly) {
     // --tobe-only: no interview. The discovery is entered directly from the fixture's expected As-Is, through the same
     // commands a person uses, confirmed, and handed to the real To-Be stage. Measures To-Be quality alone.

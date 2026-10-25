@@ -227,6 +227,34 @@ describe("scoreRun", () => {
   });
 });
 
+describe("--tobe-only runs (no interview)", () => {
+  const tobeOnly = () => { const t = goodTranscript(); t.toBeOnly = true; t.turns = []; t.readiness = { reached: false, atTurn: null, forcedCompletion: true, directEdits: 3, blockers: [] }; return t; };
+  const interviewChecks = ["readiness", "repeatedGapKeys", "nearDuplicates", "semanticDuplicates", "firstAttemptValid"];
+  it("reports the interview-only checks as n/a and passes on a valid To-Be", () => {
+    const result = score(tobeOnly());
+    for (const name of interviewChecks) expect(result.checks.find(c => c.name === name)).toMatchObject({ na: true, pass: false });
+    expect(result.pass).toBe(true);
+    const text = summarize(result);
+    expect(text).toContain("PASS");
+    expect(text).toContain("n/a  readiness");
+    expect(text).not.toMatch(/FAIL\s+(readiness|firstAttemptValid)/);
+  });
+  it("still gates on the To-Be checks", () => {
+    const t = tobeOnly();
+    t.toBe!.structurallyValid = false;
+    expect(score(t).pass).toBe(false);
+    const k = tobeOnly(); k.toBe!.design!.steps[10]!.acceptanceTests.pop();
+    expect(check(k, "kpis").pass).toBe(false);
+    expect(score(k).pass).toBe(false);
+  });
+  it("an interview run with zero turns is not n/a and never passes firstAttemptValid", () => {
+    const t = goodTranscript(); t.turns = [];
+    expect(check(t, "firstAttemptValid")).toMatchObject({ pass: false });
+    expect(check(t, "firstAttemptValid").na).toBeFalsy();
+    expect(score(t).pass).toBe(false);
+  });
+});
+
 describe("version 2 registers", () => {
   it("counts a KPI stated only in the kpis register, and rejects it when the register does not state it", () => {
     const t = goodTranscript();
