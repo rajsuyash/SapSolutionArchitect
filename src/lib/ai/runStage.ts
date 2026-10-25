@@ -8,7 +8,7 @@ import { classifyProviderError, createProviderClient, logProviderFailure, logOut
 import { withProviderRetry } from "./retry";
 import { loadToBeReferences, parseToBeInput, type ToBeOutput } from "./to-be";
 import { REGISTER_GROUP_NAMES, RegisterGroupSchemas } from "./design-registers";
-import { OutlinePatchSchema, OutlineSchema, StepDetailSchema, TRUNCATED, runDesign, type Substage } from "./to-be-pipeline";
+import { OutlinePatchSchema, OutlineSchema, StepDetailSchema, TRUNCATED, hasToolMarkup, runDesign, type Substage } from "./to-be-pipeline";
 import { ReviewSchema } from "./to-be-review";
 import { interviewModelView } from "./interview-sentences";
 import { parseWorkedExample, renderWorkedExamples, withWorkedExample } from "./worked-example";
@@ -264,7 +264,7 @@ export function createStageRunner(config: Config, options: Options = {}) {
       const generate = async (a: { system: string; user: string; tool: Anthropic.Tool; maxTokens: number; guard: boolean;
         thinkingOff: boolean; textFallback?: boolean; substage?: Substage;
         /** Eval only: called with a short description of a response that held no usable tool payload. */
-        onNoPayload?: (description: unknown) => void }): Promise<unknown> => {
+        onNoPayload?: (description: unknown) => void; onToolMarkup?: () => void }): Promise<unknown> => {
         const messages: Anthropic.MessageParam[] = [{ role: "user", content: a.user }];
         const tools = [a.tool];
         const toolChoice = toolChoiceFor(a.tool.name);
@@ -303,6 +303,7 @@ export function createStageRunner(config: Config, options: Options = {}) {
         const output = message.stop_reason !== "max_tokens" && toolCalls.length === 1 && toolCalls[0]!.name === a.tool.name ? toolCalls[0]!.input
           : a.textFallback && !toolCalls.length ? jsonFromText(message.content) : null;
         if (a.textFallback && !toolCalls.length && output !== null) metrics.textFallbacks! += 1;
+        if (output === null && message.content.some(block => block.type === "text" && hasToolMarkup(block.text))) a.onToolMarkup?.();
         if (output === null) a.onNoPayload?.({ stopReason: message.stop_reason ?? null, blocks: message.content.map(describeBlock) });
         return output;
       };
@@ -370,7 +371,7 @@ export function createStageRunner(config: Config, options: Options = {}) {
               // A thinking retry (one last call for a step that kept failing) sends the request without thinking-disabled; an operator's AI_REASONING_EFFORT=none still wins.
               guard: true, thinkingOff: reasoningOff || (!askOptions?.thinking && (noThinking.has(substage) || noThinking.has("to_be") || expansionThinkingOff(substage))),
               // A model that ends its turn with the payload as a JSON text block instead of calling the tool is accepted exactly as in the interview.
-              textFallback: true, substage,
+              textFallback: true, substage, ...(askOptions?.onToolMarkup && { onToolMarkup: askOptions.onToolMarkup }),
               ...(options.captureRaw && { onNoPayload: (description: unknown) => keepRaw(substage, rawKeyOf, { noToolPayload: description }) }) });
             signal.throwIfAborted();
             return output;

@@ -71,6 +71,26 @@ export type StepDetail = z.infer<typeof StepDetailSchema>;
 export const TRUNCATED = Symbol("truncated");
 export const OUTPUT_TRUNCATED = "OUTPUT_TRUNCATED";
 const NO_TOOL_PAYLOAD = "NO_TOOL_PAYLOAD";
+/** The model wrote its tool call as markup (DeepSeek's `<｜DSML｜ ...>`) instead of calling the tool: as the whole text answer, or inside a field value. */
+export const TOOL_MARKUP_LEAKED = "TOOL_MARKUP_LEAKED";
+const TOOL_MARKUP = /[｜|]DSML[｜|]/;
+export const hasToolMarkup = (text: string) => TOOL_MARKUP.test(text);
+/** Path (relative to `path`) of the first string in `value` that holds tool-call markup. Never changes the value: a corrupt field is reported, not cleaned. */
+function findToolMarkup(value: unknown, path: string): string | undefined {
+  if (typeof value === "string") return hasToolMarkup(value) ? path : undefined;
+  if (typeof value !== "object" || value === null) return undefined;
+  for (const [key, item] of Object.entries(value)) {
+    const found = findToolMarkup(item, /^[A-Za-z][A-Za-z0-9_]{0,40}$/.test(key) ? `${path}.${key}` : path);
+    if (found) return found;
+  }
+  return undefined;
+}
+const LEAK_DETAIL = "tool-call markup was written here instead of calling the tool";
+const LEAK_HINT = "Call the tool with the answer as its arguments; do not write tool-call markup (<｜DSML｜ ...> tags) as text or inside any field.";
+/** The previous answer of a failed call goes back to the model only up to this size (about 7k tokens against AI_MAX_INPUT_TOKENS); a larger one is left out. */
+export const MAX_PREVIOUS_ANSWER_CHARS = 24000;
+/** A failed re-expansion round of the assembled design re-asks the parts its checks name; this many rounds before the stage fails (each part is still bounded by AI_TO_BE_PART_REPAIRS and the stage budget). */
+export const MAX_REEXPANSION_ROUNDS = 2;
 /** Added to a repair request whose previous answer was cut off. Fixed text: nothing the model wrote is echoed back. */
 const TRUNCATION_NOTE = "Your previous answer was cut off because it reached the output limit. Answer again, more concisely: shorter text values, no repetition, and keep any internal reasoning brief.";
 /** Tells the model, in every call, when no verified catalog backs this product and release. */
@@ -84,10 +104,13 @@ const describeIssue = ({ path, code, detail }: ValidationIssue): string => {
   return `${path}: ${kind ? `expected ${article(kind[1]!)}, got ${article(kind[2]!)}` : detail ? detail.replace(/^[a-z_]+: /, "") || code : code}`;
 };
 /** Added to a repair request: the paths and the kind of each issue (so the model can fix them) and, after a cut-off answer, how to shorten. */
-const repairNotes = (errors: readonly ValidationIssue[], hints: readonly string[] = []) => {
+const repairNotes = (errors: readonly ValidationIssue[], hints: readonly string[] = [], hasCurrent = false) => {
   if (!errors.length) return {};
   const lines = errors.filter(error => error.code !== OUTPUT_TRUNCATED).slice(0, MAX_NOTE_ISSUES).map(describeIssue);
-  const parts = [...(lines.length ? [`Fix exactly these fields of your previous answer: ${lines.join("; ")}. Change only the listed fields; copy every other field exactly from your previous answer.`, ...hints] : []),
+  const parts = [...(lines.length ? [hasCurrent
+    ? `Fix exactly these fields of your previous answer, which is "currentAnswer": ${lines.join("; ")}. Change only the listed fields; copy every other field exactly from "currentAnswer".`
+    : `Your previous answer is not repeated here. Answer again in full, fixing exactly these fields: ${lines.join("; ")}.`,
+    ...(errors.some(error => error.code === TOOL_MARKUP_LEAKED) ? [LEAK_HINT] : []), ...hints] : []),
     ...(errors.some(error => error.code === OUTPUT_TRUNCATED) ? [TRUNCATION_NOTE] : [])];
   return parts.length ? { repairNote: parts.join(" ") } : {};
 };
@@ -274,7 +297,7 @@ export function outlineRequest(input: ToBeInput, references: DesignContext["refe
 
 /** Per-step model input: the frozen outline plus only this step's requirements, the sources they quote, the references it cites. */
 /** A consistency-pass repair: the reviewer's findings about this part in `note`, and the part's present answer, which the model changes as little as it can. */
-export type PartRepair = { note: string; current: unknown };
+export type PartRepair = { note?: string; current: unknown };
 export function stepRequest(input: ToBeInput, references: DesignContext["references"], outline: Outline, step: OutlineStep, validationErrors: ValidationIssue[], repair?: PartRepair) {
   const { discovery } = input;
   const requirements = discovery.requirements.filter(requirement => step.requirementIds.includes(requirement.id));
@@ -299,8 +322,8 @@ export function stepRequest(input: ToBeInput, references: DesignContext["referen
     conflicts: discovery.conflicts.filter(conflict => conflict.sourceIds.some(sourceId => sourceIds.has(sourceId))),
     inputOpenQuestions: discovery.openQuestions,
     references: references.filter(reference => step.implementation.referenceIds.includes(reference.id)),
-    approvedDecisions: [], validationErrors, ...catalogNote(input, references), ...repairNotes(validationErrors),
-    ...(repair && { repairNote: repair.note, currentAnswer: repair.current }),
+    approvedDecisions: [], validationErrors, ...catalogNote(input, references), ...repairNotes(validationErrors, [], !!repair),
+    ...(repair && { ...(repair.note && { repairNote: repair.note }), currentAnswer: repair.current }),
   };
 }
 
@@ -337,8 +360,8 @@ export function registerRequest(input: ToBeInput, references: DesignContext["ref
     // The catalog is the largest part of a register request. Scope and governance rows carry no SAP basis, so they are not sent it.
     ...(NO_CATALOG_GROUPS.includes(group) ? {} : { references: references.map(({ id, fitType, capability, objects }) => ({ id, fitType, capability, objects })) }),
     ...(steps && { steps: stepDigest(steps) }),
-    inputOpenQuestions: discovery.openQuestions, validationErrors, ...catalogNote(input, references), ...repairNotes(validationErrors, registerHints(input, validationErrors)),
-    ...(repair && { repairNote: repair.note, currentAnswer: repair.current }),
+    inputOpenQuestions: discovery.openQuestions, validationErrors, ...catalogNote(input, references), ...repairNotes(validationErrors, registerHints(input, validationErrors), !!repair),
+    ...(repair && { ...(repair.note && { repairNote: repair.note }), currentAnswer: repair.current }),
   };
 }
 
@@ -366,8 +389,8 @@ export async function runPool<T>(items: readonly T[], limit: number, worker: (it
 }
 
 export type DesignDeps = {
-  /** One model call; resolves to the tool payload, null when the provider did not return exactly one complete tool call, or TRUNCATED when it stopped on max_tokens. */
-  ask: (substage: Substage, user: unknown, group?: RegisterGroup | "patch", options?: { thinking?: boolean; outputScale?: number }) => Promise<unknown>;
+  /** One model call; resolves to the tool payload, null when the provider did not return exactly one complete tool call (`onToolMarkup` is called first when its text was tool-call markup), or TRUNCATED when it stopped on max_tokens. */
+  ask: (substage: Substage, user: unknown, group?: RegisterGroup | "patch", options?: { thinking?: boolean; outputScale?: number; onToolMarkup?: () => void }) => Promise<unknown>;
   /** The output ceiling (max_tokens) a call of this kind runs with at this multiplier of its configured one. Absent: ceilings are fixed and a cut-off answer is only re-asked. */
   maxTokens?: (substage: Substage, group: RegisterGroup | "patch" | undefined, scale: number) => number;
   /** The error to throw for AI_INVALID_OUTPUT. */
@@ -418,8 +441,12 @@ export async function runDesign(input: ToBeInput, references: DesignContext["ref
   };
   /** Output-ceiling multiplier per call (a step id, "register:<group>", "outline"): doubled after a cut-off or empty answer, so the re-ask has room. */
   const scales = new Map<string, number>();
-  const ask = (key: string, substage: Substage, request: unknown, group?: RegisterGroup | "patch", options?: { thinking?: boolean }) =>
-    deps.ask(substage, request, group, scales.has(key) ? { ...options, outputScale: scales.get(key)! } : options);
+  /** Calls whose latest answer was tool-call markup written as text, by key. */
+  const leaked = new Set<string>();
+  const ask = (key: string, substage: Substage, request: unknown, group?: RegisterGroup | "patch", options?: { thinking?: boolean }) => {
+    leaked.delete(key);
+    return deps.ask(substage, request, group, { ...options, ...(scales.has(key) && { outputScale: scales.get(key)! }), onToolMarkup: () => leaked.add(key) });
+  };
   /** True when `errors` hold a cut-off or empty answer and the call's ceiling could still be doubled (it now is): the re-ask is then free, as it spends none of the repairs a draft that is wrong needs.
    * Bounded by the cap, not by a count: a ceiling that cannot grow any more falls back to the ordinary repairs. */
   const raiseCeiling = (key: string, substage: Substage, group: RegisterGroup | "patch" | undefined, path: string, errors: readonly ValidationIssue[]) => {
@@ -485,35 +512,43 @@ export async function runDesign(input: ToBeInput, references: DesignContext["ref
   /** One step answer, read the way every step answer is: normalised, its decision ids repaired, parsed. `errors` is what the next request carries when it does not parse. */
   const readStep = (current: Outline, stepId: string, raw: unknown) => {
     const index = current.steps.findIndex(step => step.id === stepId), path = `draft.steps.${index}`;
+    const marked = raw !== TRUNCATED && findToolMarkup(raw, path);
+    if (marked) return { ok: false as const, errors: [{ path: marked, code: TOOL_MARKUP_LEAKED, detail: LEAK_DETAIL }] };
     const normalized = normalizeToolInput(StepDetailSchema, raw, path);
     const repaired = repairStepBody(normalized.value, decisionIds, path);
     const respelled = repairIdVariants(repaired.value, citable(current, repaired.value), path);
     const parsed = StepDetailSchema.safeParse(respelled.value);
     if (parsed.success) return { ok: true as const, value: parsed.data, warnings: [normalized.warnings, repaired.warnings, respelled.warnings] };
-    return { ok: false as const, errors: raw === TRUNCATED ? [{ path, code: OUTPUT_TRUNCATED }] : raw === null ? [{ path, code: NO_TOOL_PAYLOAD }] : rePath(draftIssues(parsed.error.issues), "draft", path) };
+    return { ok: false as const, errors: raw === TRUNCATED ? [{ path, code: OUTPUT_TRUNCATED }] : raw === null ? [leaked.has(stepId) ? { path, code: TOOL_MARKUP_LEAKED, detail: LEAK_DETAIL } : { path, code: NO_TOOL_PAYLOAD }] : rePath(draftIssues(parsed.error.issues), "draft", path) };
   };
   /** The same for one register group. */
   const readGroup = (current: Outline, group: RegisterGroup, raw: unknown) => {
+    const marked = raw !== TRUNCATED && findToolMarkup(raw, "draft");
+    if (marked) return { ok: false as const, errors: [{ path: marked, code: TOOL_MARKUP_LEAKED, detail: LEAK_DETAIL }] };
     const normalized = normalizeToolInput(RegisterGroupSchemas[group], raw, "draft");
     const repaired = repairRegisterGroup(normalized.value, { requirementIds, stepIds: new Set(current.steps.map(step => step.id)), decisionIds });
     const respelled = repairIdVariants(repaired.value, citable(current, repaired.value), "draft");
     const parsed = RegisterGroupSchemas[group].safeParse(respelled.value);
     if (parsed.success) return { ok: true as const, value: parsed.data satisfies RegisterPayloads[RegisterGroup], warnings: [normalized.warnings, repaired.warnings, respelled.warnings] };
-    return { ok: false as const, errors: raw === TRUNCATED ? [{ path: "draft", code: OUTPUT_TRUNCATED }] : raw === null ? [{ path: "draft", code: NO_TOOL_PAYLOAD }] : draftIssues(parsed.error.issues) };
+    return { ok: false as const, errors: raw === TRUNCATED ? [{ path: "draft", code: OUTPUT_TRUNCATED }] : raw === null ? [leaked.has(registerKey(group)) ? { path: "draft", code: TOOL_MARKUP_LEAKED, detail: LEAK_DETAIL } : { path: "draft", code: NO_TOOL_PAYLOAD }] : draftIssues(parsed.error.issues) };
   };
 
+  /** What a repair request sends back as `currentAnswer`: an intact answer that holds no markup and is small enough to resend. Nothing otherwise (cut off, empty, corrupt or too large). */
+  const resendable = (answer: unknown) => isObj(answer) && !findToolMarkup(answer, "") && JSON.stringify(answer).length <= MAX_PREVIOUS_ANSWER_CHARS ? answer : undefined;
   /** Steps and register groups are independent calls over the frozen outline, so they share one bounded pool. */
   const expand = async (stepIds: readonly string[], groups: readonly RegisterGroup[], errors: ReadonlyMap<string, ValidationIssue[]>) => {
     const current = outline;
     const expandStep = async (stepId: string) => {
       const index = current.steps.findIndex(step => step.id === stepId);
       let validationErrors = errors.get(stepId) ?? [], thinking = false;
+      // A step the assembled design's checks named is valid JSON already: it travels with the repair.
+      let previous = validationErrors.length ? resendable(details.get(stepId)) : undefined;
       for (;;) {
-        const raw = await ask(stepId, "to_be_step", stepRequest(input, references, current, current.steps[index]!, validationErrors), undefined, thinking ? { thinking } : undefined);
+        const raw = await ask(stepId, "to_be_step", stepRequest(input, references, current, current.steps[index]!, validationErrors, previous && { current: previous }), undefined, thinking ? { thinking } : undefined);
         const result = readStep(current, stepId, raw);
         if (result.ok) { details.set(stepId, result.value); warnAll(...result.warnings); return; }
         if (raw !== TRUNCATED && raw !== null) deps.rawFailure?.("to_be_step", stepId, raw);
-        validationErrors = result.errors;
+        validationErrors = result.errors; previous = resendable(raw);
         deps.record(validationErrors);
         if (raiseCeiling(stepId, "to_be_step", undefined, `draft.steps.${index}`, validationErrors)) continue;
         if (!thinking && (deps.maxPartRepairs ?? 2) > 0 && !outlineRepairAllowed(retries.get(stepId) ?? 0, deps.maxPartRepairs ?? 2, deps.remainingBudget?.() ?? 1)
@@ -529,14 +564,15 @@ export async function runDesign(input: ToBeInput, references: DesignContext["ref
     };
     const expandGroup = async (group: RegisterGroup) => {
       let validationErrors = errors.get(registerKey(group)) ?? [];
+      let previous = validationErrors.length ? resendable(registers.get(group)) : undefined;
       // A late group reads the finished steps; by the time it runs every step of `current` is in `details`.
       const steps = isLate(group) ? assemble(current, details).steps : undefined;
       for (;;) {
-        const raw = await ask(registerKey(group), "to_be_registers", registerRequest(input, references, current, group, validationErrors, steps), group);
+        const raw = await ask(registerKey(group), "to_be_registers", registerRequest(input, references, current, group, validationErrors, steps, previous && { current: previous }), group);
         const result = readGroup(current, group, raw);
         if (result.ok) { registers.set(group, result.value); warnAll(...result.warnings); return; }
         if (raw !== TRUNCATED && raw !== null) deps.rawFailure?.("to_be_registers", group, raw);
-        validationErrors = result.errors;
+        validationErrors = result.errors; previous = resendable(raw);
         deps.record(validationErrors);
         if (raiseCeiling(registerKey(group), "to_be_registers", group, `draft.${group}`, validationErrors)) continue;
         markRetry(registerKey(group));
@@ -735,7 +771,7 @@ export async function runDesign(input: ToBeInput, references: DesignContext["ref
     const result = validateToBeOutput(input, design, references);
     if (result.success) return fixed(await reviewed(result.data, design));
     deps.record(result.errors);
-    if (round >= 1) throw deps.invalid();
+    if (round >= MAX_REEXPANSION_ROUNDS) throw deps.invalid();
     const { byStep, byGroup, global } = attributeErrors(result.errors, design);
     const redo = new Set(byStep.keys()), redoGroups = new Set(byGroup.keys());
     for (const stepId of redo) markRetry(stepId);

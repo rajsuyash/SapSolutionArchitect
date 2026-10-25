@@ -78,6 +78,7 @@ function harness(handlers: Handlers = {}) {
 }
 /** The rental outline with one invalid field in step 0: a path-attributable error, repaired with a patch. */
 const badKindOutline = { ...split.outline, steps: split.outline.steps.map((step, i) => i === 0 ? { ...step, implementation: { ...step.implementation, kind: "LICENSE_DEPENDENT" } } : step) };
+const outsideAnswer = (repair: string) => { const request = JSON.parse(repair) as Record<string, unknown>; delete request.currentAnswer; return JSON.stringify(request); };
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
 describe("worked examples in the system prompts", () => {
@@ -262,7 +263,8 @@ describe("per-step repair", () => {
     expect(h.registerCalls).toHaveLength(REGISTER_GROUP_NAMES.length);
     const repair = h.stepCalls.filter(call => call.id === "TB-2")[1]!.body.messages[0]!.content;
     expect(repair).toContain("INVALID_DRAFT");
-    expect(repair).not.toContain("private-invalid-model-output");
+    expect(outsideAnswer(repair)).not.toContain("private-invalid-model-output"); // only currentAnswer carries the model's own value
+    expect(repair).toContain("private-invalid-model-output");
     expect(result.payload.design).toEqual(rentalDraftV3);
     expect(result.metrics.attempts).toBe(13);
     expect(result.metrics.substages!.to_be_step!.calls).toBe(4);
@@ -498,7 +500,8 @@ describe("register calls: repair and checks", () => {
     const repair = h.registerCalls.filter(call => call.group === "fitgap")[1]!.body.messages[0]!.content;
     expect(repair).toContain("INVALID_DRAFT");
     expect(repair).toContain("draft.fitGap.0");
-    expect(repair).not.toContain("private-register-output");
+    expect(outsideAnswer(repair)).not.toContain("private-register-output");
+    expect(repair).toContain("private-register-output");
     expect(result.payload.design).toEqual(rentalDraftV3);
   });
   it("fails with AI_INVALID_OUTPUT when a register group is still invalid after its retries", async () => {
@@ -870,7 +873,7 @@ describe("late register groups (documents, governance)", () => {
     expect(h.stepCalls).toHaveLength(3);
     const repair = h.registerCalls.filter(call => call.group === "governance")[1]!.body.messages[0]!.content;
     expect(repair).toContain("UNKNOWN_ROLE");
-    expect(repair).not.toContain("ROLE-99");
+    expect(outsideAnswer(repair)).not.toContain("ROLE-99");
     expect(result.payload.design).toEqual(rentalDraftV3);
   });
   it("a step answer without stepType is sent back to that step with the path of the field", async () => {
@@ -1000,5 +1003,65 @@ describe("consistency review through the stage runner", () => {
     expect(result.payload.evaluation.blockers).toContainEqual({ code: "REVIEW_COVERAGE_GAP", path: "draft", detail: "Nothing covers the quarterly count." });
     const again = validateToBeOutput(parseToBeInput(fixture()), result.payload.design, [], reviewBlockers(result.payload.reviewFindings));
     expect(again.success && again.data.evaluation.blockers).toContainEqual({ code: "REVIEW_COVERAGE_GAP", path: "draft", detail: "Nothing covers the quarterly count." });
+  });
+});
+
+describe("repair requests", () => {
+  const MARKUP = "<｜DSML｜ parameter name=\"trigger\" string=\"true\">x</｜DSML｜ parameter>";
+  const textMessage = (text: string) => new Response(JSON.stringify({ id: "msg_synthetic", type: "message", role: "assistant", model: "synthetic",
+    content: [{ type: "thinking", thinking: "t", signature: "s" }, { type: "text", text }], stop_reason: "end_turn", usage: { input_tokens: 10, output_tokens: 20 } }), { headers: { "content-type": "application/json" } });
+  const second = (h: ReturnType<typeof harness>, id: string) => h.stepCalls.filter(call => call.id === id)[1]!.body.messages[0]!.content;
+
+  it("a field holding tool-call markup is TOOL_MARKUP_LEAKED even though the schema accepts it; the re-ask says to call the tool and does not send the corrupt answer back (checked by its actor text)", async () => {
+    const leaked = { ...split.details["TB-2"]!, actor: `Clerk</｜DSML｜ parameter>\n${MARKUP}` };
+    const h = harness({ step: (id, nth) => id === "TB-2" && nth === 1 ? leaked : split.details[id] });
+    const result = await h.run();
+    expect(h.stepCount["TB-2"]).toBe(2);
+    expect(result.metrics.validationErrors).toContainEqual(expect.objectContaining({ code: "TOOL_MARKUP_LEAKED", path: "draft.steps.1.actor" }));
+    const repair = second(h, "TB-2");
+    expect(repair).toContain("Call the tool");
+    expect(repair).not.toContain("Clerk");
+    expect(repair).not.toContain("currentAnswer");
+    expect(result.payload.design).toEqual(rentalDraftV3);
+  });
+  it("a text answer written as tool-call markup is TOOL_MARKUP_LEAKED, not NO_TOOL_PAYLOAD", async () => {
+    const h = harness({ step: (id, nth) => id === "TB-1" && nth === 1 ? textMessage(`<｜DSML｜ calls>\n<｜DSML｜ invoke name="submit_to_be_step">\n${MARKUP}`) : split.details[id] });
+    const result = await h.run();
+    expect(h.stepCount["TB-1"]).toBe(2);
+    expect(result.metrics.validationErrors).toContainEqual(expect.objectContaining({ code: "TOOL_MARKUP_LEAKED" }));
+    expect(result.metrics.validationErrors).not.toContainEqual(expect.objectContaining({ code: "NO_TOOL_PAYLOAD" }));
+    expect(second(h, "TB-1")).toContain("Call the tool");
+  });
+  it("a step re-ask after a schema failure carries the previous answer as currentAnswer, so the note's 'copy the other fields' is true", async () => {
+    const wrong = { ...split.details["TB-2"]!, actions: [] };
+    const h = harness({ step: (id, nth) => id === "TB-2" && nth === 1 ? wrong : split.details[id] });
+    await h.run();
+    const request = JSON.parse(second(h, "TB-2")) as { currentAnswer?: unknown; repairNote: string };
+    expect(request.currentAnswer).toEqual(wrong);
+    expect(request.repairNote).toContain("currentAnswer");
+  });
+  it("a register re-ask carries the previous answer; an answer too large to resend is left out and the note does not claim it was sent", async () => {
+    const wrong = { ...rentalRegisterGroups.governance, controlMappings: "oops" };
+    const huge = { ...split.details["TB-1"]!, actions: [], addedValue: "x".repeat(40000) };
+    const h = harness({ registers: (group, nth) => group === "governance" && nth === 1 ? wrong : rentalRegisterGroups[group],
+      step: (id, nth) => id === "TB-1" && nth === 1 ? huge : split.details[id] });
+    await h.run();
+    const group = JSON.parse(h.registerCalls.filter(call => call.group === "governance")[1]!.body.messages[0]!.content) as { currentAnswer?: unknown };
+    expect(group.currentAnswer).toEqual(wrong);
+    const step = JSON.parse(second(h, "TB-1")) as { currentAnswer?: unknown; repairNote: string };
+    expect(step.currentAnswer).toBeUndefined();
+    expect(step.repairNote).not.toContain("currentAnswer");
+  });
+  const badTrace = { ...split.details["TB-3"]!, acceptanceTests: split.details["TB-3"]!.acceptanceTests.map(test => ({ ...test, requirementIds: ["R-1"] })) };
+  it("a part that still fails the assembled design's checks after one re-expansion gets a second round, within its AI_TO_BE_PART_REPAIRS", async () => {
+    const h = harness({ step: (id, nth) => id === "TB-3" && nth < 3 ? badTrace : split.details[id] });
+    const result = await h.run();
+    expect(h.stepCount["TB-3"]).toBe(3);
+    expect(result.payload.design).toEqual(rentalDraftV3);
+  });
+  it("re-expansion rounds are bounded: a part that never passes the assembled checks is asked 3 times, then the stage fails", async () => {
+    const h = harness({ step: id => id === "TB-3" ? badTrace : split.details[id] });
+    await expect(h.run()).rejects.toMatchObject({ code: "AI_INVALID_OUTPUT" });
+    expect(h.stepCount["TB-3"]).toBe(3);
   });
 });
