@@ -99,6 +99,13 @@ type Draft = { schemaVersion: 1 | 2 | 3 } & { [K in RegisterKey]?: unknown[] };
 export const segments = (value: string, needsDigit = false) => value.split(/\r?\n|;/).map(norm).filter(part =>
   part.length >= 3 && !part.endsWith(":") && (!needsDigit || /\d/.test(part)));
 
+/** Words that say nothing about WHICH system is meant (generic IT nouns and the verbs of "X stays, Y is replaced"). */
+const GENERIC_SYSTEM_WORDS = new Set(["system", "systems", "sap", "tool", "tools", "app", "apps", "application", "applications", "package", "packages", "the", "and", "with", "data",
+  "legacy", "local", "old", "new", "for", "are", "was", "its", "our", "all", "stay", "stays", "kept", "keep", "must", "should", "will", "integrated", "integration", "replaced", "retired", "excel"]);
+const distinctiveWords = (value: string) => new Set(value.split(/[^\p{L}\p{M}\p{N}]+/u).filter(word => word.length >= 3 && !GENERIC_SYSTEM_WORDS.has(word)));
+/** True when both texts (already normalised) share a whole distinctive word. */
+const sharesDistinctiveWord = (a: string, b: string) => { const words = distinctiveWords(b); return [...distinctiveWords(a)].some(word => words.has(word)); };
+
 /** Checks the registers of a schemaVersion 2 design. A version 1 design must carry none. Codes only: no model text is echoed. */
 export function checkRegisters(draft: Draft, ctx: RegisterContext, error: Report, block: Report): void {
   // Version 1 carries no registers, version 2 the first eight, version 3 all of them.
@@ -168,12 +175,12 @@ export function checkRegisters(draft: Draft, ctx: RegisterContext, error: Report
     traced("interfaces", row, i);
     based("interfaces", row, i, !row.outOfScopeReason);
   });
-  // ponytail: systems are matched by the list lines/semicolon items of the answer; a comma-separated single line only needs one hit.
+  // Each line/semicolon item of the answer needs a row naming it: one distinctive word in common is enough (a one-sentence answer is one item).
   const retained = known.get("retained_systems");
   if (retained !== undefined) {
     const names = interfaces.map(row => norm(row.counterpartSystem));
-    if (!interfaces.some(row => row.contextFieldIds?.includes("retained_systems"))) error("RETAINED_SYSTEM_UNCOVERED", "draft.interfaces");
-    else if (segments(retained).some(part => !names.some(name => overlaps(part, name)))) error("RETAINED_SYSTEM_UNCOVERED", "draft.interfaces");
+    if (!interfaces.some(row => row.contextFieldIds?.includes("retained_systems"))) error("RETAINED_SYSTEM_UNCOVERED", "draft.interfaces", "no interface row cites retained_systems");
+    else if (segments(retained).some(part => !names.some(name => overlaps(part, name) || sharesDistinctiveWord(part, name)))) error("RETAINED_SYSTEM_UNCOVERED", "draft.interfaces", "a retained system has no interface row naming it");
   }
 
   const kpis = rows("kpis") as (Row & { baseline: string; target: string; name: string; measuredFrom: string })[];

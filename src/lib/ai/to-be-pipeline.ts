@@ -3,7 +3,7 @@ import { contextForStep } from "../company-context";
 import { phase } from "./design-primitives";
 import { DetailedDesignSchema, EFFECTS_SHAPE, IMPLEMENTATION_KINDS, STEP_TYPES, draftIssues, evaluateDesign, id, ids, list, text,
   inputIds, type DesignContext, type DetailedDesign } from "./design-quality";
-import { LATE_GROUPS, REGISTER_GROUPS, REGISTER_GROUP_NAMES, RegisterGroupSchemas, groupOf, segments, type RegisterGroup, type RegisterPayloads } from "./design-registers";
+import { LATE_GROUPS, REGISTER_GROUPS, REGISTER_GROUP_NAMES, RegisterGroupSchemas, groupOf, type RegisterGroup, type RegisterPayloads } from "./design-registers";
 import type { ValidationIssue } from "./problem-analysis";
 import { repairOutlineLinks, repairOutlineShape, restoreFromPrevious } from "./outline-repair";
 import { allowedKinds, applyOutlinePatch, isPatchable, locate, type OutlinePatch } from "./outline-patch";
@@ -341,11 +341,13 @@ export const stepDigest = (steps: DetailedDesign["steps"]) => steps.map(step => 
 /** Per-group register input: the frozen outline, every answered company-context field, all requirements and the catalog's
  * objects. No source text, no evidence quotes. The early groups see no step bodies (the step calls run in parallel and are not available
  * yet); the late groups also get the finished steps as a digest. */
+const MAX_HINT_ANSWER = 600;
 /** Register errors whose code alone does not say what is missing, said in words from the company context (names only, never anything the model wrote). */
 function registerHints(input: ToBeInput, errors: readonly ValidationIssue[]): string[] {
   const retained = input.discovery.companyContext?.find(item => item.fieldId === "retained_systems")?.value;
-  return retained && errors.some(error => error.code === "RETAINED_SYSTEM_UNCOVERED")
-    ? [`RETAINED_SYSTEM_UNCOVERED: every retained system needs its own interface row whose counterpartSystem names it and whose contextFieldIds hold "retained_systems"; the retained systems are ${segments(retained).map(name => `"${name}"`).join(", ")}.`] : [];
+  if (!retained || !errors.some(error => error.code === "RETAINED_SYSTEM_UNCOVERED")) return [];
+  const answer = retained.length > MAX_HINT_ANSWER ? `${retained.slice(0, MAX_HINT_ANSWER)}...` : retained;
+  return [`RETAINED_SYSTEM_UNCOVERED: every system the retained_systems answer says is kept, stays or is integrated needs its own interface row whose counterpartSystem uses that system's name as written in the answer and whose contextFieldIds include "retained_systems"; systems the answer says are replaced or retired need no interface; the answer reads: "${answer}"`];
 }
 
 export function registerRequest(input: ToBeInput, references: DesignContext["references"], outline: Outline, group: RegisterGroup, validationErrors: ValidationIssue[],

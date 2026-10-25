@@ -531,8 +531,9 @@ describe("register calls: repair and checks", () => {
     expect(h.registerCount.integration).toBe(2);
     const repair = JSON.parse(h.registerCalls.filter(call => call.group === "integration")[1]!.body.messages[0]!.content) as { repairNote: string };
     expect(repair.repairNote).toContain("RETAINED_SYSTEM_UNCOVERED");
-    // The code alone does not say what is missing: the note names every retained system and the two things a row must carry.
-    expect(repair.repairNote).toContain('"customer portal"'); expect(repair.repairNote).toContain('"legacy dispatch system"');
+    // The code alone does not say what is missing: the note says what a row must carry and quotes the answer once, not as a list of system names.
+    expect(repair.repairNote).toContain('the answer reads: "Customer portal\nLegacy dispatch system"');
+    expect(repair.repairNote).not.toContain('"customer portal"'); expect(repair.repairNote).not.toContain("the retained systems are");
     expect(repair.repairNote).toContain("counterpartSystem"); expect(repair.repairNote).toContain('"retained_systems"');
     expect(result.payload.design.interfaces).toHaveLength(2);
   });

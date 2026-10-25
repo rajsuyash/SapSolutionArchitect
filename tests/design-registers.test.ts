@@ -107,6 +107,28 @@ describe("company-context coverage", () => {
   it("an interface that cites no retained-system field leaves the answer uncovered", () => {
     expect(codes(design(draft => { draft.interfaces = [iface("Customer portal", { contextFieldIds: [], stepIds: ["TB-1"] })]; }), ctx(answered(["retained_systems", "Customer portal"])))).toEqual(["RETAINED_SYSTEM_UNCOVERED@draft.interfaces"]);
   });
+  const services = "TimeTrack stays as the timesheet system and must be integrated with SAP. The four local accounting packages and the Excel workbooks are replaced.";
+  const pump = "Salesforce stays as the quoting tool and must be integrated with SAP. Tally Prime is retired, replaced by SAP.";
+  const issues = (system: string[], answer: string) => evaluateDesign(ctx(answered(["retained_systems", answer])), design(draft => { draft.interfaces = system.map(name => iface(name)); })).errors
+    .filter(error => error.code === "RETAINED_SYSTEM_UNCOVERED");
+  it("a retained system in a one-sentence answer is covered by a descriptive counterpart that shares its name word", () => {
+    expect(issues(["TimeTrack timesheet system"], services)).toEqual([]);
+    expect(issues(["TimeTrack (timesheets)"], services)).toEqual([]);
+    expect(issues(["Salesforce CRM (quoting)"], pump)).toEqual([]);
+  });
+  it("an unrelated counterpart leaves a one-sentence answer uncovered, and says a system has no row naming it", () => {
+    expect(issues(["Bank SFTP"], services)).toEqual([{ code: "RETAINED_SYSTEM_UNCOVERED", path: "draft.interfaces", detail: "a retained system has no interface row naming it" }]);
+  });
+  it("no row citing retained_systems is reported with its own detail", () => {
+    const uncited = evaluateDesign(ctx(answered(["retained_systems", services])), design(draft => { draft.interfaces = [iface("TimeTrack", { contextFieldIds: [] })]; })).errors
+      .filter(error => error.code === "RETAINED_SYSTEM_UNCOVERED");
+    expect(uncited).toEqual([{ code: "RETAINED_SYSTEM_UNCOVERED", path: "draft.interfaces", detail: "no interface row cites retained_systems" }]);
+  });
+  it("a two-line answer still needs a row for each line", () => {
+    const answer = "TimeTrack timesheet system\nSalesforce quoting tool";
+    expect(issues(["TimeTrack timesheet system"], answer)).toHaveLength(1);
+    expect(issues(["TimeTrack timesheet system", "Salesforce CRM"], answer)).toEqual([]);
+  });
   let counter = 0;
   const kpi = (target: string, baseline = "not provided", contextFieldIds = ["kpi_targets"]) => ({ id: `KPI-${++counter}`, name: "Measure", baseline, target, measuredFrom: "Billing documents",
     referenceIds: [], needsValidation: true, validationReason: "App to be confirmed", requirementIds: [], contextFieldIds, stepIds: ["TB-3"] });
