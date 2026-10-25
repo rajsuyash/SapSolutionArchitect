@@ -11,6 +11,7 @@ import { noCatalogNote } from "../sap-releases";
 import { normalizeToolInput } from "./tool-input-normalizer";
 import { repairIdVariants } from "./id-variant-repair";
 import { repairRegisterGroup, repairStepBody } from "./part-repair";
+import { LEAK_DETAIL, TOOL_MARKUP_LEAKED, findToolMarkup, hasToolMarkup } from "./tool-markup";
 import { toBeContext, validateToBeOutput, type ToBeInput, type ToBeOutput } from "./to-be";
 import { extractSapCodes, textFields, designIds } from "./design-text-lint";
 import { ReviewSchema, compactDesign, partKey, repairNote, routeFindings, reviewBlockers, type Part, type RoutedFinding, type ReviewOutcome } from "./to-be-review";
@@ -71,21 +72,7 @@ export type StepDetail = z.infer<typeof StepDetailSchema>;
 export const TRUNCATED = Symbol("truncated");
 export const OUTPUT_TRUNCATED = "OUTPUT_TRUNCATED";
 const NO_TOOL_PAYLOAD = "NO_TOOL_PAYLOAD";
-/** The model wrote its tool call as markup (DeepSeek's `<｜DSML｜ ...>`) instead of calling the tool: as the whole text answer, or inside a field value. */
-export const TOOL_MARKUP_LEAKED = "TOOL_MARKUP_LEAKED";
-const TOOL_MARKUP = /[｜|]DSML[｜|]/;
-export const hasToolMarkup = (text: string) => TOOL_MARKUP.test(text);
-/** Path (relative to `path`) of the first string in `value` that holds tool-call markup. Never changes the value: a corrupt field is reported, not cleaned. */
-function findToolMarkup(value: unknown, path: string): string | undefined {
-  if (typeof value === "string") return hasToolMarkup(value) ? path : undefined;
-  if (typeof value !== "object" || value === null) return undefined;
-  for (const [key, item] of Object.entries(value)) {
-    const found = findToolMarkup(item, /^[A-Za-z][A-Za-z0-9_]{0,40}$/.test(key) ? `${path}.${key}` : path);
-    if (found) return found;
-  }
-  return undefined;
-}
-const LEAK_DETAIL = "tool-call markup was written here instead of calling the tool";
+export { TOOL_MARKUP_LEAKED, hasToolMarkup };
 const LEAK_HINT = "Call the tool with the answer as its arguments; do not write tool-call markup (<｜DSML｜ ...> tags) as text or inside any field.";
 /** The previous answer of a failed call goes back to the model only up to this size (about 7k tokens against AI_MAX_INPUT_TOKENS); a larger one is left out. */
 export const MAX_PREVIOUS_ANSWER_CHARS = 24000;
@@ -209,7 +196,10 @@ function skeleton(outline: Outline): DetailedDesign {
 /** `previous` is the shaped payload and issues of the attempt this one repairs; `shaped` is this attempt's payload after the deterministic repairs. */
 export type OutlinePrevious = { value: unknown; issues: readonly ValidationIssue[] };
 export function validateOutline(input: ToBeInput, references: DesignContext["references"], raw: unknown, previous?: OutlinePrevious):
-  { success: true; outline: Outline; warnings: ValidationIssue[]; shaped: unknown } | { success: false; errors: ValidationIssue[]; shaped: unknown } {
+  { success: true; outline: Outline; warnings: ValidationIssue[]; shaped: unknown } | { success: false; errors: ValidationIssue[]; shaped?: unknown } {
+  // A leaked answer is reported, not shaped: it must not become the reference the next repair restores from or patches.
+  const marked = findToolMarkup(raw, "outline");
+  if (marked) return { success: false, errors: [{ path: marked, code: TOOL_MARKUP_LEAKED, detail: LEAK_DETAIL }] };
   const normalized = normalizeToolInput(OutlineSchema, raw, "outline");
   const restored = previous ? restoreFromPrevious(previous, normalized.value) : { value: normalized.value, warnings: [] };
   const repaired = repairOutlineShape(input.discovery, new Set(references.map(reference => reference.id)), restored.value,
@@ -462,16 +452,18 @@ export async function runDesign(input: ToBeInput, references: DesignContext["ref
   const requestOutline = async (errors: ValidationIssue[]) => {
     const raw = await ask("outline", "to_be_outline", outlineRequest(input, references, errors));
     return settle(raw, "outline", raw === TRUNCATED ? { success: false as const, errors: [{ path: "to_be_outline", code: OUTPUT_TRUNCATED }], shaped: lastShaped }
+      : raw === null && leaked.has("outline") ? { success: false as const, errors: [{ path: "to_be_outline", code: TOOL_MARKUP_LEAKED, detail: LEAK_DETAIL }] }
       : validateOutline(input, references, raw, errors.length && lastShaped !== undefined ? { value: lastShaped, issues: errors } : undefined));
   };
   /** Ask for a patch of the flagged items, merge it onto the last outline and validate the merge. A patch that is cut off, missing or
    * fails its schema is a failed repair that leaves the errors (and the last outline) as they were. */
   const requestPatch = async (errors: ValidationIssue[]) => {
     const raw = await ask("outline", "to_be_outline", outlinePatchRequest(input, references, lastShaped, errors), "patch");
-    const normalized = raw === TRUNCATED || raw === null ? undefined : normalizeToolInput(OutlinePatchSchema, raw, "outline.patch");
+    const marked = raw !== TRUNCATED && findToolMarkup(raw, "outline.patch");
+    const normalized = raw === TRUNCATED || raw === null || marked ? undefined : normalizeToolInput(OutlinePatchSchema, raw, "outline.patch");
     const parsed = normalized ? OutlinePatchSchema.safeParse(normalized.value) : undefined;
     if (!normalized || !parsed || !parsed.success) {
-      const issues = raw === TRUNCATED ? [{ path: "to_be_outline", code: OUTPUT_TRUNCATED }] : parsed && !parsed.success
+      const issues = raw === TRUNCATED ? [{ path: "to_be_outline", code: OUTPUT_TRUNCATED }] : marked ? [{ path: marked, code: TOOL_MARKUP_LEAKED, detail: LEAK_DETAIL }] : parsed && !parsed.success
         ? rePath(draftIssues(parsed.error.issues), "draft", "outline.patch") : [{ path: "to_be_outline", code: NO_TOOL_PAYLOAD }];
       deps.record(issues);
       if (raw !== TRUNCATED && raw !== null) deps.rawFailure?.("to_be_outline", "outline-patch", raw);
@@ -621,6 +613,7 @@ export async function runDesign(input: ToBeInput, references: DesignContext["ref
     try {
       const raw = await deps.ask("to_be_review", reviewRequest(input, design));
       if (raw === TRUNCATED || raw === null) return skip(raw === null ? "REVIEW_NO_PAYLOAD" : OUTPUT_TRUNCATED);
+      if (findToolMarkup(raw, "review")) return skip(TOOL_MARKUP_LEAKED);
       const normalized = normalizeToolInput(ReviewSchema, raw, "review");
       const parsed = ReviewSchema.safeParse(normalized.value);
       if (!parsed.success) return skip("REVIEW_INVALID_OUTPUT");
@@ -717,7 +710,7 @@ export async function runDesign(input: ToBeInput, references: DesignContext["ref
   const patchOutline = async (data: ToBeOutput, indexes: readonly number[], questions: readonly MissingQuestion[]): Promise<ToBeOutput | undefined> => {
     if (lastShaped === undefined) return undefined;
     const raw = await deps.ask("to_be_fix", fixPatchRequest(input, references, lastShaped, indexes.map(i => findingLine(data.reviewFindings![i]!)), questions), "patch");
-    if (raw === TRUNCATED || raw === null) return undefined;
+    if (raw === TRUNCATED || raw === null || findToolMarkup(raw, "outline.patch")) return undefined;
     const parsed = OutlinePatchSchema.safeParse(normalizeToolInput(OutlinePatchSchema, raw, "outline.patch").value);
     if (!parsed.success) return undefined;
     const patched = validateOutline(input, references, applyOutlinePatch(lastShaped, parsed.data as OutlinePatch));

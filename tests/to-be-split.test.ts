@@ -1033,6 +1033,50 @@ describe("repair requests", () => {
     expect(result.metrics.validationErrors).not.toContainEqual(expect.objectContaining({ code: "NO_TOOL_PAYLOAD" }));
     expect(second(h, "TB-1")).toContain("Call the tool");
   });
+  it("an outline whose processName holds tool-call markup is TOOL_MARKUP_LEAKED even though the schema accepts it; the re-ask says to call the tool and the final design is clean", async () => {
+    const leaked = { ...split.outline, processName: `Quote to report</｜DSML｜ parameter>\n${MARKUP}` };
+    const h = harness({ outline: nth => nth === 1 ? leaked : split.outline });
+    const result = await h.run();
+    expect(h.outlineCalls).toHaveLength(2);
+    expect(result.metrics.validationErrors).toContainEqual(expect.objectContaining({ code: "TOOL_MARKUP_LEAKED", path: "outline.processName" }));
+    const repair = h.outlineCalls[1]!.messages[0]!.content;
+    expect(repair).toContain("Call the tool");
+    expect(repair).not.toContain("Quote to report");
+    expect(JSON.stringify(result.payload.design)).not.toContain("DSML");
+    expect(result.payload.design).toEqual(rentalDraftV3);
+  });
+  it("an outline patch holding tool-call markup is rejected, not merged", async () => {
+    const h = harness({ outline: n => n === 1 ? badKindOutline : split.outline,
+      patch: n => ({ steps: [n === 1 ? { ...split.outline.steps[0], title: `Step${MARKUP}` } : split.outline.steps[0]] }) });
+    const result = await h.run();
+    expect(h.patchCalls).toHaveLength(2);
+    expect(result.metrics.validationErrors).toContainEqual(expect.objectContaining({ code: "TOOL_MARKUP_LEAKED", path: "outline.patch.steps.0.title" }));
+    expect(JSON.stringify(result.payload.design)).not.toContain("DSML");
+  });
+  it("a register payload holding tool-call markup is TOOL_MARKUP_LEAKED and re-asked", async () => {
+    const group = rentalRegisterGroups.governance as Record<string, unknown>;
+    const key = Object.keys(group).find(name => Array.isArray(group[name]) && typeof (group[name] as Record<string, unknown>[])[0]?.[Object.keys((group[name] as Record<string, unknown>[])[0]!)[0]!] === "string")!;
+    const rows = group[key] as Record<string, unknown>[], field = Object.keys(rows[0]!).find(name => typeof rows[0]![name] === "string")!;
+    const leaked = { ...group, [key]: [{ ...rows[0], [field]: `x${MARKUP}` }, ...rows.slice(1)] };
+    const h = harness({ registers: (name, nth) => name === "governance" && nth === 1 ? leaked : rentalRegisterGroups[name] });
+    const result = await h.run();
+    expect(h.registerCount.governance).toBe(2);
+    expect(result.metrics.validationErrors).toContainEqual(expect.objectContaining({ code: "TOOL_MARKUP_LEAKED", path: expect.stringContaining(`draft.${key}`) }));
+    expect(JSON.stringify(result.payload.design)).not.toContain("DSML");
+  });
+  it("a consistency review holding tool-call markup is dropped, not stored as findings", async () => {
+    const h = harness({ overrides: { AI_TO_BE_REVIEW: "on" }, review: () => ({ findings: [{ kind: "COVERAGE_GAP", paths: ["R-1"], explanation: `Gap${MARKUP}` }] }) });
+    const result = await h.run();
+    expect(JSON.stringify(result.payload)).not.toContain("DSML");
+  });
+  it("an assembled design with tool-call markup in any string field fails validation with TOOL_MARKUP_LEAKED at that path", () => {
+    const input = parseToBeInput(fixture());
+    expect(validateToBeOutput(input, rentalDraftV3).success).toBe(true);
+    const inStep = { ...rentalDraftV3, steps: rentalDraftV3.steps.map((step, i) => i === 1 ? { ...step, actor: `Clerk${MARKUP}` } : step) };
+    expect(validateToBeOutput(input, inStep)).toMatchObject({ success: false, errors: [expect.objectContaining({ code: "TOOL_MARKUP_LEAKED", path: "draft.steps.1.actor" })] });
+    const inName = validateToBeOutput(input, { ...rentalDraftV3, processName: `Name${MARKUP}` });
+    expect(inName).toMatchObject({ success: false, errors: [expect.objectContaining({ code: "TOOL_MARKUP_LEAKED", path: "draft.processName" })] });
+  });
   it("a step re-ask after a schema failure carries the previous answer as currentAnswer, so the note's 'copy the other fields' is true", async () => {
     const wrong = { ...split.details["TB-2"]!, actions: [] };
     const h = harness({ step: (id, nth) => id === "TB-2" && nth === 1 ? wrong : split.details[id] });

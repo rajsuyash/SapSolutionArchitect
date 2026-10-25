@@ -6,6 +6,7 @@ import { DetailedDesignSchema, evaluateDesign, type DesignContext, type DesignEv
 import { loadSapReferences, type SapReferenceOptions } from "./sap-references";
 import type { ValidationIssue } from "./problem-analysis";
 import type { StageMetrics } from "./runStage";
+import { LEAK_DETAIL, TOOL_MARKUP_LEAKED, findToolMarkup } from "./tool-markup";
 import { reviewBlockers, type ReviewOutcome } from "./to-be-review";
 
 const InputSchema = z.strictObject({
@@ -64,6 +65,9 @@ export function toBeContext(input: ToBeInput, references: DesignContext["referen
 /** `extraBlockers` are review findings that come from outside the design checks (the consistency pass); they are added to the evaluation like any other blocker. */
 export function validateToBeOutput(input: ToBeInput, raw: unknown, references: DesignContext["references"] = [], extraBlockers: readonly DesignEvaluation["blockers"][number][] = []):
   { success: true; data: ToBeOutput } | { success: false; errors: ValidationIssue[] } {
+  // Last gate: whatever the stage checks missed, a design holding tool-call markup in any string is never accepted.
+  const marked = findToolMarkup(raw, "draft");
+  if (marked) return { success: false, errors: [{ path: marked, code: TOOL_MARKUP_LEAKED, detail: LEAK_DETAIL }] };
   const evaluation = evaluateDesign(toBeContext(input, references), raw);
   if (!evaluation.structurallyValid) return { success: false, errors: evaluation.errors.slice(0, 30) };
   const design = DetailedDesignSchema.parse(raw);
