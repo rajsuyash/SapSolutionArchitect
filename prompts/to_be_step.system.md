@@ -90,6 +90,9 @@ Describe who starts the step, its trigger, input documents, ordered actor/system
 actions and the fields read or written. Identify the resulting documents, their
 references to earlier documents and the change of status.
 
+If the step's outline says it dispatches, bills, receives or posts, its actions must
+include that posting or document creation and its effects the accounting entry.
+
 Express each business rule as a condition and observable response. Cover applicable
 approval and reapproval triggers, partial processing, rejected/blocked transactions,
 cancellation/correction, duplicate execution and handoffs. Do not manufacture an

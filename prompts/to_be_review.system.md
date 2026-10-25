@@ -24,6 +24,8 @@ Report only real problems between parts of this design that a reader would trip 
   catalogue or organisation structure does not define.
 - COVERAGE_GAP: something the requirements or the process need is not covered by any step, rule, test, report or register where it should be (for example a
   critical requirement whose steps do not do what it asks, a pain point with no report or KPI, a period-end activity the steps imply but none lists).
+  Also a document or posting that steps use but no step's action creates or posts (for example a goods issue or billing document nobody posts): report it
+  as COVERAGE_GAP, not a CONTRADICTION. In paths name only the step that should perform it, if one exists; if none should own it, leave paths empty so a step is added.
 - INTERNAL_TERM: text meant for the client uses a working term of the tool that produced the design ("outline", "register call", "step call", "frozen").
 
 ## How to report

@@ -137,6 +137,11 @@ constraints and timeline. It is design input, not background:
   Do not collapse distinct cases into one step, and do not create steps that only
   restate each other. Number them 1..n in process order (sequence).
 - Each step's purpose is one line stating what changes operationally.
+- Every document, posting or status that a step consumes or a rule relies on must be
+  created or posted by an earlier (or the same) step, or be stated as coming from an
+  external party or retained system. A dispatch step posts the goods issue and a billing
+  step creates the billing document before any step uses them; likewise a goods receipt
+  before invoice verification, a journal posting before reconciliation.
 - List in requirementIds only the requirements the step genuinely implements, each
   belonging to one of the step's asIsStepIds. Every supplied requirement must end
   up in coverage exactly once, and every implemented one on exactly the steps that
