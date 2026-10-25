@@ -81,6 +81,14 @@ export function logProviderFailure(provider: Provider, model: string, stage: str
   console.error(JSON.stringify({ event: "ai_provider_error", provider, model, stage, ...classifyProviderError(error) }));
 }
 
+/** After a call to the primary provider is refused for credit, calls go straight to the fallback provider for this long, then the primary is tried again. */
+export const FALLBACK_COOLDOWN_MS = 10 * 60 * 1000;
+
+/** One structured line when a credit-refused call moves to the fallback provider. Carries no prompt, user data, key or provider message. */
+export function logProviderFallback(fromProvider: Provider, toProvider: Provider, model: string, stage: string) {
+  console.error(JSON.stringify({ event: "ai_provider_fallback", fromProvider, toProvider, model, stage, reason: "credit" }));
+}
+
 /** One structured line per retried provider call. Carries no prompt, user data or key. */
 export function logProviderRetry(provider: Provider, model: string, stage: string, attempt: number, delayMs: number, error: unknown) {
   const { status, errorType } = classifyProviderError(error);

@@ -7,6 +7,8 @@ const OPENROUTER_DEFAULT_PRICES: [number, number] = [0.15, 0.6];
 /** Highest output-token ceiling (max_tokens) of a To-Be call, as configured or after a cut-off answer doubles it. */
 export const TO_BE_MAX_TOKENS_CAP = 64000;
 export const OPENROUTER_DEFAULT_MODEL = "deepseek/deepseek-v4.1-flash-1017";
+/** Model a fallback provider runs when AI_FALLBACK_MODEL is unset. */
+const FALLBACK_DEFAULT_MODELS = { anthropic: "claude-sonnet-5-5", deepinfra: "XiaomiMiMo/MiMo-V2.6-Flash", openrouter: OPENROUTER_DEFAULT_MODEL } as const;
 const httpUrl = z.url({ protocol: /^https?$/ });
 // A blank variable means "use the default", not zero.
 const price = (fallback: number) => z.preprocess((value) => (typeof value === "string" && !value.trim() ? undefined : value),
@@ -42,6 +44,11 @@ const schema = z.object({
   AI_MODEL: required.default("claude-sonnet-5-5"),
   // Optional stronger/slower model for the long To-Be design stage only; unset means AI_MODEL runs every stage.
   AI_MODEL_DESIGN: z.preprocess(blankToUndefined, required.optional()),
+  // Optional second provider: a call the primary refuses for credit (HTTP 402, exhausted balance or budget) is re-sent to it once, and later calls use it for a cooldown.
+  // Must differ from AI_PROVIDER and have its own key. AI_FALLBACK_MODEL / AI_FALLBACK_MODEL_DESIGN default to that provider's default model (design falls back to AI_FALLBACK_MODEL).
+  AI_FALLBACK_PROVIDER: z.preprocess(blankToUndefined, z.enum(["anthropic", "deepinfra", "openrouter"]).optional()),
+  AI_FALLBACK_MODEL: z.preprocess(blankToUndefined, required.optional()),
+  AI_FALLBACK_MODEL_DESIGN: z.preprocess(blankToUndefined, required.optional()),
   AI_MAX_INPUT_TOKENS: z.coerce.number().int().positive().default(60000),
   CONSULTANT_DAILY_JOB_LIMIT: z.coerce.number().int().min(1).max(100000).default(200),
   AI_MAX_CONCURRENCY: z.coerce.number().int().positive().default(4),
@@ -102,6 +109,14 @@ const schema = z.object({
   if (config.AI_PROVIDER === "anthropic" && !config.ANTHROPIC_API_KEY?.trim()) invalid("ANTHROPIC_API_KEY");
   if (config.AI_PROVIDER === "deepinfra" && !config.DEEPINFRA_API_KEY?.trim()) invalid("DEEPINFRA_API_KEY");
   if (config.AI_PROVIDER === "openrouter" && !config.OPENROUTER_API_KEY?.trim()) invalid("OPENROUTER_API_KEY");
+  if (config.AI_FALLBACK_PROVIDER) {
+    const fallbackKey = { anthropic: config.ANTHROPIC_API_KEY, deepinfra: config.DEEPINFRA_API_KEY, openrouter: config.OPENROUTER_API_KEY }[config.AI_FALLBACK_PROVIDER];
+    if (config.AI_FALLBACK_PROVIDER === config.AI_PROVIDER) invalid("AI_FALLBACK_PROVIDER");
+    else if (!fallbackKey?.trim()) invalid({ anthropic: "ANTHROPIC_API_KEY", deepinfra: "DEEPINFRA_API_KEY", openrouter: "OPENROUTER_API_KEY" }[config.AI_FALLBACK_PROVIDER]);
+  } else {
+    if (config.AI_FALLBACK_MODEL) invalid("AI_FALLBACK_MODEL");
+    if (config.AI_FALLBACK_MODEL_DESIGN) invalid("AI_FALLBACK_MODEL_DESIGN");
+  }
   // Claude rejects thinking: {type: "disabled"} with a 400, so the setting is refused rather than silently ignored.
   if (config.AI_PROVIDER === "anthropic" && config.AI_NO_THINKING_STAGES.length) invalid("AI_NO_THINKING_STAGES");
   // A single call can never outlive the stage that contains it.
@@ -136,7 +151,10 @@ export function parseEnvironment(input: Record<string, string | undefined> = pro
     const names = [...new Set(result.error.issues.map((issue) => issue.path.join(".")))];
     throw new Error(`Invalid environment variables: ${names.join(", ")}`);
   }
-  // Price the default OpenRouter model out of the box (an explicit AI_MODEL_PRICES entry wins).
-  const prices = result.data.AI_PROVIDER === "openrouter" ? { [OPENROUTER_DEFAULT_MODEL]: OPENROUTER_DEFAULT_PRICES, ...result.data.AI_MODEL_PRICES } : result.data.AI_MODEL_PRICES;
-  return Object.freeze({ ...result.data, AI_MODEL_PRICES: prices });
+  // Price the default OpenRouter model out of the box, as primary or as fallback (an explicit AI_MODEL_PRICES entry wins).
+  const usesOpenRouter = result.data.AI_PROVIDER === "openrouter" || result.data.AI_FALLBACK_PROVIDER === "openrouter";
+  const prices = usesOpenRouter ? { [OPENROUTER_DEFAULT_MODEL]: OPENROUTER_DEFAULT_PRICES, ...result.data.AI_MODEL_PRICES } : result.data.AI_MODEL_PRICES;
+  const fallbackModel = result.data.AI_FALLBACK_PROVIDER ? result.data.AI_FALLBACK_MODEL ?? FALLBACK_DEFAULT_MODELS[result.data.AI_FALLBACK_PROVIDER] : undefined;
+  return Object.freeze({ ...result.data, AI_MODEL_PRICES: prices, AI_FALLBACK_MODEL: fallbackModel,
+    AI_FALLBACK_MODEL_DESIGN: fallbackModel && (result.data.AI_FALLBACK_MODEL_DESIGN ?? fallbackModel) });
 }

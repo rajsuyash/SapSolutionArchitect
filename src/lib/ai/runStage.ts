@@ -4,7 +4,7 @@ import { z } from "zod";
 import { parseEnvironment, STAGE_NAMES, TO_BE_MAX_TOKENS_CAP, TO_BE_SUBSTAGES, type Environment } from "../env";
 import { ProblemAnalysisInputSchema, ProblemAnalysisSchema, redactInput, schemaIssues, validateProblemAnalysis,
   type ProblemAnalysis, type ValidationIssue } from "./problem-analysis";
-import { classifyProviderError, createProviderClient, logProviderFailure, logOutputCeilingRaised, logProviderRetry, logStageTimeout, type Provider } from "./provider";
+import { FALLBACK_COOLDOWN_MS, classifyProviderError, createProviderClient, logProviderFailure, logProviderFallback, logOutputCeilingRaised, logProviderRetry, logStageTimeout, type Provider } from "./provider";
 import { withProviderRetry } from "./retry";
 import { loadToBeReferences, parseToBeInput, type ToBeOutput } from "./to-be";
 import { REGISTER_GROUP_NAMES, RegisterGroupSchemas } from "./design-registers";
@@ -52,7 +52,7 @@ export class AIStageError extends Error {
     super(code); this.name = "AIStageError";
   }
 }
-type Config = Pick<Environment, "NODE_ENV" | "AI_PROVIDER" | "ANTHROPIC_API_KEY" | "DEEPINFRA_API_KEY" | "OPENROUTER_API_KEY" | "AI_REASONING_EFFORT" | "AI_MODEL" | "AI_MODEL_DESIGN" | "AI_MAX_INPUT_TOKENS" | "AI_MAX_CONCURRENCY" | "AI_CHAT_CONCURRENCY" | "AI_FAULT_INJECTION"
+type Config = Pick<Environment, "NODE_ENV" | "AI_PROVIDER" | "AI_FALLBACK_PROVIDER" | "AI_FALLBACK_MODEL" | "AI_FALLBACK_MODEL_DESIGN" | "ANTHROPIC_API_KEY" | "DEEPINFRA_API_KEY" | "OPENROUTER_API_KEY" | "AI_REASONING_EFFORT" | "AI_MODEL" | "AI_MODEL_DESIGN" | "AI_MAX_INPUT_TOKENS" | "AI_MAX_CONCURRENCY" | "AI_CHAT_CONCURRENCY" | "AI_FAULT_INJECTION"
   | "AI_NO_THINKING_STAGES" | "AI_STAGE_BUDGET_SECONDS" | "AI_CALL_TIMEOUT_SECONDS" | "AI_DESIGN_CALL_TIMEOUT_SECONDS" | "AI_DESIGN_PARALLELISM" | "AI_TO_BE_OUTLINE_REPAIRS" | "AI_TO_BE_PART_REPAIRS" | "AI_TO_BE_OUTLINE_MAX_TOKENS" | "AI_TO_BE_STEP_MAX_TOKENS" | "AI_TO_BE_REGISTERS_MAX_TOKENS"> & Partial<Pick<Environment, "AI_TO_BE_REVIEW" | "AI_TO_BE_FIX_MAX_PARTS">>;
 const SDK_TIMEOUT_MARGIN_MS = 5000;
 /** OpenRouter has no count_tokens endpoint: input size is estimated locally. 3.5 chars/token is deliberately below the ~4 of English prose
@@ -65,7 +65,9 @@ const INTERVIEW_MAX_TOKENS = 16000;
 const DESIGN_STAGES: ReadonlySet<Stage> = new Set<Stage>(["to_be"]);
 /** issueDetail: eval harness only. Adds the schema's own message (never the received value) to interview_turn issues
  * recorded in metrics; the issues sent back to the model and the production default are unchanged. */
-type Options = { fetch?: typeof fetch; sapCatalogDir?: string; issueDetail?: boolean;
+type Options = { fetch?: typeof fetch;
+  /** Clock for the fallback cooldown (tests inject one). */
+  now?: () => number; sapCatalogDir?: string; issueDetail?: boolean;
   /** Eval harness only, synthetic fixtures only: keep the raw payloads of failed To-Be calls in metrics.rawFailures. */
   captureRaw?: boolean };
 
@@ -144,30 +146,51 @@ export function createStageRunner(config: Config, options: Options = {}) {
   // AbortSignal in call() bounds the whole stream. Keep the SDK value above both per-call limits.
   const sdkTimeout = Math.max(callTimeout, designCallTimeout) + SDK_TIMEOUT_MARGIN_MS;
   const client = provider === "stub" ? undefined : createProviderClient(provider, apiKey!, sdkTimeout, options.fetch);
-  const noThinking = new Set<string>(provider === "deepinfra" || provider === "openrouter" ? config.AI_NO_THINKING_STAGES ?? [] : []);
-  // OpenRouter only: effort for stages that think. "none" = reasoning off everywhere. The Messages endpoint documents output_config.effort
-  // and thinking:{type:"disabled"} as its reasoning controls (mapped to reasoning.effort / reasoning.enabled=false); no `thinking` is sent otherwise.
-  const effort = provider === "openrouter" ? config.AI_REASONING_EFFORT ?? "max" : "none";
-  const reasoningOff = provider === "openrouter" && effort === "none";
-  // OpenRouter only. DeepSeek documents that a forced tool choice is not supported while thinking is on, and live (2026-10-23, effort max,
-  // forced tool) 7 of 8 step and register calls ended their turn without calling the tool. With AI_REASONING_EFFORT unset, only the
-  // outline thinks; the step and register calls (a fixed outline to fill in) run with thinking disabled and the forced tool. An
-  // explicit AI_REASONING_EFFORT (or AI_NO_THINKING_STAGES) is the operator's choice and applies to every call as before.
-  const expansionThinkingOff = (substage: Substage) => provider === "openrouter" && config.AI_REASONING_EFFORT === undefined && substage !== "to_be_outline";
+  // Everything in a request that depends on which provider answers it. The fallback provider gets its own route, so its requests
+  // follow its own rules (Claude never gets thinking: disabled; OpenRouter gets effort; DeepInfra and OpenRouter get a forced tool).
+  const makeRoute = (routeProvider: Provider, routeClient: Anthropic | undefined, chatModel: string, designModel: string) => {
+    const noThinking = new Set<string>(routeProvider === "deepinfra" || routeProvider === "openrouter" ? config.AI_NO_THINKING_STAGES ?? [] : []);
+    // OpenRouter only: effort for stages that think. "none" = reasoning off everywhere. The Messages endpoint documents output_config.effort
+    // and thinking:{type:"disabled"} as its reasoning controls (mapped to reasoning.effort / reasoning.enabled=false); no `thinking` is sent otherwise.
+    const effort = routeProvider === "openrouter" ? config.AI_REASONING_EFFORT ?? "max" : "none";
+    // OpenRouter only. DeepSeek documents that a forced tool choice is not supported while thinking is on, and live (2026-10-23, effort max,
+    // forced tool) 7 of 8 step and register calls ended their turn without calling the tool. With AI_REASONING_EFFORT unset, only the
+    // outline thinks; the step and register calls (a fixed outline to fill in) run with thinking disabled and the forced tool. An
+    // explicit AI_REASONING_EFFORT (or AI_NO_THINKING_STAGES) is the operator's choice and applies to every call as before.
+    return { provider: routeProvider, client: routeClient, noThinking, effort, reasoningOff: routeProvider === "openrouter" && effort === "none",
+      modelFor: (isDesign: boolean) => isDesign ? designModel : chatModel,
+      expansionThinkingOff: (substage: Substage) => routeProvider === "openrouter" && config.AI_REASONING_EFFORT === undefined && substage !== "to_be_outline",
+      // Claude Sonnet 5.5 rejects a forced tool choice (HTTP 400), so Anthropic keeps "auto". DeepInfra's MiMo answers in
+      // prose under "auto" (0/4 tool calls measured 2026-10-22) and calls the tool every time when it is forced.
+      // This applies to every tool the runner sends, the To-Be outline and step tools included.
+      toolChoiceFor: (name: string): Anthropic.ToolChoice => routeProvider === "deepinfra" || routeProvider === "openrouter"
+        ? { type: "tool", name, disable_parallel_tool_use: true } : { type: "auto", disable_parallel_tool_use: true } };
+  };
+  type Route = ReturnType<typeof makeRoute>;
+  const primary = makeRoute(provider, client, config.AI_MODEL, config.AI_MODEL_DESIGN ?? config.AI_MODEL);
+  const { noThinking, reasoningOff } = primary;
+  // Optional credit fallback (AI_FALLBACK_PROVIDER, validated at startup): see viaRoute.
+  const fallbackProvider = config.AI_FALLBACK_PROVIDER;
+  const fallbackKeyName = fallbackProvider ? ({ anthropic: "ANTHROPIC_API_KEY", deepinfra: "DEEPINFRA_API_KEY", openrouter: "OPENROUTER_API_KEY" } as const)[fallbackProvider] : undefined;
+  const fallbackKey = fallbackKeyName ? config[fallbackKeyName] : undefined;
+  if (fallbackKeyName && !fallbackKey?.trim()) throw new Error(`Missing ${fallbackKeyName}`);
+  if (fallbackProvider && fallbackProvider === provider) throw new Error("AI_FALLBACK_PROVIDER must differ from AI_PROVIDER");
+  const fallbackChatModel = config.AI_FALLBACK_MODEL;
+  if (fallbackProvider && !fallbackChatModel) throw new Error("Missing AI_FALLBACK_MODEL");
+  const fallback = fallbackProvider && provider !== "stub" ? makeRoute(fallbackProvider, createProviderClient(fallbackProvider, fallbackKey!, sdkTimeout, options.fetch),
+    fallbackChatModel!, config.AI_FALLBACK_MODEL_DESIGN ?? fallbackChatModel!) : undefined;
+  const now = options.now ?? Date.now;
+  /** Process-wide (per runner): until this time every call goes straight to the fallback. */
+  let fallbackUntil = 0;
   // Two independent lanes of model-call slots: chat turns (interview_turn) and batch stages (to_be, problem_analysis).
   // A long batch stage can hold every batch slot and a chat turn still runs.
   const chatLane = createLane(config.AI_CHAT_CONCURRENCY), batchLane = createLane(config.AI_MAX_CONCURRENCY);
-  // Claude Sonnet 5.5 rejects a forced tool choice (HTTP 400), so Anthropic keeps "auto". DeepInfra's MiMo answers in
-  // prose under "auto" (0/4 tool calls measured 2026-10-22) and calls the tool every time when it is forced.
-  // This applies to every tool the runner sends, the To-Be outline and step tools included.
-  const toolChoiceFor = (name: string): Anthropic.ToolChoice => provider === "deepinfra" || provider === "openrouter"
-    ? { type: "tool", name, disable_parallel_tool_use: true } : { type: "auto", disable_parallel_tool_use: true };
 
   return async function runStage<S extends Stage>(stage: S, rawInput: unknown, externalSignal?: AbortSignal): Promise<{ payload: Payloads[S]; metrics: StageMetrics }> {
     const started = Date.now();
     const isDesign = DESIGN_STAGES.has(stage);
     const lane = stage === "interview_turn" || stage === "extraction_turn" ? chatLane : batchLane;
-    const model = isDesign ? config.AI_MODEL_DESIGN ?? config.AI_MODEL : config.AI_MODEL;
+    const model = primary.modelFor(isDesign);
     const metrics: StageMetrics = { stage, provider, model, inputTokens: 0, outputTokens: 0,
       latencyMs: 0, attempts: 0, providerRetries: 0, validationErrors: [], attemptIssues: [], stopReasons: [], textFallbacks: 0,
       thinkingDisabled: reasoningOff || noThinking.has(stage) || (stage === "to_be" && TO_BE_SUBSTAGES.filter(substage => (reviewOn || substage !== "to_be_review") && (fixOn || substage !== "to_be_fix")).every(substage => noThinking.has(substage))) };
@@ -197,18 +220,35 @@ export function createStageRunner(config: Config, options: Options = {}) {
     }
 
     /** One provider request with the transient-retry policy: see retry.ts. Used by every stage, token counts included. */
-    async function transport<T>(work: (signal: AbortSignal) => Promise<T>, timeoutMs = callTimeout): Promise<T> {
+    async function transport<T>(work: (signal: AbortSignal) => Promise<T>, timeoutMs: number, route: Route): Promise<T> {
       return withProviderRetry(() => call(work, timeoutMs), { signal, deadlineAt: started + stageBudget, callTimeoutMs: timeoutMs,
         passthrough: error => error instanceof AIStageError,
         giveUp: (error, reason) => {
-          logProviderFailure(provider, model, stage, error);
+          logProviderFailure(route.provider, route.modelFor(isDesign), stage, error);
           return fail(reason === "deadline" || error instanceof Anthropic.APIConnectionTimeoutError ? "AI_TIMEOUT"
             : classifyProviderError(error).category === "credit" ? "AI_PROVIDER_CREDIT" : "AI_PROVIDER_ERROR");
         },
         onRetry: (retry, delay, error) => {
           metrics.providerRetries = (metrics.providerRetries ?? 0) + 1;
-          logProviderRetry(provider, model, stage, retry, delay, error);
+          logProviderRetry(route.provider, route.modelFor(isDesign), stage, retry, delay, error);
         } });
+    }
+
+    /** Runs one provider interaction (token count or generation) on the primary provider, or on the fallback while its cooldown lasts.
+     * A primary call refused for credit (AI_PROVIDER_CREDIT after the primary's own policy) starts the cooldown, is logged, and is re-sent
+     * once, unchanged, to the fallback with that route's model. Any other failure, and a credit failure of the fallback, propagates as is.
+     * metrics.provider and metrics.model always name the route that was last used, so the answering model is the one recorded (and priced). */
+    async function viaRoute<T>(work: (route: Route) => Promise<T>): Promise<T> {
+      const attempt = (route: Route) => { metrics.provider = route.provider; metrics.model = route.modelFor(isDesign); return work(route); };
+      if (!fallback) return attempt(primary);
+      if (now() < fallbackUntil) return attempt(fallback);
+      try { return await attempt(primary); }
+      catch (error) {
+        if (!(error instanceof AIStageError) || error.code !== "AI_PROVIDER_CREDIT") throw error;
+        fallbackUntil = now() + FALLBACK_COOLDOWN_MS;
+        logProviderFallback(primary.provider, fallback.provider, fallback.modelFor(isDesign), stage);
+        return attempt(fallback);
+      }
     }
 
     try {
@@ -238,14 +278,14 @@ export function createStageRunner(config: Config, options: Options = {}) {
       }
       await lane.acquire(signal); acquired = true;
       let inputTruncated = false;
-      const count = async (source: string) => {
-        if (!client) return Buffer.byteLength(source, "utf8"); // Conservative byte cap in offline tests; not reported as measured tokens.
-        if (provider === "openrouter") return estimateTokens(source);
-        const result = await transport((signal) => client.messages.countTokens({ model,
-          messages: [{ role: "user", content: source }] }, { signal }));
+      const count = (source: string) => viaRoute(async (route) => {
+        if (!route.client) return Buffer.byteLength(source, "utf8"); // Conservative byte cap in offline tests; not reported as measured tokens.
+        if (route.provider === "openrouter") return estimateTokens(source);
+        const result = await transport((signal) => route.client!.messages.countTokens({ model: route.modelFor(isDesign),
+          messages: [{ role: "user", content: source }] }, { signal }), callTimeout, route);
         if (!Number.isSafeInteger(result.input_tokens) || result.input_tokens < 0) throw fail("AI_PROVIDER_ERROR");
         return result.input_tokens;
-      };
+      });
       if (analysisInput && await count(analysisInput.problemStatement) > config.AI_MAX_INPUT_TOKENS) {
         const points = Array.from(analysisInput.problemStatement);
         let low = 0, high = points.length;
@@ -262,27 +302,29 @@ export function createStageRunner(config: Config, options: Options = {}) {
        * assembles the same Message. Only a single complete call of `tool.name` counts as output; anything else is null,
        * except that interview stages (textFallback) also accept one JSON text block when the model made no tool call. */
       const generate = async (a: { system: string; user: string; tool: Anthropic.Tool; maxTokens: number; guard: boolean;
-        thinkingOff: boolean; textFallback?: boolean; substage?: Substage;
+        thinkingOff: (route: Route) => boolean; textFallback?: boolean; substage?: Substage;
         /** Eval only: called with a short description of a response that held no usable tool payload. */
         onNoPayload?: (description: unknown) => void; onToolMarkup?: () => void }): Promise<unknown> => {
         const messages: Anthropic.MessageParam[] = [{ role: "user", content: a.user }];
         const tools = [a.tool];
-        const toolChoice = toolChoiceFor(a.tool.name);
-        if (a.guard) {
-          const inputTokens = provider === "openrouter" ? estimateTokens(JSON.stringify({ system: a.system, messages, tools, tool_choice: toolChoice }))
-            : (await transport(signal => client!.messages.countTokens({ model, system: a.system, messages, tools, tool_choice: toolChoice }, { signal }))).input_tokens;
-          if (!Number.isSafeInteger(inputTokens) || inputTokens < 0) throw fail("AI_PROVIDER_ERROR");
-          if (inputTokens > config.AI_MAX_INPUT_TOKENS) throw fail("AI_INPUT_TOO_LARGE");
-        }
         const timeoutMs = isDesign ? designCallTimeout : callTimeout;
-        const message = await transport((signal) => {
-          metrics.attempts++;
-          return client!.messages.stream({ model, max_tokens: a.maxTokens, system: a.system,
-            messages, tools, ...(a.thinkingOff ? { thinking: { type: "disabled" as const } } : provider === "openrouter" ? { output_config: { effort: effort as "low" | "medium" | "high" | "max" } } : {}),
-            // Sonnet 5.5 rejects forced tool selection. The prompt requests the
-            // tool; validation still requires exactly one complete tool payload.
-            tool_choice: toolChoice }, { signal, timeout: timeoutMs }).finalMessage();
-        }, timeoutMs);
+        const message = await viaRoute(async (route) => {
+          const routeModel = route.modelFor(isDesign), toolChoice = route.toolChoiceFor(a.tool.name);
+          if (a.guard) {
+            const inputTokens = route.provider === "openrouter" ? estimateTokens(JSON.stringify({ system: a.system, messages, tools, tool_choice: toolChoice }))
+              : (await transport(signal => route.client!.messages.countTokens({ model: routeModel, system: a.system, messages, tools, tool_choice: toolChoice }, { signal }), callTimeout, route)).input_tokens;
+            if (!Number.isSafeInteger(inputTokens) || inputTokens < 0) throw fail("AI_PROVIDER_ERROR");
+            if (inputTokens > config.AI_MAX_INPUT_TOKENS) throw fail("AI_INPUT_TOO_LARGE");
+          }
+          return transport((signal) => {
+            metrics.attempts++;
+            return route.client!.messages.stream({ model: routeModel, max_tokens: a.maxTokens, system: a.system,
+              messages, tools, ...(a.thinkingOff(route) ? { thinking: { type: "disabled" as const } } : route.provider === "openrouter" ? { output_config: { effort: route.effort as "low" | "medium" | "high" | "max" } } : {}),
+              // Sonnet 5.5 rejects forced tool selection. The prompt requests the
+              // tool; validation still requires exactly one complete tool payload.
+              tool_choice: toolChoice }, { signal, timeout: timeoutMs }).finalMessage();
+          }, timeoutMs, route);
+        });
         const usage = z.object({ input_tokens: z.number().int().nonnegative(), output_tokens: z.number().int().nonnegative(),
           cache_creation_input_tokens: z.number().int().nonnegative().nullish(), cache_read_input_tokens: z.number().int().nonnegative().nullish(),
         }).safeParse(message.usage);
@@ -369,7 +411,7 @@ export function createStageRunner(config: Config, options: Options = {}) {
             const rawKeyOf = group && group !== "patch" ? String(group) : substage === "to_be_step" || (substage === "to_be_fix" && !group) ? (request as { step: { id: string } }).step.id : substage === "to_be_review" ? "review" : group === "patch" ? "outline-patch" : "outline";
             const output = await generate({ system: kind.system, user: JSON.stringify(request), tool: tools[key]!, maxTokens,
               // A thinking retry (one last call for a step that kept failing) sends the request without thinking-disabled; an operator's AI_REASONING_EFFORT=none still wins.
-              guard: true, thinkingOff: reasoningOff || (!askOptions?.thinking && (noThinking.has(substage) || noThinking.has("to_be") || expansionThinkingOff(substage))),
+              guard: true, thinkingOff: route => route.reasoningOff || (!askOptions?.thinking && (route.noThinking.has(substage) || route.noThinking.has("to_be") || route.expansionThinkingOff(substage))),
               // A model that ends its turn with the payload as a JSON text block instead of calling the tool is accepted exactly as in the interview.
               textFallback: true, substage, ...(askOptions?.onToolMarkup && { onToolMarkup: askOptions.onToolMarkup }),
               ...(options.captureRaw && { onNoPayload: (description: unknown) => keepRaw(substage, rawKeyOf, { noToolPayload: description }) }) });
@@ -408,7 +450,7 @@ export function createStageRunner(config: Config, options: Options = {}) {
         } else {
           // Interview requests are counted whole (never truncated); problem analysis truncates its input up front instead.
           output = await generate({ system, user, tool, maxTokens: interviewInput ? INTERVIEW_MAX_TOKENS : 12000,
-            guard: !!interviewInput, thinkingOff: !!metrics.thinkingDisabled, textFallback: !!interviewInput });
+            guard: !!interviewInput, thinkingOff: route => route.reasoningOff || route.noThinking.has(stage), textFallback: !!interviewInput });
         }
         signal.throwIfAborted();
         if (interviewInput) {
