@@ -1,5 +1,5 @@
 import type { PgBoss } from "pg-boss";
-import { CONSULTANT_EXTRACT_QUEUE, executeExtraction } from "./consultant-extraction";
+import { CONSULTANT_EXTRACT_QUEUE, runExtractionJob } from "./consultant-extraction";
 import type { Pool } from "pg";
 import { CONSULTANT_BATCH_QUEUE, CONSULTANT_CHAT_QUEUE, LEGACY_CONSULTANT_QUEUE, type createConsultantJobs } from "./consultant-jobs";
 import type { createStageRunner } from "./ai/runStage";
@@ -32,7 +32,7 @@ export async function workConsultantQueues(queue: PgBoss, consultantJobs: Return
       async ([job]) => {
         if (!job) return;
         // The handler's return value is kept by pg-boss as the job's output (tokens, latency, repairs) for later inspection.
-        return executeExtraction(extract.pool, runStage, { id: job.id, data: job.data }, AbortSignal.any([job.signal, options.shutdown]),
+        return runExtractionJob(extract.pool, runStage, { id: job.id, data: job.data }, AbortSignal.any([job.signal, options.shutdown]),
           extract.maxWaitSeconds ?? 300);
       });
   }

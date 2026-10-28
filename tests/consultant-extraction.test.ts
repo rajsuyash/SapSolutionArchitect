@@ -111,6 +111,16 @@ describe.skipIf(process.env.RUN_DB_TESTS !== "1")("background extraction of inte
     expect(await extractJobs(other.project.id)).toHaveLength(0);
   });
 
+  it("re-queues earlier messages whose extraction never recorded when a new chat turn is sent, once each", async () => {
+    const ctx = await start("A clerk keys returns into a sheet. They are late.");
+    const first = ctx.messageId;
+    await pool.query(`UPDATE pgboss.job SET state='failed' WHERE name=$1 AND data->>'projectId'=$2`, [CONSULTANT_EXTRACT_QUEUE, ctx.project.id]);
+    await say(ctx, "Billing waits for the sheet. Invoices go out on Friday.");
+    await enqueue(ctx);
+    const queued = (await extractJobs(ctx.project.id)).filter(job => job.state === "created");
+    expect(queued.map(job => [job.data.messageId, job.data.seq])).toEqual([[first, 1], [ctx.messageId, 2]]);
+  });
+
   it("answers while the extraction is still running, tells the interviewer which messages are not extracted, and keeps message order", async () => {
     const ctx = await start("We use a spreadsheet to track dispatch. Returns are logged late.");
     const first = ctx.messageId;

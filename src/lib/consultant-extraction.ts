@@ -71,6 +71,14 @@ async function waitForEarlierExtractions(pool: Pool, jobId: string, data: Extrac
   }
 }
 
+const SAFE_CODE = /^[A-Z][A-Z0-9_]{2,63}$/;
+/** A fixed, loggable identifier for a failure: an error code, else a code-shaped message, else the error class. Never free text. */
+export function failureCode(error: unknown): string {
+  const { code, message, name } = (error ?? {}) as { code?: unknown; message?: unknown; name?: unknown };
+  for (const candidate of [code, message]) if (typeof candidate === "string" && SAFE_CODE.test(candidate)) return candidate;
+  return typeof name === "string" && /^[A-Za-z0-9_]{1,64}$/.test(name) ? name : "UnknownError";
+}
+
 /** The queue handler: validate the payload, wait for earlier messages of the same workspace, extract. */
 export async function executeExtraction(pool: Pool, runStage: Runner, job: { id: string; data: unknown }, signal: AbortSignal,
   maxWaitSeconds: number): Promise<ExtractionOutcome | undefined> {
@@ -79,6 +87,31 @@ export async function executeExtraction(pool: Pool, runStage: Runner, job: { id:
   await waitForEarlierExtractions(pool, job.id, data.data, signal, maxWaitSeconds * 1000);
   return extractMessage(pool, runStage, { orgId: data.data.orgId, projectId: data.data.projectId, variantCode: data.data.variantCode,
     requestedBy: data.data.requestedBy }, data.data.messageId, job.id, signal);
+}
+
+/** The queue entry point: runs the job, and on failure logs one line with a fixed code (never user text) before rethrowing, so
+ * pg-boss still marks the job failed and retries as configured. Without it a failed extraction left no trace anywhere. */
+export async function runExtractionJob(pool: Pool, runStage: Runner, job: { id: string; data: unknown }, signal: AbortSignal,
+  maxWaitSeconds: number) {
+  try {
+    return await executeExtraction(pool, runStage, job, signal, maxWaitSeconds);
+  } catch (error) {
+    console.error(JSON.stringify({ event: "extraction_failed", jobId: job.id, code: failureCode(error) }));
+    throw error;
+  }
+}
+
+/** How many earlier, never-recorded messages one new chat turn re-queues. */
+export const MAX_REQUEUED_EXTRACTIONS = 5;
+/** Earlier user messages whose extraction must be queued again: before the current message, not recorded in
+ * `extractedMessageIds`, and with no live (created/retry/active) job. The most recent `limit`, oldest first, each with its
+ * real 1-based position among user messages (the ordering key of the queue). */
+export function missedExtractions(messages: readonly { id: string; role: string }[], extractedIds: readonly string[] | undefined,
+  liveJobMessageIds: ReadonlySet<string>, currentMessageId: string, limit = MAX_REQUEUED_EXTRACTIONS): { messageId: string; seq: number }[] {
+  const extracted = new Set(extractedIds ?? []);
+  const users = messages.filter(message => message.role === "user").map((message, index) => ({ messageId: message.id, seq: index + 1 }));
+  const current = users.findIndex(user => user.messageId === currentMessageId);
+  return users.slice(0, Math.max(current, 0)).filter(user => !extracted.has(user.messageId) && !liveJobMessageIds.has(user.messageId)).slice(-limit);
 }
 
 /** Wait until `messageId` has been extracted: the helper a deterministic evaluation (or test) uses before it sends the next

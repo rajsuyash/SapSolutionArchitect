@@ -8,7 +8,7 @@ import { assertOrgCanRunAi } from "./org-limits";
 import { PROVIDER_CREDIT_MESSAGE } from "./ai/provider";
 import { validateDiscovery } from "./discovery";
 import { loadWorkspaceForWorker, persistWorkspaceTurn } from "./discovery-workspace";
-import { CONSULTANT_EXTRACT_QUEUE, extractionScope } from "./consultant-extraction";
+import { CONSULTANT_EXTRACT_QUEUE, extractionScope, failureCode, missedExtractions } from "./consultant-extraction";
 import { buildInterviewInput } from "./discovery-workspace-model";
 import { loadToBeReferences, parseToBeInput, validateToBeOutput } from "./ai/to-be";
 import { loadSapReferences, type SapReferenceOptions } from "./ai/sap-references";
@@ -130,12 +130,22 @@ export function createConsultantJobs(pool: Pool, auth: AuthService, queue: PgBos
         if (!queued) throw new Error("Consultant enqueue failed");
         if (input.kind === "INTERVIEW") {
           // The same transaction also queues reading this message for facts and structure; the reply never waits for it.
+          // It also re-queues earlier messages whose extraction never recorded (a failed job is not retried by anything else, and
+          // only the last few unextracted messages reach the interviewer, so older answers would be lost for good).
+          // Safe out of order: an extraction reads the latest state, skips a message already recorded, and later jobs wait for lower seq.
+          const extractionScopeKey = extractionScope({ orgId: user.orgId, projectId, variantCode });
+          const live = new Set((await client.query<{ message_id: string }>(`SELECT data->>'messageId' AS message_id FROM pgboss.job
+            WHERE name=$1 AND data->>'scope'=$2 AND state IN ('created','retry','active')`, [CONSULTANT_EXTRACT_QUEUE, extractionScopeKey])).rows.map(row => row.message_id));
           const seq = workspace.state.messages.filter(message => message.role === "user").findIndex(message => message.id === input.messageId) + 1;
-          const extraction = await queue.send(CONSULTANT_EXTRACT_QUEUE, { scope: extractionScope({ orgId: user.orgId, projectId, variantCode }),
-            orgId: user.orgId, projectId, variantCode, requestedBy: user.id, messageId: input.messageId, seq },
-          { id: randomUUID(), retryLimit: 1, retryDelay: 2, expireInSeconds: queueExpireSeconds, retentionSeconds: 3600, deleteAfterSeconds: 604800,
-            db: { executeSql: (sql, values) => client.query(sql, values) } });
-          if (!extraction) throw new Error("Consultant extraction enqueue failed");
+          const wanted = [...missedExtractions(workspace.state.messages, workspace.state.extractedMessageIds, live, input.messageId),
+            { messageId: input.messageId, seq }];
+          for (const { messageId, seq: position } of wanted) {
+            const extraction = await queue.send(CONSULTANT_EXTRACT_QUEUE, { scope: extractionScopeKey,
+              orgId: user.orgId, projectId, variantCode, requestedBy: user.id, messageId, seq: position },
+            { id: randomUUID(), retryLimit: 1, retryDelay: 2, expireInSeconds: queueExpireSeconds, retentionSeconds: 3600, deleteAfterSeconds: 604800,
+              db: { executeSql: (sql, values) => client.query(sql, values) } });
+            if (!extraction) throw new Error("Consultant extraction enqueue failed");
+          }
         }
         return expose(job);
       }),
@@ -251,6 +261,7 @@ export function createConsultantJobs(pool: Pool, auth: AuthService, queue: PgBos
         const safe = z.enum(["AI_INPUT_INVALID", "AI_INPUT_TOO_LARGE", "AI_INVALID_OUTPUT", "AI_PROVIDER_ERROR", "AI_PROVIDER_CREDIT", "AI_TIMEOUT", "AI_CANCELLED", "STALE_INPUT"])
           .safeParse((error as { code?: unknown })?.code);
         const code = signal.aborted ? "AI_CANCELLED" : safe.success ? safe.data : "CONSULTANT_FAILED";
+        console.error(JSON.stringify({ event: "consultant_job_failed", jobId: id, kind: job.kind, code, cause: failureCode(error) }));
         await pool.query(`UPDATE consultant_jobs SET status='FAILED',error=$3,run_token=NULL,deadline_at=NULL,finished_at=clock_timestamp()
           WHERE id=$1 AND status='RUNNING' AND run_token=$2`, [id, runToken, { code,
           message: code === "STALE_INPUT" ? "The answers changed while the consultant was working. Review the latest conversation and retry."
