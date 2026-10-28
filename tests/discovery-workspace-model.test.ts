@@ -4,7 +4,7 @@ import { indexSentences } from "../src/lib/ai/interview-sentences";
 import { WORKSPACE_FIELDS } from "../src/lib/workspace-fields";
 import { TO_CONFIRM } from "../src/lib/workspace-fields";
 import { backfillCatalog, buildInterviewInput, compileDiscovery, createWorkspace, getWorkspaceReadiness,
-  applyWorkspaceCommand, recordInterviewTurn, WorkspaceStateSchema, type WorkspaceMeta, type WorkspaceState } from "../src/lib/discovery-workspace-model";
+  applyWorkspaceCommand, asksForToBe, recordInterviewTurn, WorkspaceStateSchema, type WorkspaceMeta, type WorkspaceState } from "../src/lib/discovery-workspace-model";
 
 let sequence = 0;
 const meta = (): WorkspaceMeta => ({ actorId: "consultant", at: "2026-10-21T10:00:00.000Z", id: `evt_${++sequence}` });
@@ -595,5 +595,67 @@ describe("confirming the As-Is as a draft with gaps", () => {
     expect(nameOnly.evidence.quote).toBe("Record return");
     // A step with neither name nor description cannot be carried even with the flag.
     expect(() => compileDiscovery(withDraft({ actor: "Stores clerk" }), { allowGaps: true })).toThrow("AS_IS_STEP_INCOMPLETE");
+  });
+  describe("when the participant asks for the To-Be", () => {
+    const FULL = { name: "Record return", actor: "Stores clerk", system: "Spreadsheet", trigger: "Equipment arrives",
+      description: "Clerk records the return", inputs: "Return note", outputs: "Return row", controls: "Asset ID check", exceptions: "Missing date" };
+    /** The chat turn that answers `text`, asking the most urgent open gap (if any). */
+    const answer = (state: WorkspaceState, text: string) => {
+      const sent = applyWorkspaceCommand(state, { type: "SEND_MESSAGE", text }, meta());
+      const id = sent.messages.at(-1)!.id;
+      const questions = buildInterviewInput(sent, id).activeGaps.slice(0, 1)
+        .map(g => ({ gapKey: g.key, question: `About ${g.key}?`, whyItMatters: "It matters." }));
+      const turn = { reply: "Thank you for that context." as const, questions, proposedUpdates: [], observations: [] };
+      return { saved: recordInterviewTurn(sent, turn, id, meta(), "chat"), turn };
+    };
+
+    it.each([
+      "Can you draft the To-Be with what you have?", "draft the to be now", "Generate the design", "what will the future state look like",
+      "Show me the To-Be design", "I want the future process", "Please create the TO-BE", "generate me a design",
+    ])("recognises %j", text => expect(asksForToBe(text)).toBe(true));
+
+    it.each([
+      "To be honest, it is a spreadsheet.", "What needs to be done next?", "It has to be approved by finance.", "We want to be faster.",
+      "The clerk wants to be notified", "The design of the form is old.", "Returns are slow.", "",
+    ])("ignores %j", text => expect(asksForToBe(text)).toBe(false));
+
+    it("says the As-Is can be confirmed when it is ready", () => {
+      const { saved } = answer(withDraft(FULL), "Please draft the To-Be.");
+      expect(saved.messages.at(-1)!.note).toBe("The As-Is is complete. A project lead or consultant can confirm it on the Summary tab and then generate the To-Be design.");
+    });
+
+    it("points to the draft confirmation, with the number of carried step details, when only step details are missing", () => {
+      const { saved } = answer(withDraft({ name: "Record return" }), "Draft the To-Be with what you have");
+      expect(saved.messages.at(-1)!.note).toBe("A draft To-Be can be generated now: on the Summary tab, a project lead or consultant can use \"Confirm as draft with gaps\". 1 step detail will be carried into the To-Be as open questions to confirm.");
+    });
+
+    it("lists the first three hard blockers and counts the rest otherwise", () => {
+      const state = start();
+      const readiness = getWorkspaceReadiness(state);
+      const hard = readiness.blockers.filter(b => !b.soft);
+      expect(hard.length).toBeGreaterThan(3);
+      const note = answer(state, "Generate the To-Be design").saved.messages.at(-1)!.note!;
+      expect(note.startsWith("Before a To-Be can be drafted: ")).toBe(true);
+      expect(note.endsWith(`; and ${hard.length - 3} more. These are listed on the Summary tab.`)).toBe(true);
+      expect(note).not.toContain("\n");
+      expect(note).not.toMatch(/FIELD_UNANSWERED|AS_IS_STEP/);
+    });
+
+    it("leaves the stored message exactly as before when the To-Be is not asked for, and keeps the reply text free of the note", () => {
+      const base = withDraft({ name: "Record return" });
+      const { saved, turn } = answer(base, "The clerk uses a spreadsheet.");
+      const message = saved.messages.at(-1)!;
+      expect(message).not.toHaveProperty("note");
+      expect(message.text).toBe([turn.reply, ...turn.questions.map(q => `${q.question} ${q.whyItMatters}`)].join("\n\n"));
+      const asked = answer(base, "Draft the To-Be").saved.messages.at(-1)!;
+      expect(asked.text).toBe(message.text);
+    });
+
+    it("loads messages stored before the note existed", () => {
+      const { saved } = answer(withDraft({ name: "Record return" }), "Draft the To-Be");
+      expect(WorkspaceStateSchema.parse(JSON.parse(JSON.stringify(saved))).messages.at(-1)!.note).toBeTruthy();
+      const old = JSON.parse(JSON.stringify(answer(withDraft(FULL), "hello").saved));
+      expect(WorkspaceStateSchema.parse(old).messages.at(-1)).not.toHaveProperty("note");
+    });
   });
 });

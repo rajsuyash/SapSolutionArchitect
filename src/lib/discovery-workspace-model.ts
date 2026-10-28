@@ -2,7 +2,7 @@ import { z } from "zod";
 import type { CompanyContext } from "./company-context";
 import { validateDiscovery, type DiscoveryInput } from "./discovery";
 import { describeField, REASK_AFTER_USER_TURNS, REASK_SUFFIX, STEP_GAP_PREFIX, STEP_KEYS as stepKeys, STEP_QUESTIONS as stepQuestions,
-  stepLabel, TO_CONFIRM, WORKSPACE_FIELDS } from "./workspace-fields";
+  describeBlocker, stepLabel, TO_CONFIRM, WORKSPACE_FIELDS } from "./workspace-fields";
 import { parseInterviewInput, revalidateStoredTurn, type InterviewInput, type InterviewTurn, type Scope } from "./ai/discovery-interview";
 
 // Re-exported for server callers; the client imports ./workspace-fields directly.
@@ -45,7 +45,9 @@ const ProposalSchema = z.strictObject({
   status: z.enum(["PENDING", "ACCEPTED", "REJECTED"]), createdAt: z.iso.datetime(), decidedBy: id.nullable(),
 });
 const MessageSchema = z.strictObject({ id, role: z.enum(["user", "assistant"]), text: text(20000),
-  createdBy: id.nullable(), createdAt: z.iso.datetime() });
+  createdBy: id.nullable(), createdAt: z.iso.datetime(),
+  /** A fixed server-written answer to a request for the To-Be (see `toBeNote`), shown beside the reply; absent on other messages. */
+  note: text(1000).optional() });
 /** `askedAtUserTurn` (user messages so far) drives the single re-ask; questions stored before it existed count as turn 0. */
 const QuestionSchema = z.strictObject({ gapKey: id, fieldId: id, question: text(500), whyItMatters: text(500),
   askedAtRevision: z.number().int().positive(), askedAtUserTurn: z.number().int().nonnegative().optional() });
@@ -397,6 +399,27 @@ export function applyWorkspaceCommand(rawState: WorkspaceState, rawCommand: unkn
   return checked(state);
 }
 
+/** Whether a participant's message asks for the To-Be (or the future design). A bare "to be" is not enough: "needs to be done". */
+const TO_BE_REQUEST = [
+  /\bto-be\b/i, /\bto be (?:design|process|state|draft|model|document|version|solution|proposal|blueprint)\b/i,
+  /\b(?:future|target) (?:state|process|design)\b/i,
+  /\b(?:draft|generate|create|produce|show|give|build|prepare|write)\s+(?:me\s+)?(?:the|a|an|my|our)?\s*to be\b/i,
+  /\b(?:draft|generate|create|produce|build|prepare)\s+(?:me\s+)?(?:the|a|an|my|our)?\s*(?:\w+\s+)?design\b/i,
+];
+export const asksForToBe = (text: string) => TO_BE_REQUEST.some(pattern => pattern.test(text));
+
+/** What the consultant says, from the same readiness rules as the Summary tab, when asked for the To-Be. One paragraph. */
+function toBeNote(state: WorkspaceState): string {
+  const { ready, draftReady, blockers } = getWorkspaceReadiness(state);
+  if (ready) return "The As-Is is complete. A project lead or consultant can confirm it on the Summary tab and then generate the To-Be design.";
+  if (draftReady) {
+    return `A draft To-Be can be generated now: on the Summary tab, a project lead or consultant can use "Confirm as draft with gaps". ${blockers.length} step detail${blockers.length === 1 ? "" : "s"} will be carried into the To-Be as open questions to confirm.`;
+  }
+  const hard = blockers.filter(b => !b.soft);
+  const listed = hard.slice(0, 3).map(b => describeBlocker(state, b).replace(/\.$/, "")).join("; ");
+  return `Before a To-Be can be drafted: ${listed}${hard.length > 3 ? `; and ${hard.length - 3} more` : ""}. These are listed on the Summary tab.`;
+}
+
 /** Persist only a validated model turn. It cannot change an accepted fact. */
 /** Persist a validated model turn. It cannot change an accepted fact. `scope` selects what is recorded: "chat" the assistant's
  * reply and questions, "extraction" the proposals and observations found in `currentMessageId` (no reply), "full" both. */
@@ -412,7 +435,9 @@ export function recordInterviewTurn(rawState: WorkspaceState, rawTurn: unknown, 
   if (state.messages.some(m => m.id === meta.id)) fail("DUPLICATE_WORKSPACE_ID");
   if (scope !== "extraction") {
     const reply = [turn.reply, ...turn.questions.map(q => `${q.question} ${q.whyItMatters}`)].join("\n\n");
-    state.messages.push({ id: meta.id, role: "assistant", text: reply, createdBy: null, createdAt: meta.at });
+    const asked = state.messages.find(m => m.id === currentMessageId && m.role === "user");
+    const note = !asked || !asksForToBe(asked.text) ? undefined : toBeNote(state);
+    state.messages.push({ id: meta.id, role: "assistant", text: reply, createdBy: null, createdAt: meta.at, ...(note ? { note } : {}) });
   }
   const userTurn = state.messages.filter(m => m.role === "user").length;
   if (scope !== "chat") state.extractedMessageIds = [...(state.extractedMessageIds ?? []), currentMessageId];
