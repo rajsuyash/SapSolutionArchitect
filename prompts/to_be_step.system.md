@@ -51,6 +51,7 @@ Preserve the full intent of each requirement, not just the quoted fragment.
 Requirement kinds distinguish a pain point, a future requirement and a control.
 Input open questions remain unresolved until a human decision; the server retains
 them separately.
+An open question stays open: no action, effect, decision or acceptance test may assume an answer to it.
 An As-Is step value of "To confirm" is unknown: never invent it. Design around
 it and leave it to the open questions.
 

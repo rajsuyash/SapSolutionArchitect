@@ -12,6 +12,8 @@ const text = rawText(8000);
 const label = rawText(200);
 const evidence = z.strictObject({ sourceId: id, quote: text });
 const texts = z.array(text).max(50);
+/** Upper bound of `openQuestions`; compileDiscovery trims to it so a large workspace never fails to confirm. */
+export const MAX_OPEN_QUESTIONS = 100;
 export const DiscoveryInputSchema = z.strictObject({
   schemaVersion: z.literal(1), variantName: label, targetRelease: label.nullable(),
   sources: z.array(z.strictObject({
@@ -29,7 +31,7 @@ export const DiscoveryInputSchema = z.strictObject({
   conflicts: z.array(z.strictObject({
     id, question: text, sourceIds: z.array(id).min(1).max(20),
   })).max(100),
-  openQuestions: z.array(z.strictObject({ id, question: text, owner: label })).max(100),
+  openQuestions: z.array(z.strictObject({ id, question: text, owner: label })).max(MAX_OPEN_QUESTIONS),
   // Answered company-context fields (design input). Optional so frozen revisions saved before it existed still load.
   companyContext: CompanyContextSchema.optional(),
 });

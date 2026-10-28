@@ -78,7 +78,7 @@ export function ConsultantSummary({ workspace, jobs, locked, run, onGenerate, re
         : <><p role="status">{readiness?.blockers.length ?? 0} thing{readiness?.blockers.length === 1 ? "" : "s"} still needed before this can be confirmed:</p>
           <ul data-testid="blockers">{readiness?.blockers.map((blocker, index) => <li key={index}>{describeBlocker(state, blocker)}</li>)}</ul>
           {canConfirmDraft && workspace.canConfirm && <>
-            <p id="draft-gaps-note" className={styles.muted}>Nothing else blocks a draft. You can confirm now and the To-Be will carry these as &lsquo;to confirm&rsquo;:</p>
+            <p id="draft-gaps-note" className={styles.muted}>Nothing else blocks a draft. You can confirm now and the To-Be will carry these as &lsquo;to confirm&rsquo; or open questions:</p>
             <ul data-testid="draft-gaps">{softBlockers.map((blocker, index) => <li key={index}>{describeBlocker(state, blocker)}</li>)}</ul></>}</>}
       {workspace.canConfirm
         ? <div className={styles.row}>
@@ -91,7 +91,7 @@ export function ConsultantSummary({ workspace, jobs, locked, run, onGenerate, re
         </div>
         : <p className={styles.muted}>Only project leads and consultants can confirm. You can still answer questions and add details.</p>}
       {confirmed && state.confirmation?.withGaps && <p className={styles.muted} data-testid="draft-confirmed">
-        Confirmed as a draft with gaps: {softBlockers.length || "some"} current-step detail{softBlockers.length === 1 ? " is" : "s are"} marked &lsquo;to confirm&rsquo; in the To-Be.</p>}
+        Confirmed as a draft with gaps: {softBlockers.length || "some"} open item{softBlockers.length === 1 ? " is" : "s are"} carried into the To-Be as &lsquo;to confirm&rsquo; or open questions.</p>}
       {confirmed && <p className={styles.muted}>Any change to the answers will require confirming again.</p>}
       {toBe && <p id="to-be-status" role="status" data-testid="to-be-status" data-state={toBe.result?.status ?? toBe.status}>
         {resultCopy(toBe, toBe.result?.sourceRevision === state.confirmation?.revision)}</p>}

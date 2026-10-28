@@ -252,8 +252,8 @@ describe.skipIf(process.env.RUN_DB_TESTS !== "1")("consultant HTTP boundary", ()
       state: { confirmation: { withGaps: true } } });
     const snapshot = (await pool.query("SELECT payload FROM discovery_versions WHERE project_id=$1", [c.project.id])).rows[0].payload;
     expect(snapshot.asIsSteps[0]).toMatchObject({ name: "Record return", actor: "To confirm", description: "To confirm" });
-    expect(snapshot.openQuestions.map((q: { id: string }) => q.id)).toEqual(expect.arrayContaining(
-      ["actor", "system", "trigger", "description"].map(key => expect.stringMatching(new RegExp(`^q_st_.+_${key}$`)))));
+    expect(snapshot.openQuestions).toContainEqual(expect.objectContaining({ id: expect.stringMatching(/^q_st_[^_]+$/),
+      question: expect.stringMatching(/^Record return: confirm who does it, .*what starts it, .*what happens/) }));
     const queued = await call("POST", `${c.path}/to-be`, { token: c.owner.token, body: { expectedRevision: c.revision } });
     expect([queued.status, queued.body.data.job]).toEqual([202, expect.objectContaining({ kind: "TO_BE", status: "QUEUED" })]);
   }, 30000);

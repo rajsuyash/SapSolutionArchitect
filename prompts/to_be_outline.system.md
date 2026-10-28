@@ -50,6 +50,7 @@ their statement is the requested meaning, and their kind distinguishes a pain
 point, future requirement or control. Preserve the full intent, not just the
 quoted fragment. Input open questions remain unresolved until a human decision;
 the server retains them separately even if you also raise related design questions.
+An open question stays open: no action, effect, decision or acceptance test may assume an answer to it.
 An As-Is step value of "To confirm" is unknown: never invent it. Design around
 it and leave it to the open questions.
 

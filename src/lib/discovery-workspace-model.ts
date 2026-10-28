@@ -1,7 +1,7 @@
 import { z } from "zod";
 import type { CompanyContext } from "./company-context";
-import { validateDiscovery, type DiscoveryInput } from "./discovery";
-import { describeField, REASK_AFTER_USER_TURNS, REASK_SUFFIX, STEP_GAP_PREFIX, STEP_KEYS as stepKeys, STEP_QUESTIONS as stepQuestions,
+import { MAX_OPEN_QUESTIONS, validateDiscovery, type DiscoveryInput } from "./discovery";
+import { describeField, REASK_AFTER_USER_TURNS, REASK_SUFFIX, STEP_GAP_PREFIX, STEP_KEYS as stepKeys, STEP_LABELS, STEP_QUESTIONS as stepQuestions,
   describeBlocker, stepLabel, TO_CONFIRM, WORKSPACE_FIELDS } from "./workspace-fields";
 import { parseInterviewInput, revalidateStoredTurn, type InterviewInput, type InterviewTurn, type Scope } from "./ai/discovery-interview";
 
@@ -301,7 +301,7 @@ export function getWorkspaceReadiness(raw: WorkspaceState) {
     if (index >= 0) blockers.splice(index, 1);
   }
   if (state.proposals.some(p => p.status === "PENDING")) blockers.push({ code: "PROPOSALS_PENDING", detail: "Review proposed facts" });
-  if (state.observations.some(o => o.status === "PENDING")) blockers.push({ code: "OBSERVATIONS_PENDING", detail: "Review possible contradictions" });
+  if (state.observations.some(o => o.status === "PENDING")) blockers.push({ code: "OBSERVATIONS_PENDING", detail: "Review possible contradictions", soft: true });
   return { ready: blockers.length === 0, draftReady: blockers.every(b => b.soft), blockers };
 }
 
@@ -413,11 +413,17 @@ function toBeNote(state: WorkspaceState): string {
   const { ready, draftReady, blockers } = getWorkspaceReadiness(state);
   if (ready) return "The As-Is is complete. A project lead or consultant can confirm it on the Summary tab and then generate the To-Be design.";
   if (draftReady) {
-    return `A draft To-Be can be generated now: on the Summary tab, a project lead or consultant can use "Confirm as draft with gaps". ${blockers.length} step detail${blockers.length === 1 ? "" : "s"} will be carried into the To-Be as open questions to confirm.`;
+    const steps = blockers.filter(b => b.code === "AS_IS_STEP_INCOMPLETE").length;
+    const points = state.observations.filter(o => o.status === "PENDING").length;
+    const parts = [steps && `${steps} unfinished step${steps === 1 ? "" : "s"}`, points && `${points} point${points === 1 ? "" : "s"} to check`].filter(Boolean).join(" and ");
+    return `A draft To-Be can be generated now: on the Summary tab, a project lead or consultant can use "Confirm as draft with gaps". ${parts} will be carried into the To-Be as ${steps + points === 1 ? "an open question" : "open questions"} to confirm.`;
   }
   const hard = blockers.filter(b => !b.soft);
+  const softCount = blockers.length - hard.length;
   const listed = hard.slice(0, 3).map(b => describeBlocker(state, b).replace(/\.$/, "")).join("; ");
-  return `Before a To-Be can be drafted: ${listed}${hard.length > 3 ? `; and ${hard.length - 3} more` : ""}. These are listed on the Summary tab.`;
+  const more = hard.length > 3 ? `; and ${hard.length - 3} more required item${hard.length - 3 === 1 ? "" : "s"}` : "";
+  const open = softCount ? ` ${softCount} other gap${softCount === 1 ? "" : "s"} (unfinished steps, points to check) can stay open in a draft.` : "";
+  return `Before a To-Be can be drafted: ${listed}${more}.${open} These are listed on the Summary tab.`;
 }
 
 /** Persist only a validated model turn. It cannot change an accepted fact. */
@@ -621,11 +627,23 @@ export function buildInterviewInput(rawState: WorkspaceState, currentMessageId: 
     requirements: knownRequirements, unextractedMessageIds, history });
 }
 
+/** Facts, then steps, then observations (callers pass them in that order). Over the schema limit, keep as many as fit and point at the Summary tab for the rest. */
+function capOpenQuestions(questions: DiscoveryInput["openQuestions"]): DiscoveryInput["openQuestions"] {
+  if (questions.length <= MAX_OPEN_QUESTIONS) return questions;
+  const kept = questions.slice(0, MAX_OPEN_QUESTIONS - 1);
+  return [...kept, { id: "q_more_open_points", owner: "Process owner",
+    question: `${questions.length - kept.length} further open points are listed on the Summary tab of the discovery workspace.` }];
+}
+
 /** Compile reviewed user facts only. This artifact remains USER_PROVIDED/DRAFT
  * in the discovery repository; confirmation does not verify SAP capability. */
 export function compileDiscovery(rawState: WorkspaceState, options: { allowGaps?: boolean } = {}): DiscoveryInput {
   const state = checked(rawState);
   const gapQuestions: DiscoveryInput["openQuestions"] = [];
+  /** With `allowGaps`, a pending model observation is not dismissed: it travels as an open question for the process owner. */
+  const observationQuestions: DiscoveryInput["openQuestions"] = options.allowGaps
+    ? state.observations.filter(o => o.status === "PENDING").map(o => ({ id: `q_obs_${o.id}`.slice(0, 64), question: o.detail, owner: "Process owner" }))
+    : [];
   /** A step as the To-Be sees it. With `allowGaps` a missing detail becomes TO_CONFIRM plus an open question, never an invented value. */
   const compileDraft = (draft: StepDraft) => {
     const missing = missingKeys(draft);
@@ -633,8 +651,10 @@ export function compileDiscovery(rawState: WorkspaceState, options: { allowGaps?
     const known = (key: (typeof stepKeys)[number]) => { const f = draftFact(draft, key); return f.status === "KNOWN" ? f.value! : null; };
     const list = (key: (typeof LIST_STEP_KEYS)[number]) => (known(key) ?? "").split("\n").map(s => s.trim()).filter(Boolean);
     const name = known("name");
-    for (const key of missing) {
-      gapQuestions.push({ id: `q_${draft.id}_${key}`.slice(0, 64), question: `${name ?? "Unnamed step"}: ${stepQuestions[key]}`.slice(0, 8000), owner: "Process owner" });
+    // One question per incomplete step, not per missing detail: 70+ near-identical questions are noise and overflow the cap.
+    if (missing.length) {
+      const details = missing.map(key => STEP_LABELS[key].toLowerCase()).join(", ");
+      gapQuestions.push({ id: `q_${draft.id}`.slice(0, 64), question: `${name ?? "Unnamed step"}: confirm ${details}.`.slice(0, 8000), owner: "Process owner" });
     }
     return { id: draft.id, name: name ?? TO_CONFIRM, actor: known("actor") ?? TO_CONFIRM, system: known("system") ?? TO_CONFIRM,
       trigger: known("trigger") ?? TO_CONFIRM, description: known("description") ?? TO_CONFIRM,
@@ -653,10 +673,10 @@ export function compileDiscovery(rawState: WorkspaceState, options: { allowGaps?
     conflicts: [],
     companyContext: state.facts.flatMap(f => f.status === "KNOWN" ? [{ fieldId: f.id as CompanyContext[number]["fieldId"], label: WORKSPACE_FIELDS.find(def => def.id === f.id)!.label,
       value: f.value!, evidence: f.evidence! }] : []),
-    openQuestions: [...state.facts.filter(f => ["UNKNOWN", "OWNER_PENDING"].includes(f.status)).map(f => ({
+    openQuestions: capOpenQuestions([...state.facts.filter(f => ["UNKNOWN", "OWNER_PENDING"].includes(f.status)).map(f => ({
       id: `q_${f.id}`, question: WORKSPACE_FIELDS.find(def => def.id === f.id)!.question,
       owner: f.owner ?? "Process owner",
-    })), ...gapQuestions],
+    })), ...gapQuestions, ...observationQuestions]),
   };
   return validateDiscovery(input);
 }

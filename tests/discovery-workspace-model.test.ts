@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { validateExtraction, validateInterviewTurn } from "../src/lib/ai/discovery-interview";
+import { MAX_OPEN_QUESTIONS } from "../src/lib/discovery";
 import { indexSentences } from "../src/lib/ai/interview-sentences";
 import { WORKSPACE_FIELDS } from "../src/lib/workspace-fields";
 import { TO_CONFIRM } from "../src/lib/workspace-fields";
@@ -577,7 +578,7 @@ describe("confirming the As-Is as a draft with gaps", () => {
     expect(complete.confirmation).not.toHaveProperty("withGaps");
   });
 
-  it("compiles missing details as 'To confirm' with evidence and one open question each, and still throws without the flag", () => {
+  it("compiles missing details as 'To confirm' with evidence and one open question per step, and still throws without the flag", () => {
     const state = withDraft({ name: "Record return", description: "Clerk records the return in a spreadsheet", inputs: "Return note\nPhoto" });
     expect(() => compileDiscovery(state)).toThrow("AS_IS_STEP_INCOMPLETE");
     const compiled = compileDiscovery(state, { allowGaps: true });
@@ -585,10 +586,8 @@ describe("confirming the As-Is as a draft with gaps", () => {
     expect(compiled.asIsSteps[0]).toMatchObject({ name: "Record return", actor: TO_CONFIRM, system: TO_CONFIRM, trigger: TO_CONFIRM,
       description: "Clerk records the return in a spreadsheet", inputs: ["Return note", "Photo"], outputs: [], controls: [], exceptions: [] });
     expect(compiled.sources.find(s => s.id === compiled.asIsSteps[0]!.evidence.sourceId)?.text).toContain(compiled.asIsSteps[0]!.evidence.quote);
-    expect(compiled.openQuestions.filter(q => q.id.startsWith(`q_${id}_`)).map(q => q.id).sort()).toEqual(
-      ["actor", "controls", "exceptions", "outputs", "system", "trigger"].map(key => `q_${id}_${key}`));
-    expect(compiled.openQuestions.find(q => q.id === `q_${id}_actor`)).toEqual({ id: `q_${id}_actor`, owner: "Process owner",
-      question: "Record return: Who performs this step today?" });
+    expect(compiled.openQuestions.filter(q => q.id.startsWith(`q_${id}`))).toEqual([{ id: `q_${id}`, owner: "Process owner",
+      question: "Record return: confirm who does it, system or record used, what starts it, outputs, checks and approvals, exceptions." }]);
     // Evidence falls back to the name's when there is no description.
     const nameOnly = compileDiscovery(withDraft({ name: "Record return" }), { allowGaps: true }).asIsSteps[0]!;
     expect(nameOnly).toMatchObject({ description: TO_CONFIRM, name: "Record return" });
@@ -596,6 +595,66 @@ describe("confirming the As-Is as a draft with gaps", () => {
     // A step with neither name nor description cannot be carried even with the flag.
     expect(() => compileDiscovery(withDraft({ actor: "Stores clerk" }), { allowGaps: true })).toThrow("AS_IS_STEP_INCOMPLETE");
   });
+
+  /** A draft-ready workspace that also has pending model observations. */
+  const withObservations = (count: number, known: Record<string, string> = { name: "Record return" }) => {
+    const state = withDraft(known);
+    const sent = applyWorkspaceCommand(state, { type: "SEND_MESSAGE", text: "Billing says the return was yesterday." }, meta());
+    const id = sent.messages.at(-1)!.id;
+    return { id, state: recordInterviewTurn(sent, { schemaVersion: 1, contextRevision: sent.revision, reply: "Noted.", questions: [],
+      proposedUpdates: [], observations: Array.from({ length: count }, (_, i) => ({ kind: i % 2 ? "FOLLOW_UP_SUGGESTION" as const : "POSSIBLE_CONFLICT" as const,
+        fieldIds: ["current_trigger"], detail: `Check point ${i}: the return date may differ from billing.` })) }, id, meta()) };
+  };
+
+  it("treats pending observations as a soft blocker: draft-ready but not ready", () => {
+    const { state } = withObservations(2);
+    const readiness = getWorkspaceReadiness(state);
+    expect(readiness).toMatchObject({ ready: false, draftReady: true });
+    expect(readiness.blockers.find(b => b.code === "OBSERVATIONS_PENDING")).toMatchObject({ soft: true });
+    expect(() => applyWorkspaceCommand(state, { type: "CONFIRM" }, meta())).toThrow("WORKSPACE_NOT_READY");
+    // A hard blocker next to the observations still prevents the draft.
+    expect(getWorkspaceReadiness(withObservations(1, { actor: "Stores clerk" }).state).draftReady).toBe(false);
+  });
+
+  it("carries pending observations into the To-Be as open questions only with allowGaps", () => {
+    const { state } = withObservations(2);
+    const confirmed = applyWorkspaceCommand(state, gaps, meta());
+    expect(confirmed.confirmation).toMatchObject({ withGaps: true });
+    const compiled = compileDiscovery(state, { allowGaps: true });
+    for (const obs of state.observations) {
+      expect(compiled.openQuestions).toContainEqual({ id: `q_obs_${obs.id}`.slice(0, 64), question: obs.detail, owner: "Process owner" });
+    }
+    expect(new Set(compiled.openQuestions.map(q => q.id)).size).toBe(compiled.openQuestions.length);
+    // Without the flag nothing about observations is added (and the unfinished step still throws).
+    expect(() => compileDiscovery(state)).toThrow("AS_IS_STEP_INCOMPLETE");
+    const complete = withDraft({ name: "Record return", actor: "Stores clerk", system: "Spreadsheet", trigger: "Equipment arrives",
+      description: "Clerk records the return", inputs: "Return note", outputs: "Return row", controls: "Asset ID check", exceptions: "Missing date" });
+    expect(compileDiscovery(complete).openQuestions.some(q => q.id.startsWith("q_obs_"))).toBe(false);
+  });
+
+  it("never exceeds the open-question limit: facts, then steps, then observations, then one pointer question", () => {
+    const { state: base } = withObservations(1);
+    const draft = base.stepDrafts[0]!;
+    const dup = (n: number) => JSON.parse(JSON.stringify(draft).replaceAll(draft.id, `${draft.id}x${n}`)) as typeof draft;
+    const state: WorkspaceState = { ...base,
+      stepDrafts: [draft, ...Array.from({ length: 29 }, (_, i) => dup(i))],
+      observations: Array.from({ length: 90 }, (_, i) => ({ ...base.observations[0]!, id: `${base.observations[0]!.id}x${i}` })) };
+    const compiled = compileDiscovery(state, { allowGaps: true });
+    expect(compiled.openQuestions).toHaveLength(MAX_OPEN_QUESTIONS);
+    expect(compiled.openQuestions.at(-1)).toMatchObject({ id: "q_more_open_points",
+      question: "21 further open points are listed on the Summary tab of the discovery workspace." });
+    expect(compiled.openQuestions.filter(q => q.id.startsWith("q_st_"))).toHaveLength(30);
+    expect(new Set(compiled.openQuestions.map(q => q.id)).size).toBe(MAX_OPEN_QUESTIONS);
+  });
+
+  it("does not carry dismissed or resolved observations", () => {
+    const { state } = withObservations(2);
+    const reviewed = applyWorkspaceCommand(state, { type: "REVIEW_OBSERVATION", observationId: state.observations[0]!.id,
+      decision: "RESOLVE", rationale: "Owner confirmed these are separate dates." }, meta());
+    const ids = compileDiscovery(reviewed, { allowGaps: true }).openQuestions.map(q => q.id).filter(id => id.startsWith("q_obs_"));
+    expect(ids).toEqual([`q_obs_${state.observations[1]!.id}`.slice(0, 64)]);
+  });
+
   describe("when the participant asks for the To-Be", () => {
     const FULL = { name: "Record return", actor: "Stores clerk", system: "Spreadsheet", trigger: "Equipment arrives",
       description: "Clerk records the return", inputs: "Return note", outputs: "Return row", controls: "Asset ID check", exceptions: "Missing date" };
@@ -624,9 +683,31 @@ describe("confirming the As-Is as a draft with gaps", () => {
       expect(saved.messages.at(-1)!.note).toBe("The As-Is is complete. A project lead or consultant can confirm it on the Summary tab and then generate the To-Be design.");
     });
 
-    it("points to the draft confirmation, with the number of carried step details, when only step details are missing", () => {
+    it("points to the draft confirmation, with the number of carried unfinished steps, when only step details are missing", () => {
       const { saved } = answer(withDraft({ name: "Record return" }), "Draft the To-Be with what you have");
-      expect(saved.messages.at(-1)!.note).toBe("A draft To-Be can be generated now: on the Summary tab, a project lead or consultant can use \"Confirm as draft with gaps\". 1 step detail will be carried into the To-Be as open questions to confirm.");
+      expect(saved.messages.at(-1)!.note).toBe("A draft To-Be can be generated now: on the Summary tab, a project lead or consultant can use \"Confirm as draft with gaps\". 1 unfinished step will be carried into the To-Be as an open question to confirm.");
+    });
+
+    it("counts unfinished steps and points to check separately in the draft note", () => {
+      const { saved } = answer(withObservations(2).state, "Draft the To-Be with what you have");
+      expect(saved.messages.at(-1)!.note).toBe("A draft To-Be can be generated now: on the Summary tab, a project lead or consultant can use \"Confirm as draft with gaps\". 1 unfinished step and 2 points to check will be carried into the To-Be as open questions to confirm.");
+    });
+
+    it("mentions only the soft parts that exist, with singular forms", () => {
+      const FULLSTEP = { name: "Record return", actor: "Stores clerk", system: "Spreadsheet", trigger: "Equipment arrives",
+        description: "Clerk records the return", inputs: "Return note", outputs: "Return row", controls: "Asset ID check", exceptions: "Missing date" };
+      const onlyObs = answer(withObservations(1, FULLSTEP).state, "Draft the To-Be").saved.messages.at(-1)!.note!;
+      expect(onlyObs).toContain("1 point to check will be carried into the To-Be as an open question to confirm.");
+      expect(onlyObs).not.toContain("unfinished");
+    });
+
+    it("tells how many other gaps can stay open when required items remain", () => {
+      const hardState = setDraft(applyWorkspaceCommand(start(), { type: "START_STEP_DRAFT" }, meta()), "name", "Record return");
+      const r = getWorkspaceReadiness(hardState);
+      const hard = r.blockers.filter(b => !b.soft).length, soft = r.blockers.length - hard;
+      expect(soft).toBe(1);
+      const note = answer(hardState, "Generate the To-Be design").saved.messages.at(-1)!.note!;
+      expect(note.endsWith(`; and ${hard - 3} more required items. 1 other gap (unfinished steps, points to check) can stay open in a draft. These are listed on the Summary tab.`)).toBe(true);
     });
 
     it("lists the first three hard blockers and counts the rest otherwise", () => {
@@ -636,7 +717,8 @@ describe("confirming the As-Is as a draft with gaps", () => {
       expect(hard.length).toBeGreaterThan(3);
       const note = answer(state, "Generate the To-Be design").saved.messages.at(-1)!.note!;
       expect(note.startsWith("Before a To-Be can be drafted: ")).toBe(true);
-      expect(note.endsWith(`; and ${hard.length - 3} more. These are listed on the Summary tab.`)).toBe(true);
+      expect(note.endsWith(`; and ${hard.length - 3} more required items. These are listed on the Summary tab.`)).toBe(true);
+      expect(note).not.toContain("can stay open in a draft");
       expect(note).not.toContain("\n");
       expect(note).not.toMatch(/FIELD_UNANSWERED|AS_IS_STEP/);
     });
