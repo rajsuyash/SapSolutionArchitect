@@ -144,6 +144,25 @@ describe.skipIf(process.env.RUN_DB_TESTS !== "1")("durable discovery workspace",
     expect(saved.state.messages.at(-1)!.text).toContain(saved.state.questions[0]!.question);
   });
 
+  it("seeds a new variant's modules and org units from the project as KNOWN facts quoting Project details, org units in a stable order", async () => {
+    const owner = await auth.signup({ name: "Synthetic lead", email: `workspace-${randomUUID()}@test.local`,
+      password: "Password123!", orgName: "Synthetic workspace" });
+    // Units are supplied out of order; the seeded text must follow type, then code.
+    const project = await projects.create(owner.token, { ...projectInput, modules: ["SD", "MM"], orgUnits: [
+      { type: "PLANT", code: "P200", name: "North depot" }, { type: "PLANT", code: "P100", name: "Main depot" },
+      { type: "COMPANY_CODE", code: "1000", name: "Hire Ltd" }] }, randomUUID());
+    const { state } = await workspaces.create(owner.token, project.id, "SEEDED", { variantName: "Seeded" }, randomUUID());
+    const details = state.sources.find(source => source.title === "Project details");
+    expect(details).toBeDefined();
+    const modules = state.facts.find(f => f.id === "modules_in_scope")!;
+    const units = state.facts.find(f => f.id === "target_org_units")!;
+    expect(modules).toMatchObject({ status: "KNOWN", value: "MM, SD", evidence: { sourceId: details!.id, quote: "MM, SD" } });
+    expect(units).toMatchObject({ status: "KNOWN",
+      value: "Company code 1000 Hire Ltd; Plant P100 Main depot; Plant P200 North depot",
+      evidence: { sourceId: details!.id, quote: units.value } });
+    expect(details!.text).toContain(units.value!);
+  });
+
   it("loads a workspace saved before the company-context fields existed and backfills them EMPTY", async () => {
     const { owner, project } = await fixture();
     const created = await workspaces.create(owner.token, project.id, "OLD", { variantName: "Old" }, randomUUID());

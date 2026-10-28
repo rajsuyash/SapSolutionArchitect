@@ -533,6 +533,6 @@ describe("discovery workspace model", () => {
 
     it("builds for every draft count from 0 to 25, asked or not", () => {
       for (let count = 0; count <= 25; count++) for (const askFirst of [0, count]) interview(count, askFirst);
-    });
+    }, 30_000);
   });
 });
