@@ -14,13 +14,17 @@ type LoadRuntime = () => HttpRuntime;
 const MAX_BODY_BYTES = 8192;
 const success = (data: unknown, status = 200) => NextResponse.json({ success: true, data }, { status });
 
+const FIXED_ERROR_CODE = /^[A-Z][A-Z0-9_]{2,63}$/;
+/** What an unexpected error may say about itself in logs: its fixed code (e.g. INVALID_INTERVIEW_INPUT) or else its class name, never free text or a stack. */
+const errorCode = (error: unknown) => error instanceof Error ? (FIXED_ERROR_CODE.test(error.message) ? error.message : error.name) : "UnknownThrown";
+
 async function boundary(work: (requestId: string) => Promise<NextResponse>): Promise<NextResponse> {
   const requestId = randomUUID();
   let response: NextResponse;
   try { response = await work(requestId); }
   catch (error) {
     const known = isAuthError(error);
-    if (!known) console.error(JSON.stringify({ event: "api_error", requestId }));
+    if (!known) console.error(JSON.stringify({ event: "api_error", requestId, code: errorCode(error) }));
     response = NextResponse.json({ success: false, error: {
       code: known ? error.code : "INTERNAL_ERROR",
       message: known ? error.message : "Something went wrong. Try again.",

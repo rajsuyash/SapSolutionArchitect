@@ -100,6 +100,20 @@ describe("auth HTTP boundary", () => {
     } finally { log.mockRestore(); }
   });
 
+  it.each([[new Error("INVALID_INTERVIEW_INPUT"), "INVALID_INTERVIEW_INPUT"], [new TypeError("private-db-password-and-email"), "TypeError"],
+    [new Error("lowercase text, with user@example.com"), "Error"], ["thrown string", "UnknownThrown"],
+  ])("logs a fixed error code for unexpected errors, never their text: %s", async (thrown, code) => {
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    const runtime = mockRuntime();
+    runtime.auth.login.mockRejectedValue(thrown);
+    try {
+      const response = await handleAuth(post("{}"), "login", () => runtime);
+      expect(response.status).toBe(500);
+      expect(log).toHaveBeenCalledOnce();
+      expect(JSON.parse(log.mock.calls[0]![0] as string)).toEqual({ event: "api_error", requestId: response.headers.get("x-request-id"), code });
+    } finally { log.mockRestore(); }
+  });
+
   it("recognizes auth errors from a separately loaded runtime module", async () => {
     vi.resetModules();
     try {

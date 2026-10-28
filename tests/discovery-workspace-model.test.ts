@@ -462,4 +462,37 @@ describe("discovery workspace model", () => {
     expect(again).toMatchObject({ success: true, data: { proposedUpdates: [] },
       warnings: expect.arrayContaining([expect.objectContaining({ code: "update_dropped", detail: "already_proposed" })]) });
   });
+
+  describe("interview input with many incomplete steps", () => {
+    /** `count` empty step drafts; every round the consultant asks up to three shown walkthroughs (re-asks included) of the first
+     * `askFirst` drafts. Each round's input must build, and every shown gap must point at a field the input lists. */
+    const interview = (count: number, askFirst: number, rounds = 12) => {
+      let state = start();
+      for (let i = 0; i < count; i++) state = applyWorkspaceCommand(state, { type: "START_STEP_DRAFT" }, meta());
+      const target = new Set(state.stepDrafts.slice(0, askFirst).map(d => d.id));
+      let asked = 0;
+      for (let round = 0; round < rounds; round++) {
+        const m = meta();
+        state = applyWorkspaceCommand(state, { type: "SEND_MESSAGE", text: `Turn ${round}` }, m);
+        const input = buildInterviewInput(state, m.id);
+        const fieldIds = new Set(input.fields.map(f => f.id));
+        expect(input.activeGaps.filter(g => !fieldIds.has(g.fieldId)), `${count} drafts, round ${round}`).toEqual([]);
+        const questions = input.activeGaps.filter(g => g.key.startsWith("gstep_") && g.stepId && target.has(g.stepId)).slice(0, 3)
+          .map(g => ({ gapKey: g.key, question: `Round ${round}: walk me through ${g.stepId}?`, whyItMatters: "It shows the flow." }));
+        if (!questions.length) continue;
+        asked += questions.length;
+        state = recordInterviewTurn(state, { questions, proposedUpdates: [], observations: [] }, m.id, meta());
+      }
+      return asked;
+    };
+
+    it.each([[14, 14], [14, 11], [14, 0], [16, 16]])("builds every turn for %i drafts when the first %i are asked", (count, askFirst) => {
+      const asked = interview(count, askFirst);
+      expect(asked > 0).toBe(askFirst > 0);
+    });
+
+    it("builds for every draft count from 0 to 25, asked or not", () => {
+      for (let count = 0; count <= 25; count++) for (const askFirst of [0, count]) interview(count, askFirst);
+    });
+  });
 });

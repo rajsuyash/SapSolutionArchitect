@@ -508,16 +508,19 @@ export function buildInterviewInput(rawState: WorkspaceState, currentMessageId: 
   });
   // Critical business context first, then landscape, then the process itself, then KPIs, targets and constraints.
   // Only the head of the list is shown: the model asks from the top, and a long list only dilutes its attention.
-  const activeGaps = [...catalogGaps(0), ...catalogGaps(1), ...walkthroughGaps, ...stepFieldGaps, ...requirementGaps,
+  const headGaps = [...catalogGaps(0), ...catalogGaps(1), ...walkthroughGaps, ...stepFieldGaps, ...requirementGaps,
     ...catalogGaps(2), ...catalogGaps(3)].slice(0, MAX_SHOWN_GAPS);
-  // Drafts the model can act on: those named by a shown gap, plus those whose walkthrough was already asked (any later
-  // message may fill their blanks). Their EMPTY fields (and name and description for context) are listed.
+  // Drafts the model can act on: those named by a shown gap, then those whose walkthrough was already asked (any later
+  // message may fill their blanks), then the rest. Their EMPTY fields (and name and description for context) are listed.
   const recentlyAsked = new Set(incompleteDrafts.filter(d => askedAt.has(`${STEP_GAP_PREFIX}${d.id}`)).map(d => d.id));
-  const shown = new Set(activeGaps.flatMap(g => g.stepId ? [g.stepId] : []));
-  // Every incomplete step is listed (those with a gap first): extraction can only fill fields it can see, and a step whose
-  // walkthrough gap fell below the shown head of the gap list must still have its blanks filled from what the user says.
-  const visibleDrafts = [...incompleteDrafts.filter(d => shown.has(d.id) || recentlyAsked.has(d.id)),
-    ...incompleteDrafts.filter(d => !shown.has(d.id) && !recentlyAsked.has(d.id))].slice(0, MAX_VISIBLE_DRAFTS);
+  const shown = new Set(headGaps.flatMap(g => g.stepId ? [g.stepId] : []));
+  // Every incomplete step is listed up to the cap (stable sort, so gap order holds within a rank): extraction can only fill
+  // fields it can see, and a step whose walkthrough gap fell below the shown head of the gap list must still have its blanks filled.
+  const rank = (d: { id: string }) => shown.has(d.id) ? 0 : recentlyAsked.has(d.id) ? 1 : 2;
+  const visibleDrafts = [...incompleteDrafts].sort((a, b) => rank(a) - rank(b)).slice(0, MAX_VISIBLE_DRAFTS);
+  // A gap is offered only when its field is listed: more shown steps than the cap lose their gaps (they come back as others complete).
+  const unlisted = new Set(incompleteDrafts.filter(d => !visibleDrafts.includes(d)).map(d => d.id));
+  const activeGaps = headGaps.filter(g => !g.stepId || !unlisted.has(g.stepId));
   const fields = [...WORKSPACE_FIELDS.map(def => {
     const fact = state.facts.find(f => f.id === def.id)!;
     return { id: def.id, label: `${def.domain}: ${def.label}`, value: fact.value, status: wire(fact.status), ...(covered.has(def.id) ? { pending: true } : {}) };
