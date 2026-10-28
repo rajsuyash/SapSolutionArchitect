@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { validateExtraction, validateInterviewTurn } from "../src/lib/ai/discovery-interview";
 import { indexSentences } from "../src/lib/ai/interview-sentences";
 import { WORKSPACE_FIELDS } from "../src/lib/workspace-fields";
+import { TO_CONFIRM } from "../src/lib/workspace-fields";
 import { backfillCatalog, buildInterviewInput, compileDiscovery, createWorkspace, getWorkspaceReadiness,
   applyWorkspaceCommand, recordInterviewTurn, WorkspaceStateSchema, type WorkspaceMeta, type WorkspaceState } from "../src/lib/discovery-workspace-model";
 
@@ -534,5 +535,65 @@ describe("discovery workspace model", () => {
     it("builds for every draft count from 0 to 25, asked or not", () => {
       for (let count = 0; count <= 25; count++) for (const askFirst of [0, count]) interview(count, askFirst);
     }, 30_000);
+  });
+});
+
+describe("confirming the As-Is as a draft with gaps", () => {
+  const setDraft = (state: WorkspaceState, key: string, value: string) => applyWorkspaceCommand(state, { type: "SET_STEP_DRAFT_FIELD",
+    fieldId: `${state.stepDrafts[0]!.id}_${key}`, status: "KNOWN", value, rationale: null, owner: null, sourceId: null, quote: null }, meta());
+  /** Everything answered, one requirement, and one step draft that only has what the caller sets. */
+  const withDraft = (known: Record<string, string>) => {
+    let state = start();
+    for (const def of WORKSPACE_FIELDS) if (state.facts.find(f => f.id === def.id)!.status === "EMPTY") state = set(state, def.id, `Answer for ${def.label}`);
+    state = applyWorkspaceCommand(state, { type: "START_STEP_DRAFT" }, meta());
+    for (const [key, value] of Object.entries(known)) state = setDraft(state, key, value);
+    state = applyWorkspaceCommand(state, { type: "START_REQUIREMENT_DRAFT", asIsStepId: state.stepDrafts[0]!.id, kind: "PAIN_POINT", critical: true }, meta());
+    return applyWorkspaceCommand(state, { type: "SET_REQUIREMENT_DRAFT_STATEMENT", requirementDraftId: state.requirementDrafts[0]!.id,
+      status: "KNOWN", value: "Late return entry delays billing", rationale: null, owner: null, sourceId: null, quote: null }, meta());
+  };
+  const gaps = { type: "CONFIRM", allowGaps: true };
+
+  it("marks an incomplete but named draft as a soft blocker; everything else stays hard", () => {
+    const soft = getWorkspaceReadiness(withDraft({ name: "Record return" }));
+    expect(soft).toMatchObject({ ready: false, draftReady: true, blockers: [{ code: "AS_IS_STEP_INCOMPLETE", soft: true }] });
+    const nameless = getWorkspaceReadiness(withDraft({ actor: "Stores clerk" }));
+    expect(nameless).toMatchObject({ ready: false, draftReady: false, blockers: [{ code: "AS_IS_STEP_INCOMPLETE" }] });
+    expect(nameless.blockers[0]).not.toHaveProperty("soft");
+    expect(getWorkspaceReadiness(set(withDraft({ name: "Record return" }), "process_owner", "x")).draftReady).toBe(true);
+    expect(getWorkspaceReadiness(start()).draftReady).toBe(false);
+  });
+
+  it("confirms with allowGaps only when every blocker is soft, and plain CONFIRM is unchanged", () => {
+    const state = withDraft({ name: "Record return" });
+    expect(() => applyWorkspaceCommand(state, { type: "CONFIRM" }, meta())).toThrow("WORKSPACE_NOT_READY");
+    expect(() => applyWorkspaceCommand(withDraft({ actor: "Stores clerk" }), gaps, meta())).toThrow("WORKSPACE_NOT_READY");
+    expect(() => applyWorkspaceCommand(start(), gaps, meta())).toThrow("WORKSPACE_NOT_READY");
+    const confirmed = applyWorkspaceCommand(state, gaps, meta());
+    expect(confirmed.confirmation).toMatchObject({ revision: confirmed.revision, withGaps: true });
+    // A complete workspace confirmed "with gaps" is simply confirmed: nothing is missing.
+    const complete = applyWorkspaceCommand(withDraft({ name: "Record return", actor: "Stores clerk", system: "Spreadsheet",
+      trigger: "Equipment arrives", description: "Clerk records the return", inputs: "Return note", outputs: "Return row",
+      controls: "Asset ID check", exceptions: "Missing date" }), gaps, meta());
+    expect(complete.confirmation).not.toHaveProperty("withGaps");
+  });
+
+  it("compiles missing details as 'To confirm' with evidence and one open question each, and still throws without the flag", () => {
+    const state = withDraft({ name: "Record return", description: "Clerk records the return in a spreadsheet", inputs: "Return note\nPhoto" });
+    expect(() => compileDiscovery(state)).toThrow("AS_IS_STEP_INCOMPLETE");
+    const compiled = compileDiscovery(state, { allowGaps: true });
+    const id = state.stepDrafts[0]!.id;
+    expect(compiled.asIsSteps[0]).toMatchObject({ name: "Record return", actor: TO_CONFIRM, system: TO_CONFIRM, trigger: TO_CONFIRM,
+      description: "Clerk records the return in a spreadsheet", inputs: ["Return note", "Photo"], outputs: [], controls: [], exceptions: [] });
+    expect(compiled.sources.find(s => s.id === compiled.asIsSteps[0]!.evidence.sourceId)?.text).toContain(compiled.asIsSteps[0]!.evidence.quote);
+    expect(compiled.openQuestions.filter(q => q.id.startsWith(`q_${id}_`)).map(q => q.id).sort()).toEqual(
+      ["actor", "controls", "exceptions", "outputs", "system", "trigger"].map(key => `q_${id}_${key}`));
+    expect(compiled.openQuestions.find(q => q.id === `q_${id}_actor`)).toEqual({ id: `q_${id}_actor`, owner: "Process owner",
+      question: "Record return: Who performs this step today?" });
+    // Evidence falls back to the name's when there is no description.
+    const nameOnly = compileDiscovery(withDraft({ name: "Record return" }), { allowGaps: true }).asIsSteps[0]!;
+    expect(nameOnly).toMatchObject({ description: TO_CONFIRM, name: "Record return" });
+    expect(nameOnly.evidence.quote).toBe("Record return");
+    // A step with neither name nor description cannot be carried even with the flag.
+    expect(() => compileDiscovery(withDraft({ actor: "Stores clerk" }), { allowGaps: true })).toThrow("AS_IS_STEP_INCOMPLETE");
   });
 });

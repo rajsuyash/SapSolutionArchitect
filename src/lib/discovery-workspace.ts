@@ -230,7 +230,7 @@ export function createDiscoveryWorkspaceRepository(pool: Pool, auth: AuthService
         }
         if (parsed.data.type !== "CONFIRM") return result(await append(client, args, "COMMAND", next, key!, hash,
           next.confirmation ? current.confirmed_snapshot_id : null), a);
-        const input = compileDiscovery(next);
+        const input = compileDiscovery(next, { allowGaps: !!next.confirmation?.withGaps });
         // Coordinate with the separate manual capture path before assigning a
         // discovery version. The workspace lock remains held until commit.
         await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))",

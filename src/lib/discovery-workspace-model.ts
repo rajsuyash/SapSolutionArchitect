@@ -2,7 +2,7 @@ import { z } from "zod";
 import type { CompanyContext } from "./company-context";
 import { validateDiscovery, type DiscoveryInput } from "./discovery";
 import { describeField, REASK_AFTER_USER_TURNS, REASK_SUFFIX, STEP_GAP_PREFIX, STEP_KEYS as stepKeys, STEP_QUESTIONS as stepQuestions,
-  stepLabel, WORKSPACE_FIELDS } from "./workspace-fields";
+  stepLabel, TO_CONFIRM, WORKSPACE_FIELDS } from "./workspace-fields";
 import { parseInterviewInput, revalidateStoredTurn, type InterviewInput, type InterviewTurn, type Scope } from "./ai/discovery-interview";
 
 // Re-exported for server callers; the client imports ./workspace-fields directly.
@@ -52,7 +52,8 @@ const QuestionSchema = z.strictObject({ gapKey: id, fieldId: id, question: text(
 const ObservationSchema = z.strictObject({ id, kind: z.enum(["POSSIBLE_CONFLICT", "FOLLOW_UP_SUGGESTION"]),
   fieldIds: z.array(id).min(1).max(10), detail: text(1000), status: z.enum(["PENDING", "DISMISSED", "RESOLVED"]),
   rationale: text(1000).nullable(), reviewedBy: id.nullable() });
-const ConfirmationSchema = z.strictObject({ revision: z.number().int().positive(), by: id, at: z.iso.datetime() });
+/** `withGaps`: confirmed as a draft whose incomplete step details travel on as open questions. Absent on older confirmations. */
+const ConfirmationSchema = z.strictObject({ revision: z.number().int().positive(), by: id, at: z.iso.datetime(), withGaps: z.boolean().optional() });
 
 export const WorkspaceStateSchema = z.strictObject({
   schemaVersion: z.literal(1), revision: z.number().int().positive().max(2147483647),
@@ -107,7 +108,7 @@ export const WorkspaceCommandSchema = z.discriminatedUnion("type", [
   z.strictObject({ type: z.literal("DECIDE_PROPOSALS"), ids: z.array(id).min(1).max(100), decision: z.enum(["ACCEPT", "REJECT"]) }),
   z.strictObject({ type: z.literal("REVIEW_OBSERVATION"), observationId: id,
     decision: z.enum(["DISMISS", "RESOLVE"]), rationale: text(1000) }),
-  z.strictObject({ type: z.literal("CONFIRM") }),
+  z.strictObject({ type: z.literal("CONFIRM"), allowGaps: z.boolean().optional() }),
 ]);
 export type WorkspaceCommand = z.infer<typeof WorkspaceCommandSchema>;
 
@@ -212,11 +213,23 @@ function setFact(state: WorkspaceState, fact: WorkspaceState["facts"][number], c
   fact.acceptedBy = meta.actorId;
   fact.acceptedAt = meta.at;
 }
-function draftComplete(draft: WorkspaceState["stepDrafts"][number]) {
-  const fields = new Map(draft.fields.map(f => [f.id.slice(draft.id.length + 1), f]));
-  return ["name", "actor", "system", "trigger", "description"].every(key => fields.get(key)?.status === "KNOWN") &&
-    ["inputs", "outputs", "controls", "exceptions"].every(key => ["KNOWN", "NOT_APPLICABLE"].includes(fields.get(key)?.status ?? "EMPTY"));
-}
+const CORE_STEP_KEYS = ["name", "actor", "system", "trigger", "description"] as const;
+const LIST_STEP_KEYS = ["inputs", "outputs", "controls", "exceptions"] as const;
+type StepDraft = WorkspaceState["stepDrafts"][number];
+const draftFact = (draft: StepDraft, key: (typeof stepKeys)[number]) => draft.fields.find(f => f.id === `${draft.id}_${key}`)!;
+/** The step details still missing: core ones must be KNOWN, list ones KNOWN or NOT_APPLICABLE. */
+const missingKeys = (draft: StepDraft) => [
+  ...CORE_STEP_KEYS.filter(key => draftFact(draft, key).status !== "KNOWN"),
+  ...LIST_STEP_KEYS.filter(key => !["KNOWN", "NOT_APPLICABLE"].includes(draftFact(draft, key).status)),
+];
+const draftComplete = (draft: StepDraft) => missingKeys(draft).length === 0;
+/** Evidence a gap-tolerant compile can cite: the description's, else the first known detail that has some. */
+const draftEvidence = (draft: StepDraft) => ["description", ...stepKeys].map(key => draftFact(draft, key as (typeof stepKeys)[number])).find(f => f.status === "KNOWN" && f.evidence)?.evidence ?? null;
+/** An incomplete draft can still be carried into a To-Be when it is at least named or described, with evidence. */
+const draftCompilable = (draft: StepDraft) => ["name", "description"].some(key => {
+  const fact = draftFact(draft, key as "name" | "description");
+  return fact.status === "KNOWN" && !!fact.evidence;
+});
 
 /** Draft ids are derived from the accepted proposal, so one command may accept many and a replay cannot create twins. */
 const stepDraftId = (proposalId: string) => `st_${proposalId.slice(2)}`;
@@ -264,7 +277,7 @@ function acceptProposal(state: WorkspaceState, proposal: WorkspaceState["proposa
 
 export function getWorkspaceReadiness(raw: WorkspaceState) {
   const state = checked(raw);
-  const blockers: { code: string; fieldId?: string; detail: string }[] = [];
+  const blockers: { code: string; fieldId?: string; detail: string; soft?: true }[] = [];
   for (const field of WORKSPACE_FIELDS) {
     const fact = state.facts.find(item => item.id === field.id)!;
     if (fact.status === "EMPTY") blockers.push({ code: "FIELD_UNANSWERED", fieldId: field.id, detail: field.label });
@@ -274,7 +287,8 @@ export function getWorkspaceReadiness(raw: WorkspaceState) {
   }
   if (!state.steps.length && !state.stepDrafts.length) blockers.push({ code: "AS_IS_STEP_MISSING", detail: "Describe at least one current step" });
   state.stepDrafts.forEach(draft => {
-    if (!draftComplete(draft)) blockers.push({ code: "AS_IS_STEP_INCOMPLETE", detail: `Complete current step ${draft.id}` });
+    if (!draftComplete(draft)) blockers.push({ code: "AS_IS_STEP_INCOMPLETE", detail: `Complete current step ${draft.id}`,
+      ...(draftCompilable(draft) ? { soft: true as const } : {}) });
   });
   if (!state.requirements.length) blockers.push({ code: "REQUIREMENT_MISSING", detail: "Record at least one pain point or desired requirement" });
   state.requirementDrafts.forEach(draft => {
@@ -286,7 +300,7 @@ export function getWorkspaceReadiness(raw: WorkspaceState) {
   }
   if (state.proposals.some(p => p.status === "PENDING")) blockers.push({ code: "PROPOSALS_PENDING", detail: "Review proposed facts" });
   if (state.observations.some(o => o.status === "PENDING")) blockers.push({ code: "OBSERVATIONS_PENDING", detail: "Review possible contradictions" });
-  return { ready: blockers.length === 0, blockers };
+  return { ready: blockers.length === 0, draftReady: blockers.every(b => b.soft), blockers };
 }
 
 export function applyWorkspaceCommand(rawState: WorkspaceState, rawCommand: unknown, meta: WorkspaceMeta): WorkspaceState {
@@ -296,10 +310,12 @@ export function applyWorkspaceCommand(rawState: WorkspaceState, rawCommand: unkn
   if (!parsed.success) fail("INVALID_WORKSPACE_COMMAND");
   const command = parsed.data;
   if (command.type === "CONFIRM") {
-    if (!getWorkspaceReadiness(state).ready) fail("WORKSPACE_NOT_READY");
-    compileDiscovery(state);
+    const allowGaps = command.allowGaps === true;
+    const readiness = getWorkspaceReadiness(state);
+    if (!(allowGaps ? readiness.draftReady : readiness.ready)) fail("WORKSPACE_NOT_READY");
+    compileDiscovery(state, { allowGaps });
     state.revision++;
-    state.confirmation = { revision: state.revision, by: meta.actorId, at: meta.at };
+    state.confirmation = { revision: state.revision, by: meta.actorId, at: meta.at, ...(allowGaps && !readiness.ready ? { withGaps: true } : {}) };
     return checked(state);
   }
   if (command.type === "SEND_MESSAGE") {
@@ -465,7 +481,6 @@ export function settleChatTurn(rawState: WorkspaceState, currentMessageId: strin
 const MAX_VISIBLE_DRAFTS = 12;
 const MAX_SHOWN_GAPS = 15;
 const RECENT_EVIDENCE_MESSAGES = 3;
-const CORE_STEP_KEYS = ["name", "actor", "system", "trigger", "description"] as const;
 const trimmed = (value: string, max: number) => value.length > max ? `${value.slice(0, max - 1)}…` : value;
 
 export function buildInterviewInput(rawState: WorkspaceState, currentMessageId: string): InterviewInput {
@@ -486,7 +501,6 @@ export function buildInterviewInput(rawState: WorkspaceState, currentMessageId: 
   const wire = (status: string) => (status === "OWNER_PENDING" ? "UNKNOWN" : status) as "EMPTY" | "KNOWN" | "UNKNOWN" | "NOT_APPLICABLE";
   const incompleteDrafts = state.stepDrafts.filter(d => !draftComplete(d));
   const visibleRequirements = state.requirementDrafts.filter(d => d.statement.status !== "KNOWN").slice(0, 8);
-  const draftFact = (draft: (typeof state.stepDrafts)[number], key: (typeof stepKeys)[number]) => draft.fields.find(f => f.id === `${draft.id}_${key}`)!;
   const stepRef = (draft: (typeof state.stepDrafts)[number]) => {
     const name = draftFact(draft, "name").value, description = draftFact(draft, "description").value;
     return name ? `"${trimmed(name, 80)}"` : description ? `that begins: "${trimmed(description, 120)}"` : "that has no description yet";
@@ -584,21 +598,28 @@ export function buildInterviewInput(rawState: WorkspaceState, currentMessageId: 
 
 /** Compile reviewed user facts only. This artifact remains USER_PROVIDED/DRAFT
  * in the discovery repository; confirmation does not verify SAP capability. */
-export function compileDiscovery(rawState: WorkspaceState): DiscoveryInput {
+export function compileDiscovery(rawState: WorkspaceState, options: { allowGaps?: boolean } = {}): DiscoveryInput {
   const state = checked(rawState);
+  const gapQuestions: DiscoveryInput["openQuestions"] = [];
+  /** A step as the To-Be sees it. With `allowGaps` a missing detail becomes TO_CONFIRM plus an open question, never an invented value. */
+  const compileDraft = (draft: StepDraft) => {
+    const missing = missingKeys(draft);
+    if (missing.length && !(options.allowGaps && draftCompilable(draft))) fail("AS_IS_STEP_INCOMPLETE");
+    const known = (key: (typeof stepKeys)[number]) => { const f = draftFact(draft, key); return f.status === "KNOWN" ? f.value! : null; };
+    const list = (key: (typeof LIST_STEP_KEYS)[number]) => (known(key) ?? "").split("\n").map(s => s.trim()).filter(Boolean);
+    const name = known("name");
+    for (const key of missing) {
+      gapQuestions.push({ id: `q_${draft.id}_${key}`.slice(0, 64), question: `${name ?? "Unnamed step"}: ${stepQuestions[key]}`.slice(0, 8000), owner: "Process owner" });
+    }
+    return { id: draft.id, name: name ?? TO_CONFIRM, actor: known("actor") ?? TO_CONFIRM, system: known("system") ?? TO_CONFIRM,
+      trigger: known("trigger") ?? TO_CONFIRM, description: known("description") ?? TO_CONFIRM,
+      inputs: list("inputs"), outputs: list("outputs"), controls: list("controls"), exceptions: list("exceptions"),
+      evidence: draftEvidence(draft)! };
+  };
   const input: DiscoveryInput = {
     schemaVersion: 1, variantName: state.variantName, targetRelease: state.targetRelease,
     sources: state.sources.map(s => ({ id: s.id, title: s.title, revision: s.revision, locator: s.locator, text: s.text })),
-    asIsSteps: [...state.steps, ...state.stepDrafts.map(draft => {
-      if (!draftComplete(draft)) fail("AS_IS_STEP_INCOMPLETE");
-      const field = (key: (typeof stepKeys)[number]) => draft.fields.find(f => f.id === `${draft.id}_${key}`)!;
-      const list = (key: "inputs" | "outputs" | "controls" | "exceptions") =>
-        field(key).status === "KNOWN" ? field(key).value!.split("\n").map(s => s.trim()).filter(Boolean) : [];
-      return { id: draft.id, name: field("name").value!, actor: field("actor").value!,
-        system: field("system").value!, trigger: field("trigger").value!, description: field("description").value!,
-        inputs: list("inputs"), outputs: list("outputs"), controls: list("controls"), exceptions: list("exceptions"),
-        evidence: field("description").evidence! };
-    })].map((step, index) => ({ ...step, sequence: index + 1 })),
+    asIsSteps: [...state.steps, ...state.stepDrafts.map(compileDraft)].map((step, index) => ({ ...step, sequence: index + 1 })),
     requirements: [...state.requirements, ...state.requirementDrafts.map(draft => {
       if (draft.statement.status !== "KNOWN") fail("REQUIREMENT_INCOMPLETE");
       return { id: draft.id, asIsStepId: draft.asIsStepId, kind: draft.kind, critical: draft.critical,
@@ -607,10 +628,10 @@ export function compileDiscovery(rawState: WorkspaceState): DiscoveryInput {
     conflicts: [],
     companyContext: state.facts.flatMap(f => f.status === "KNOWN" ? [{ fieldId: f.id as CompanyContext[number]["fieldId"], label: WORKSPACE_FIELDS.find(def => def.id === f.id)!.label,
       value: f.value!, evidence: f.evidence! }] : []),
-    openQuestions: state.facts.filter(f => ["UNKNOWN", "OWNER_PENDING"].includes(f.status)).map(f => ({
+    openQuestions: [...state.facts.filter(f => ["UNKNOWN", "OWNER_PENDING"].includes(f.status)).map(f => ({
       id: `q_${f.id}`, question: WORKSPACE_FIELDS.find(def => def.id === f.id)!.question,
       owner: f.owner ?? "Process owner",
-    })),
+    })), ...gapQuestions],
   };
   return validateDiscovery(input);
 }

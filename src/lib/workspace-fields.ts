@@ -47,6 +47,8 @@ export const STEP_QUESTIONS: Record<StepKey, string> = {
   outputs: "Which documents or data leave this step today?", controls: "Which checks or approvals apply today?",
   exceptions: "What happens when this step fails or must be corrected today?",
 };
+/** Stands in for a step detail the consultant has not confirmed, in a discovery confirmed as a draft with gaps. */
+export const TO_CONFIRM = "To confirm";
 export const STEP_LABELS: Record<StepKey, string> = {
   name: "Step name", actor: "Who does it", system: "System or record used", trigger: "What starts it",
   description: "What happens", inputs: "Inputs", outputs: "Outputs", controls: "Checks and approvals", exceptions: "Exceptions",
@@ -54,7 +56,7 @@ export const STEP_LABELS: Record<StepKey, string> = {
 export const REQUIREMENT_KIND_LABELS = { PAIN_POINT: "Pain point", TO_BE_REQUIREMENT: "Future requirement", CONTROL: "Control" } as const;
 
 type View = Pick<WorkspaceState, "steps" | "stepDrafts" | "requirements" | "requirementDrafts">;
-type Blocker = { code: string; fieldId?: string; detail: string };
+type Blocker = { code: string; fieldId?: string; detail: string; soft?: true };
 
 /** Position-based name, never the internal id: "Step 2 (Record return)". */
 export function stepLabel(state: View, stepId: string): string {
