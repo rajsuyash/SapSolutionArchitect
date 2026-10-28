@@ -88,6 +88,39 @@ describe.skipIf(process.env.RUN_DB_TESTS !== "1")("workspace trial, suspension a
     await expect(runConsultant(owner)).resolves.toBeTruthy();
   });
 
+  // Background extraction rows are cost records of the same chat turn: copy the org's INTERVIEW row n times as EXTRACTION rows.
+  const addExtractions = async (owner: Owner, n: number) => {
+    const { rowCount } = await pool.query(`INSERT INTO consultant_jobs (id,org_id,project_id,variant_code,kind,input_revision,message_id,
+      requested_by,request_key,request_hash,status,result,finished_at)
+      SELECT gen_random_uuid(),org_id,project_id,variant_code,'EXTRACTION',input_revision,message_id,requested_by,gen_random_uuid(),request_hash,
+        'SUCCEEDED','{}'::jsonb,now() FROM consultant_jobs c, generate_series(1,$2) WHERE org_id=$1 AND kind='INTERVIEW'`, [owner.user.orgId, n]);
+    expect(rowCount).toBe(n);
+  };
+
+  it("does not count background EXTRACTION rows against the daily quota, but still counts INTERVIEW rows", async () => {
+    const owner = await org("daily_ai_job_quota=2");
+    await runConsultant(owner);
+    await addExtractions(owner, 6);
+    await expect(runConsultant(owner)).resolves.toBeTruthy();
+    await expect(runConsultant(owner)).rejects.toMatchObject({ code: "RATE_LIMITED", status: 429 });
+    expect(await rows(owner)).toBe(8);
+  });
+
+  it("does not count EXTRACTION rows against the consultant daily cap either", async () => {
+    const capped = createConsultantJobs(pool, auth, queue, async () => {}, { dailyJobLimit: 2 });
+    const owner = await org("daily_ai_job_quota=100");
+    const turn = async () => {
+      const p = await project(owner);
+      const initial = await workspaces.create(owner.token, p.id, "RENTAL", { variantName: "Equipment rental", targetRelease: null }, randomUUID());
+      const sent = await workspaces.command(owner.token, p.id, "RENTAL", initial.state.revision, randomUUID(), { type: "SEND_MESSAGE", text: "Dispatch is tracked in a spreadsheet." });
+      return capped.enqueue(owner.token, p.id, "RENTAL", { kind: "INTERVIEW", expectedRevision: sent.state.revision, messageId: sent.state.messages.at(-1)!.id }, randomUUID());
+    };
+    await turn();
+    await addExtractions(owner, 6);
+    await expect(turn()).resolves.toBeTruthy();
+    await expect(turn()).rejects.toMatchObject({ code: "RATE_LIMITED", status: 429 });
+  });
+
   it("lets exactly one of two concurrent enqueues through at quota-1", async () => {
     const owner = await org("daily_ai_job_quota=2");
     await runAnalysis(owner);

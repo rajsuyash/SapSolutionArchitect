@@ -10,7 +10,7 @@ The consultant workflow adds a guided discovery conversation per process variant
 2. A project lead or consultant confirms the As-Is once the gaps are resolved. Confirmation pins an immutable revision.
 3. Generate the To-Be design from that revision. The result is a reviewable report (blockers, comparison, traceability) with `report.md` and `traceability.csv` downloads. Nothing is approved automatically; SAP claims are trusted only when they cite the curated, VERIFIED reference catalog in `fixtures/sap`.
 
-Cost controls: `CONSULTANT_DAILY_JOB_LIMIT` (default 200) caps consultant jobs per organization per rolling 24 hours (HTTP 429 `RATE_LIMITED` with `Retry-After`). The To-Be outline call (the largest) measured about 23000 tokens by chars/4 (about 34000 on DeepInfra MiMo) with a 65-entry catalog, so the 60000 default is enough.
+Cost controls: `CONSULTANT_DAILY_JOB_LIMIT` (default 200) caps consultant jobs (chat turns and To-Be runs; background extractions are not counted) per organization per rolling 24 hours (HTTP 429 `RATE_LIMITED` with `Retry-After`). The To-Be outline call (the largest) measured about 23000 tokens by chars/4 (about 34000 on DeepInfra MiMo) with a 65-entry catalog, so the 60000 default is enough.
 
 The worker must start with its working directory at the repository root so it finds `fixtures/sap`. It resolves the catalog directory at startup and exits with an error if it is missing or malformed, rather than silently treating every SAP claim as unverified.
 

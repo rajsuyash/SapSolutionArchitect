@@ -38,8 +38,8 @@ export async function extractMessage(pool: Pool, runStage: Runner, worker: Works
   await transaction(pool, async client => {
     await persistWorkspaceTurn(client, { ...worker, expectedRevision: input.contextRevision,
       currentMessageId: messageId, turn: generated.payload, requestKey, scope: "extraction" });
-    // Usage ledger: a terminal consultant_jobs row, so the daily job limit and the admin cost views (which read this table)
-    // count the call. Keyed by the request key, so a replay or retry of the same job records it once.
+    // Usage ledger: a terminal consultant_jobs row, so the admin cost views (which read this table) count the call.
+    // The daily job quotas exclude kind='EXTRACTION': the call belongs to the chat turn that queued it. Keyed by the request key, so a replay or retry of the same job records it once.
     // Failed attempts record nothing (no metrics survive a thrown error): their tokens are not in the cost views.
     await client.query(`INSERT INTO consultant_jobs (id,org_id,project_id,variant_code,kind,input_revision,message_id,requested_by,
       request_key,request_hash,status,result,metrics,finished_at)

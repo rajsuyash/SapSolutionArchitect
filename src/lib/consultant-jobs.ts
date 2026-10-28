@@ -119,10 +119,11 @@ export function createConsultantJobs(pool: Pool, auth: AuthService, queue: PgBos
         await client.query("SET LOCAL ROLE NONE");
         // Spend guard (OWASP LLM10): per-organization rolling 24h cap, counted org-wide (tenant RLS would only show
         // the caller's projects) and serialized per org so concurrent enqueues cannot all slip under the limit.
+        // Background EXTRACTION rows are not counted: they belong to the turn that queued them.
         await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))", [`consultant-quota:${user.orgId}`]);
         const used = (await client.query<{ n: number; retry: number | null }>(`SELECT count(*)::int AS n,
           ceil(extract(epoch FROM min(created_at)+interval '24 hours'-clock_timestamp()))::int AS retry FROM consultant_jobs
-          WHERE org_id=$1 AND created_at>clock_timestamp()-interval '24 hours'`, [user.orgId])).rows[0]!;
+          WHERE org_id=$1 AND kind<>'EXTRACTION' AND created_at>clock_timestamp()-interval '24 hours'`, [user.orgId])).rows[0]!;
         if (used.n > dailyJobLimit) throw new AuthError("RATE_LIMITED", 429,
           "Your organization has reached its daily consultant limit. Try again later.", undefined, Math.max(60, used.retry ?? 3600));
         const queued = await queue.send(consultantQueueFor(input.kind), { jobId: id }, { id, retryLimit: 0, expireInSeconds: queueExpireSeconds,

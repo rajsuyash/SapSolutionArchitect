@@ -188,7 +188,7 @@ describe.skipIf(process.env.RUN_DB_TESTS !== "1")("background extraction of inte
     expect(buildInterviewInput(await state(ctx), ctx.messageId).unextractedMessageIds).toEqual([first]);
   });
 
-  it("records extraction usage where the daily limit and the admin cost views read it, without becoming a chat job", async () => {
+  it("records extraction usage where the admin cost views read it, without becoming a chat job or using the daily limit", async () => {
     const ctx = await start("Dispatch is booked by phone. The clerk keeps a list.");
     const priced = ((name: "extraction_turn" | "interview_turn", raw: unknown, signal?: AbortSignal) => stage()(name, raw, signal)
       .then(out => ({ ...out, metrics: { ...out.metrics, inputTokens: 1234, outputTokens: 56 } }))) as unknown as ReturnType<typeof createStageRunner>;
@@ -206,11 +206,10 @@ describe.skipIf(process.env.RUN_DB_TESTS !== "1")("background extraction of inte
     expect(byModel).toEqual([{ model: "synthetic-test-double", input_tokens_30d: "1234" }]);
     // The chat panel never sees it, and it does not occupy the workspace's one pending-job slot.
     expect((await jobs.latest(ctx.owner.token, ctx.project.id, "RENTAL")).jobs).toHaveLength(0);
-    // It counts against the organization's daily job limit: with a limit of 1, the extraction plus this chat turn is over it.
+    // It does not count against the daily job limit: with a limit of 1, this chat turn is still the first job, so it is accepted.
     const limited = createConsultantJobs(pool, auth, queue, async () => {}, { dailyJobLimit: 1 });
     await expect(limited.enqueue(ctx.owner.token, ctx.project.id, "RENTAL",
-      { kind: "INTERVIEW", expectedRevision: ctx.revision, messageId: ctx.messageId }, randomUUID())).rejects.toMatchObject({ code: "RATE_LIMITED" });
-    expect((await enqueue(ctx)).kind).toBe("INTERVIEW");
+      { kind: "INTERVIEW", expectedRevision: ctx.revision, messageId: ctx.messageId }, randomUUID())).resolves.toMatchObject({ kind: "INTERVIEW" });
   });
 
   it("ignores malformed queue payloads, and awaitExtraction fails closed on timeout", async () => {
