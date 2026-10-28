@@ -28,6 +28,46 @@ describe("discovery workspace model", () => {
     expect(() => applyWorkspaceCommand(state, { type: "CONFIRM" }, meta())).toThrow("WORKSPACE_NOT_READY");
   });
 
+  it("carries the project's modules and org units into a new variant as known, evidenced answers", () => {
+    const state = createWorkspace({ variantCode: "RENTAL", variantName: "Equipment rental", targetProduct: "S4HANA_CLOUD_PRIVATE",
+      targetRelease: null, problemStatement: "Returns are recorded late and bills are disputed.", modules: ["FI", "CO", "MM"],
+      orgUnits: [{ type: "COMPANY_CODE", code: "1000", name: "Shaktiman Pvt Ltd" }, { type: "PLANT", code: "1100", name: "Bhosari" }] }, meta());
+    const source = state.sources.find(s => s.title === "Project details")!;
+    expect(source.kind).toBe("USER_ENTRY");
+    expect(state.sources).toHaveLength(2);
+    const modules = state.facts.find(f => f.id === "modules_in_scope")!, units = state.facts.find(f => f.id === "target_org_units")!;
+    expect(modules).toMatchObject({ status: "KNOWN", value: "FI, CO, MM", acceptedBy: "consultant" });
+    expect(units).toMatchObject({ status: "KNOWN", acceptedBy: "consultant" });
+    expect(units.value).toBe("Company code 1000 Shaktiman Pvt Ltd; Plant 1100 Bhosari");
+    expect(source.text).toContain("SAP modules in scope: FI, CO, MM");
+    expect(source.text).toContain("Planned organisational units: Company code 1000 Shaktiman Pvt Ltd; Plant 1100 Bhosari");
+    for (const fact of [modules, units]) {
+      expect(fact.evidence?.sourceId).toBe(source.id);
+      expect(source.text.includes(fact.evidence!.quote)).toBe(true);
+      expect(fact.evidence!.quote).toBe(fact.value);
+    }
+    const next = applyWorkspaceCommand(state, { type: "SEND_MESSAGE", text: "Returns come back by truck." }, meta());
+    const gaps = buildInterviewInput(next, next.messages.at(-1)!.id).activeGaps.map(g => g.key);
+    expect(gaps).not.toContain("g_modules_in_scope");
+    expect(gaps).not.toContain("g_target_org_units");
+  });
+
+  it("seeds only what the project has: modules alone, org units alone, or neither", () => {
+    const base = { variantCode: "RENTAL", variantName: "Equipment rental", targetProduct: "S4HANA_CLOUD_PRIVATE" as const,
+      targetRelease: null, problemStatement: "Returns are recorded late and bills are disputed." };
+    const fact = (s: WorkspaceState, id: string) => s.facts.find(f => f.id === id)!.status;
+    const only = createWorkspace({ ...base, modules: ["SD"], orgUnits: [] }, meta());
+    expect([fact(only, "modules_in_scope"), fact(only, "target_org_units")]).toEqual(["KNOWN", "EMPTY"]);
+    const units = createWorkspace({ ...base, modules: [], orgUnits: [{ type: "PLANT", code: "1100", name: "Bhosari" }] }, meta());
+    expect([fact(units, "modules_in_scope"), fact(units, "target_org_units")]).toEqual(["EMPTY", "KNOWN"]);
+    for (const none of [createWorkspace(base, meta()), createWorkspace({ ...base, modules: [], orgUnits: [] }, meta())]) {
+      expect(none.sources).toHaveLength(1);
+      expect([fact(none, "modules_in_scope"), fact(none, "target_org_units")]).toEqual(["EMPTY", "EMPTY"]);
+    }
+    expect(() => createWorkspace({ ...base, modules: [""] }, meta())).toThrow("INVALID_WORKSPACE_CREATE");
+    expect(() => createWorkspace({ ...base, orgUnits: [{ type: "BOGUS", code: "1", name: "x" } as never] }, meta())).toThrow("INVALID_WORKSPACE_CREATE");
+  });
+
   it("asks only unanswered catalog gaps, validates model quotes and requires separate acceptance", () => {
     let state = start();
     const messageMeta = meta();

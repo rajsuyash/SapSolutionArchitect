@@ -70,9 +70,13 @@ export const WorkspaceStateSchema = z.strictObject({
 });
 export type WorkspaceState = z.infer<typeof WorkspaceStateSchema>;
 export type WorkspaceMeta = { actorId: string; at: string; id: string };
+const ORG_UNIT_LABELS: Record<string, string> = { COMPANY_CODE: "Company code", PLANT: "Plant", SALES_ORG: "Sales organisation", REGION: "Region" };
 export const WorkspaceCreateSchema = z.strictObject({
   variantCode: z.string().regex(/^[A-Z][A-Z0-9_-]{0,39}$/), variantName: label,
   targetProduct, targetRelease: label.nullable(), problemStatement: text(8000),
+  /** The project's own entries, seeded as known answers; absent or empty seeds nothing. */
+  modules: z.array(label).max(50).optional(),
+  orgUnits: z.array(z.strictObject({ type: z.enum(Object.keys(ORG_UNIT_LABELS) as [string, ...string[]]), code: label, name: label })).max(100).optional(),
 });
 
 const StepValuesSchema = StepSchema.omit({ id: true, evidence: true });
@@ -149,15 +153,26 @@ export function createWorkspace(rawInput: z.infer<typeof WorkspaceCreateSchema>,
   checkMeta(meta);
   const parsed = WorkspaceCreateSchema.safeParse(rawInput);
   if (!parsed.success) fail("INVALID_WORKSPACE_CREATE");
-  const input = parsed.data;
+  const { modules = [], orgUnits = [], ...input } = parsed.data;
   const sourceId = `s_${meta.id}`;
   const source: WorkspaceState["sources"][number] = { id: sourceId, kind: "USER_ENTRY", title: "Initial problem",
     revision: "1", locator: "Initial problem", text: input.problemStatement, createdBy: meta.actorId, createdAt: meta.at };
+  const known = (fieldId: string, value: string, evidence: { sourceId: string; quote: string }) => ({ id: fieldId, status: "KNOWN" as const,
+    value, rationale: null, owner: null, evidence, acceptedBy: meta.actorId, acceptedAt: meta.at });
+  // Existing workspaces are not migrated: only a variant created from now on starts with these answers.
+  const seeded = new Map<string, string>();
+  if (modules.length) seeded.set("modules_in_scope", modules.join(", "));
+  if (orgUnits.length) seeded.set("target_org_units", orgUnits.map(u => `${ORG_UNIT_LABELS[u.type]} ${u.code} ${u.name}`).join("; "));
+  const detailsId = `${sourceId}_project`;
+  const lines = [...seeded].map(([fieldId, value]) => `${fieldId === "modules_in_scope" ? "SAP modules in scope" : "Planned organisational units"}: ${value}`);
+  const sources = [source];
+  if (lines.length) sources.push({ id: detailsId, kind: "USER_ENTRY", title: "Project details", revision: "1",
+    locator: "Project details", text: lines.join("\n"), createdBy: meta.actorId, createdAt: meta.at });
   const facts = WORKSPACE_FIELDS.map(field => field.id === "business_problem"
-    ? { id: field.id, status: "KNOWN" as const, value: input.problemStatement, rationale: null, owner: null,
-      evidence: { sourceId, quote: input.problemStatement }, acceptedBy: meta.actorId, acceptedAt: meta.at }
+    ? known(field.id, input.problemStatement, { sourceId, quote: input.problemStatement })
+    : seeded.has(field.id) ? known(field.id, seeded.get(field.id)!, { sourceId: detailsId, quote: seeded.get(field.id)! })
     : emptyFact(field.id));
-  return checked({ schemaVersion: 1, revision: 1, ...input, sources: [source], messages: [], facts,
+  return checked({ schemaVersion: 1, revision: 1, ...input, sources, messages: [], facts,
     steps: [], stepDrafts: [], requirements: [], requirementDrafts: [], proposals: [], questions: [],
     observations: [], confirmation: null });
 }

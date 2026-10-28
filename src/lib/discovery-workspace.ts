@@ -19,6 +19,7 @@ const conflict = () => new AuthError("WORKSPACE_CONFLICT", 409, "Discovery chang
 type Row = { id: string; revision: number; state: unknown; request_hash: string;
   confirmed_snapshot_id: string | null; created_at: Date };
 type Access = { target_product: WorkspaceState["targetProduct"]; problem_statement: string;
+  modules: string[]; org_units: { type: string; code: string; name: string }[];
   project_role: string; org_role: string; is_demo: boolean };
 export type WorkspaceWorkerArgs = { orgId: string; projectId: string; variantCode: string; requestedBy: string };
 /** `scope` "chat" or "extraction" persists one half of a turn onto the latest revision (the other half, or the user, may
@@ -53,7 +54,9 @@ async function lock(client: PoolClient, orgId: string, projectId: string, varian
 async function access(client: PoolClient, args: WorkspaceWorkerArgs, lockRows = false): Promise<Access> {
   validIdentity(args.projectId, args.variantCode);
   if (!uuid.safeParse(args.orgId).success || !uuid.safeParse(args.requestedBy).success) throw absent();
-  const row = (await client.query<Access>(`SELECT p.target_product,p.problem_statement,p.is_demo,
+  const row = (await client.query<Access>(`SELECT p.target_product,p.problem_statement,p.modules,p.is_demo,
+    COALESCE((SELECT json_agg(json_build_object('type',o.type,'code',o.code,'name',o.name) ORDER BY o.type,o.code)
+      FROM org_units o WHERE o.org_id=p.org_id AND o.project_id=p.id),'[]'::json) AS org_units,
     m.project_role,u.org_role FROM projects p JOIN project_memberships m
     ON m.org_id=p.org_id AND m.project_id=p.id AND m.user_id=$3
     JOIN users u ON u.org_id=m.org_id AND u.id=m.user_id
@@ -189,7 +192,7 @@ export function createDiscoveryWorkspaceRepository(pool: Pool, auth: AuthService
           throw new AuthError("VARIANT_LIMIT", 409, `A project can have at most ${MAX_VARIANTS_PER_PROJECT} process variants.`);
         }
         const state = createWorkspace({ variantCode, ...parsed.data, targetProduct: a.target_product,
-          problemStatement: a.problem_statement }, metadata(user.id));
+          problemStatement: a.problem_statement, modules: a.modules, orgUnits: a.org_units }, metadata(user.id));
         return result(await append(client, args, "CREATE", state, key!, hash), a);
       }),
     command: (token: string | null, projectId: string, variantCode: string, expectedRevision: number,
