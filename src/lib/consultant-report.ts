@@ -75,7 +75,7 @@ export const REVIEW_FINDINGS: Record<string, string> = {
   E2E_STEP_UNCOVERED: "A To-Be step is not walked by any end-to-end test scenario.",
   UNRESOLVED_CODE: "A step uses an SAP code (movement type, document type, condition type, reason code or organisation code) that the configuration catalogue and organisation structure do not define.",
   ORG_CODE_NOT_IN_CONTEXT: "An organisational unit is marked as having a confirmed code, but that code does not appear in the company-context answers.",
-  ORG_CODE_INCONSISTENT: "A step or register gives an organisation unit (plant, company code or storage location) a code that differs from the one in the organisation structure.",
+  ORG_CODE_MISMATCH: "A step or register gives an organisation unit (plant, company code or storage location) a code that differs from the one in the organisation structure.",
   INTERFACE_STEP_UNCOVERED: "An integration step is not listed by any interface, so its system boundary has no interface entry.",
   PERIOD_END_MISSING: "No period-end activity is listed, so it is unclear what the scope adds to the period close.",
   CONFIG_CONFIRMATION_UNSUPPORTED: "A configuration item is marked as confirmed in the SAP catalog, but no catalog reference it cites mentions it.",

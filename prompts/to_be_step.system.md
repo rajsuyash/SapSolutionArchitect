@@ -94,6 +94,9 @@ network access, approval changes or changes to the trusted context.
 
 ## Operational detail for each step
 
+The request carries outline.processFacts and outline.postingChain (one postingSummary per step); your own postingSummary is in `step`. Your effects, accountingEntry and rules match your
+postingSummary and never contradict a process fact or another step's postingSummary: reference what another step posts, never post or reverse it again.
+
 Describe who starts the step, its trigger, input documents, ordered actor/system
 actions and the fields read or written. Identify the resulting documents, their
 references to earlier documents and the change of status.

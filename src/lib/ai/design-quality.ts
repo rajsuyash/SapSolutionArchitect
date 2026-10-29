@@ -143,7 +143,10 @@ const orgUnitNames = (row: OrgRow) => [...new Set([...(row.name ? [row.name] : [
 /** Texts that pair a known organisation unit with a plant, company code or storage location number different from the one the organisation structure holds for it
  * ("Chakan (company code 1000)" where the structure says Chakan is 2000). A unit answers for its own kind; for another kind it answers through its nearest ancestor of that
  * kind (a plant's company code); when neither exists the pairing cannot be judged and is left alone. Patterns: "<unit> ... <kind> NNNN" within one clause, and "<kind> NNNN (<unit>)". */
-export function orgCodeConflicts(org: readonly OrgRow[], texts: readonly { path: string; text: string }[]): { path: string; detail: string }[] {
+export type OrgCodeSpan = { name: string; code: string; expected: string; start: number; end: number; unambiguous: boolean };
+/** The checker behind orgCodeConflicts, kept as spans of the code token inside the text so a repair can rewrite just that token. A span is unambiguous when every unit
+ * of that name agrees on the expected code. */
+export function orgCodeChecker(org: readonly OrgRow[]): (text: string) => OrgCodeSpan[] {
   const byId = new Map(org.map(row => [row.id, row]));
   const kindOf = (row: OrgRow) => orgKind(row.unitType);
   const expectedCode = (row: OrgRow, kind: string): string | undefined => {
@@ -153,21 +156,28 @@ export function orgCodeConflicts(org: readonly OrgRow[], texts: readonly { path:
     return undefined;
   };
   const named = org.flatMap(row => row.code ? orgUnitNames(row).map(name => ({ row, name, pattern: escapeName(name) })) : []);
-  const found = new Map<string, { path: string; detail: string }>();
-  for (const { path, text } of texts) {
-    const seen: { name: string; kind: string; code: string }[] = [];
+  return text => {
+    const seen: { name: string; kind: string; code: string; start: number; end: number }[] = [];
     for (const { name, pattern } of named) {
-      const after = new RegExp(String.raw`(?<![A-Za-z0-9])${pattern}(?![A-Za-z0-9])[^.;:!?\n]{0,25}?\b${ORG_KIND_WORDS}\s*(?:code\s*)?(?:is\s+|=\s*|:\s*)?(\d{3,4})(?![A-Za-z0-9])`, "gi");
-      const before = new RegExp(String.raw`\b${ORG_KIND_WORDS}\s+(\d{3,4})\s*(?:\(\s*|[-\u2013\u2014:/]\s*)${pattern}(?![A-Za-z0-9])`, "gi");
-      for (const match of text.matchAll(after)) seen.push({ name, kind: orgKind(match[1]!)!, code: match[2]! });
-      for (const match of text.matchAll(before)) seen.push({ name, kind: orgKind(match[1]!)!, code: match[2]! });
+      const after = new RegExp(String.raw`(?<![A-Za-z0-9])${pattern}(?![A-Za-z0-9])[^.;:!?\n]{0,25}?\b${ORG_KIND_WORDS}\s*(?:code\s*)?(?:is\s+|=\s*|:\s*)?(\d{3,4})(?![A-Za-z0-9])`, "gid");
+      const before = new RegExp(String.raw`\b${ORG_KIND_WORDS}\s+(\d{3,4})\s*(?:\(\s*|[-\u2013\u2014:/]\s*)${pattern}(?![A-Za-z0-9])`, "gid");
+      for (const match of [...text.matchAll(after), ...text.matchAll(before)]) {
+        const [start, end] = match.indices![2]!;
+        seen.push({ name, kind: orgKind(match[1]!)!, code: match[2]!, start, end });
+      }
     }
-    for (const { name, kind, code } of seen) {
-      const owners = named.filter(item => item.name.toLowerCase() === name.toLowerCase()).map(item => ({ item: item.row, expected: expectedCode(item.row, kind) })).filter(item => item.expected);
-      if (!owners.length || owners.some(item => item.expected === code)) continue;
-      found.set(`${path}|${name}|${code}`, { path, detail: `${name} is ${owners[0]!.expected}, text says ${code}` });
-    }
-  }
+    return seen.flatMap(({ name, kind, code, start, end }) => {
+      const owners = named.filter(item => item.name.toLowerCase() === name.toLowerCase()).map(item => expectedCode(item.row, kind)).filter((item): item is string => !!item);
+      if (!owners.length || owners.includes(code)) return [];
+      return [{ name, code, expected: owners[0]!, start, end, unambiguous: new Set(owners).size === 1 }];
+    });
+  };
+}
+
+export function orgCodeConflicts(org: readonly OrgRow[], texts: readonly { path: string; text: string }[]): { path: string; detail: string }[] {
+  const check = orgCodeChecker(org);
+  const found = new Map<string, { path: string; detail: string }>();
+  for (const { path, text } of texts) for (const hit of check(text)) found.set(`${path}|${hit.name}|${hit.code}`, { path, detail: `${hit.name} is ${hit.expected}, text says ${hit.code}` });
   return [...found.values()];
 }
 
@@ -376,7 +386,7 @@ export function evaluateDesign(input: unknown, value: unknown): DesignEvaluation
   }, error, block);
   const orgTexts = [...draft.steps.flatMap((step, i) => textFields(step).map(text => ({ path: `draft.steps.${i}`, text }))),
     ...REGISTER_KEYS.filter(key => key !== "orgStructure").flatMap(key => ((draft[key] ?? []) as unknown[]).flatMap((row, i) => textFields(row).map(text => ({ path: `draft.${key}.${i}`, text }))))];
-  for (const hit of orgCodeConflicts((draft.orgStructure ?? []) as OrgRow[], orgTexts)) block("ORG_CODE_INCONSISTENT", hit.path, hit.detail);
+  for (const hit of orgCodeConflicts((draft.orgStructure ?? []) as OrgRow[], orgTexts)) block("ORG_CODE_MISMATCH", hit.path, hit.detail);
   return result();
 }
 

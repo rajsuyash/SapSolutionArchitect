@@ -24,3 +24,18 @@ describe("OutlineSchema free-text limits", () => {
     expect(OutlineSchema.safeParse(over).success).toBe(false);
   });
 });
+
+describe("OutlineSchema posting contract", () => {
+  it("tolerates an outline without postingSummary or processFacts (defaults)", () => {
+    const parsed = OutlineSchema.parse(valid());
+    expect(parsed.processFacts).toEqual([]);
+    expect(parsed.steps[0]!.postingSummary).toBe("");
+  });
+  it("limits postingSummary, each fact and the fact count", () => {
+    const withContract = (summary: string, facts: string[]) => ({ ...valid(), processFacts: facts, steps: [{ ...valid().steps[0]!, postingSummary: summary }] });
+    expect(OutlineSchema.safeParse(withContract("x".repeat(200), Array(12).fill("y".repeat(200)))).success).toBe(true);
+    expect(OutlineSchema.safeParse(withContract("x".repeat(201), [])).success).toBe(false);
+    expect(OutlineSchema.safeParse(withContract("no posting", ["y".repeat(201)])).success).toBe(false);
+    expect(OutlineSchema.safeParse(withContract("no posting", Array(13).fill("fact"))).success).toBe(false);
+  });
+});

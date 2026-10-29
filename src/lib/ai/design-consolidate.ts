@@ -1,7 +1,7 @@
 // Deterministic, warn-only consolidation of an assembled To-Be design: what the server can settle without a model call is settled here, so the same
 // finding is not paid for again in a fix round (owners missing from the role catalogue, duplicate status models and configuration rows, KPIs with
 // no plan to obtain a baseline). Every step returns the design it was given (same object) when it has nothing to do, so the whole is idempotent.
-import type { DetailedDesign } from "./design-quality";
+import { orgCodeChecker, type DetailedDesign } from "./design-quality";
 import { norm, overlaps } from "./design-register-types";
 import { NOT_PROVIDED, mergeDuplicateRoles, renameRoleRefs, rewriteStrings } from "./design-registers";
 import { NO_OWNER_YET, OWNER_FIELDS, roleKey } from "./design-registers-v3";
@@ -150,15 +150,49 @@ function addKpiPlans(design: DetailedDesign): Result {
   return warnings.length ? { design: { ...design, kpis: rows }, warnings } : unchanged(design);
 }
 
+/** A text that gives an organisation unit a code other than the organisation structure's has just that code token rewritten to the structure's, when every unit of that name agrees on it. */
+function repairOrgCodes(design: DetailedDesign): Result {
+  const org = design.orgStructure;
+  if (!org?.some(row => row.code)) return unchanged(design);
+  const check = orgCodeChecker(org);
+  const { orgStructure, ...rest } = design;
+  const rewritten = rewriteStrings(rest, text => {
+    const spans = check(text).filter(span => span.unambiguous).sort((a, b) => b.start - a.start);
+    return spans.reduce((out, span, i) => i && spans[i - 1]!.start < span.end ? out : out.slice(0, span.start) + span.expected + out.slice(span.end), text);
+  }, "ORG_CODE_REPAIRED");
+  return rewritten.warnings.length ? { design: { ...rewritten.value, orgStructure } as DetailedDesign, warnings: rewritten.warnings } : unchanged(design);
+}
+
+const HELD_ID = String.raw`(?:[A-Z][A-Za-z0-9]*-)?(?:IQ|OQ)-\d+`;
+const PENDING_HOLD = new RegExp(String.raw`\bPending\s+(${HELD_ID}(?:\s*(?:,|and|&|/)\s*${HELD_ID})*)`, "g");
+const stringsIn = (node: unknown): string[] => typeof node === "string" ? [node] : Array.isArray(node) ? node.flatMap(stringsIn) : node && typeof node === "object" ? Object.values(node).flatMap(stringsIn) : [];
+
+/** A coverage row that says IMPLEMENTED while a step realising that requirement holds the behaviour ("Pending IQ-7 ..." in a rule, action, effect or a test of that requirement)
+ * becomes CONDITIONAL on the cited questions the design registers. Rows already conditional, deferred or rejected are left alone. */
+function holdCoverageOnPendingQuestions(design: DetailedDesign): Result {
+  const registered = new Set(design.openQuestions.map(question => question.id));
+  const warnings: Warning[] = [];
+  const coverage = design.coverage.map((row, i) => {
+    if (row.disposition !== "IMPLEMENTED") return row;
+    const texts = design.steps.filter(step => step.requirementIds.includes(row.requirementId)).flatMap(step =>
+      stringsIn([step.businessRules, step.actions, step.effects, step.acceptanceTests.filter(test => test.requirementIds.includes(row.requirementId))]));
+    const cited = [...new Set(texts.flatMap(text => [...text.matchAll(PENDING_HOLD)].flatMap(match => match[1]!.match(new RegExp(HELD_ID, "g")) ?? [])))].filter(id => registered.has(id));
+    if (!cited.length) return row;
+    warnings.push({ code: "COVERAGE_MADE_CONDITIONAL", path: `draft.coverage.${i}` });
+    return { ...row, disposition: "CONDITIONAL" as const, questionIds: [...new Set([...(row.questionIds ?? []), ...cited])], rationale: `Held pending ${cited.join(", ")}: ${row.rationale}` };
+  });
+  return warnings.length ? { design: { ...design, coverage }, warnings } : unchanged(design);
+}
+
 /** The consolidation run on every assembled design: duplicates merged first (roles, status models, configuration rows), then the rows the merged design lacks added. */
 export function consolidateDesign<T extends DetailedDesign>(design: T): { design: T; warnings: Warning[] } {
   let current: DetailedDesign = design;
   const warnings: Warning[] = [];
-  for (const step of [mergeRoles, mergeStatusModels, mergeConfigRows, addDocumentTypeRows, addOwnerRoles, addKpiPlans]) {
+  for (const step of [mergeRoles, mergeStatusModels, mergeConfigRows, addDocumentTypeRows, addOwnerRoles, addKpiPlans, repairOrgCodes, holdCoverageOnPendingQuestions]) {
     const out = step(current);
     current = out.design; warnings.push(...out.warnings);
   }
   return { design: current as T, warnings };
 }
 
-export { addDocumentTypeRows, addKpiPlans, addOwnerRoles, mergeConfigRows, mergeRoles, mergeStatusModels };
+export { addDocumentTypeRows, addKpiPlans, addOwnerRoles, holdCoverageOnPendingQuestions, mergeConfigRows, repairOrgCodes, mergeRoles, mergeStatusModels };

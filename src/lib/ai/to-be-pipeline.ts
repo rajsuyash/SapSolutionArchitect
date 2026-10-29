@@ -34,13 +34,19 @@ export type Substage = "to_be_outline" | "to_be_step" | "to_be_registers" | "to_
 export const OUTLINE_PURPOSE_MAX_CHARS = 300;
 export const OUTLINE_RATIONALE_MAX_CHARS = 600;
 export const OUTLINE_REASON_MAX_CHARS = 700;
+/** The cross-step contract decided once in the outline: what each step posts, and the facts every step respects. Absent in older outlines (default empty). */
+export const POSTING_SUMMARY_MAX_CHARS = 200;
+export const PROCESS_FACT_MAX_CHARS = 200;
+export const PROCESS_FACTS_MAX = 12;
 const DESIGN_COVERAGE_ROW = DetailedDesignSchema.shape.coverage.element;
 const DESIGN_ELIMINATED_ROW = DetailedDesignSchema.shape.eliminatedAsIsSteps.element;
 
 export const OutlineSchema = z.strictObject({
   schemaVersion: z.literal(1), processName: text,
+  processFacts: z.array(text.max(PROCESS_FACT_MAX_CHARS)).max(PROCESS_FACTS_MAX).default([]),
   steps: list(z.strictObject({
     id, sequence: z.number().int().positive(), title: text, purpose: text.max(OUTLINE_PURPOSE_MAX_CHARS),
+    postingSummary: z.string().trim().max(POSTING_SUMMARY_MAX_CHARS).default(""),
     asIsStepIds: ids, requirementIds: ids, enablesStepIds: DetailedDesignSchema.shape.steps.element.shape.enablesStepIds,
     implementation: z.strictObject({ kind: z.enum(IMPLEMENTATION_KINDS), referenceIds: ids }),
   })).min(1),
@@ -155,15 +161,17 @@ function patchNotes(errors: readonly ValidationIssue[], outline: unknown, input:
  * its ids, links and kinds. Titles, purposes, rationales, questions and the process name are left out, so the repair request still
  * carries none of the model's prose beyond the items it is asked to fix. */
 const OUTLINE_DIGEST = {
-  steps: ["id", "sequence", "asIsStepIds", "requirementIds", "enablesStepIds", "implementation"],
+  steps: ["id", "sequence", "asIsStepIds", "requirementIds", "enablesStepIds", "implementation", "postingSummary"],
   coverage: ["requirementId", "disposition", "stepIds", "decisionId", "decisionIds", "questionIds"],
   openQuestions: ["id", "affectedStepIds", "decisionIds"], eliminatedAsIsSteps: ["asIsStepId"], conflictDecisions: ["conflictId", "decisionId"],
 } as const;
 function outlineDigest(outline: unknown, errors: readonly ValidationIssue[]) {
   if (!isObj(outline)) return {};
   const flagged = new Set(errors.flatMap(error => { const at = locate(error.path); return at ? [`${at.section}.${at.index}`] : []; }));
-  return Object.fromEntries(Object.entries(OUTLINE_DIGEST).map(([section, keys]) => [section, !Array.isArray(outline[section]) ? outline[section]
+  const sections = Object.fromEntries(Object.entries(OUTLINE_DIGEST).map(([section, keys]) => [section, !Array.isArray(outline[section]) ? outline[section]
     : outline[section].map((item, i) => !isObj(item) || flagged.has(`${section}.${i}`) ? item : Object.fromEntries(keys.flatMap(key => key in item ? [[key, item[key]]] : [])))]));
+  // The shared facts stay visible to a patch (a replaced step must still agree with them); they are not patchable.
+  return Array.isArray(outline.processFacts) ? { processFacts: outline.processFacts, ...sections } : sections;
 }
 
 /** Patch model input: the discovery, the catalog slice and the last outline the server checked (see outlineDigest), with the errors and where each one is. */
@@ -299,6 +307,16 @@ export function outlineRequest(input: ToBeInput, references: DesignContext["refe
     validationErrors, ...catalogNote(input, references), ...repairNotes(validationErrors) };
 }
 
+/** The cross-step contract every downstream call receives: the shared facts and one posting line per step. The steps themselves are sent without
+ * postingSummary so it is not said twice. Empty parts are left out (older outlines carry none). */
+function postingContract(outline: Outline) {
+  // `?? []`: an outline stored before the contract existed was never parsed through the defaults.
+  const processFacts = outline.processFacts ?? [];
+  const postingChain = outline.steps.filter(step => step.postingSummary).map(({ id, postingSummary }) => ({ id, postingSummary }));
+  return { steps: outline.steps.map(step => Object.fromEntries(Object.entries(step).filter(([key]) => key !== "postingSummary")) as Omit<OutlineStep, "postingSummary">),
+    contract: { ...(processFacts.length && { processFacts }), ...(postingChain.length && { postingChain }) } };
+}
+
 /** Per-step model input: the frozen outline plus only this step's requirements, the sources they quote, the references it cites. */
 /** A consistency-pass repair: the reviewer's findings about this part in `note`, and the part's present answer, which the model changes as little as it can. */
 export type PartRepair = { note?: string; current: unknown };
@@ -307,12 +325,13 @@ export function stepRequest(input: ToBeInput, references: DesignContext["referen
   const requirements = discovery.requirements.filter(requirement => step.requirementIds.includes(requirement.id));
   const asIsSteps = discovery.asIsSteps.filter(asIs => step.asIsStepIds.includes(asIs.id));
   const sourceIds = new Set([...requirements.map(r => r.evidence.sourceId), ...asIsSteps.map(a => a.evidence.sourceId)]);
+  const { steps: outlineSteps, contract } = postingContract(outline);
   return {
     targetProduct: input.targetProduct, targetRelease: discovery.targetRelease, variantName: discovery.variantName,
     ...(input.sharedRules && { sharedRules: input.sharedRules }),
     ...(input.decisionRegister && { decisionRegister: input.decisionRegister }),
     ...(contextForStep(discovery.companyContext).length && { companyContext: contextForStep(discovery.companyContext) }),
-    outline: { processName: outline.processName, steps: outline.steps,
+    outline: { processName: outline.processName, steps: outlineSteps, ...contract,
       coverage: outline.coverage.filter(item => step.requirementIds.includes(item.requirementId)),
       conflictDecisions: outline.conflictDecisions, openQuestions: outline.openQuestions },
     step, asIsSteps,
@@ -357,11 +376,12 @@ function registerHints(input: ToBeInput, errors: readonly ValidationIssue[]): st
 export function registerRequest(input: ToBeInput, references: DesignContext["references"], outline: Outline, group: RegisterGroup, validationErrors: ValidationIssue[],
   steps?: DetailedDesign["steps"], repair?: PartRepair) {
   const { discovery } = input;
+  const { steps: outlineSteps, contract } = postingContract(outline);
   return {
     group, registerKeys: REGISTER_GROUPS[group],
     targetProduct: input.targetProduct, targetRelease: discovery.targetRelease, variantName: discovery.variantName,
     companyContext: (discovery.companyContext ?? []).map(({ fieldId, label, value }) => ({ fieldId, label, value })),
-    outline: { processName: outline.processName, steps: outline.steps, coverage: outline.coverage, openQuestions: outline.openQuestions },
+    outline: { processName: outline.processName, steps: outlineSteps, ...contract, coverage: outline.coverage, openQuestions: outline.openQuestions },
     requirements: discovery.requirements.map(r => ({ id: r.id, asIsStepId: r.asIsStepId, critical: r.critical, kind: r.kind, statement: r.statement })),
     // The catalog is the largest part of a register request. Scope and governance rows carry no SAP basis, so they are not sent it.
     ...(NO_CATALOG_GROUPS.includes(group) ? {} : { references: references.map(({ id, fitType, capability, objects }) => ({ id, fitType, capability, objects })) }),
@@ -372,13 +392,14 @@ export function registerRequest(input: ToBeInput, references: DesignContext["ref
 }
 
 /** Consistency-pass input: the finished design in compact form, what the business asked for, and the answered company context to check it against. */
-export function reviewRequest(input: ToBeInput, design: DetailedDesign) {
+export function reviewRequest(input: ToBeInput, design: DetailedDesign, outline?: Outline) {
   const { discovery } = input;
   return {
     targetProduct: input.targetProduct, targetRelease: discovery.targetRelease, variantName: discovery.variantName,
     companyContext: (discovery.companyContext ?? []).map(({ fieldId, value }) => ({ fieldId, value })),
     requirements: discovery.requirements.map(r => ({ id: r.id, kind: r.kind, critical: r.critical, statement: r.statement })),
     inputOpenQuestions: discovery.openQuestions.map(({ id, question }) => ({ id, question })),
+    ...(outline && Object.keys(postingContract(outline).contract).length && { processContract: postingContract(outline).contract }),
     design: compactDesign(design),
   };
 }
@@ -678,7 +699,7 @@ async function runLabelledDesign(input: ToBeInput, references: DesignContext["re
     if ((deps.remainingBudget?.() ?? 1) <= REVIEW_MIN_REMAINING) return skip("REVIEW_SKIPPED_BUDGET");
     let found;
     try {
-      const raw = await deps.ask("to_be_review", reviewRequest(input, design));
+      const raw = await deps.ask("to_be_review", reviewRequest(input, design, outline));
       if (raw === TRUNCATED || raw === null) return skip(raw === null ? "REVIEW_NO_PAYLOAD" : OUTPUT_TRUNCATED);
       if (findToolMarkup(raw, "review")) return skip(TOOL_MARKUP_LEAKED);
       const normalized = normalizeToolInput(ReviewSchema, raw, "review");

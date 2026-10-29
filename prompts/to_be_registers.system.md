@@ -19,6 +19,8 @@ step uses, and the business rules with id and condition). The request contains:
 - outline: the frozen outline (processName, every step with id, title, purpose, traced
   As-Is steps and requirement ids, implementation kind and referenceIds), the coverage
   rows and the open questions.
+- outline.processFacts and outline.postingChain (id, postingSummary per step): the process facts and posting chain every register follows. Status models, period-end activities,
+  controls and configuration agree with them and never contradict them.
 - requirements: every requirement (id, asIsStepId, critical, kind, statement).
 - references: the curated SAP catalog for this product and release (id, fitType,
   capability, objects). It is the ONLY source of SAP facts. The groups scope and

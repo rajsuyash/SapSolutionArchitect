@@ -16,8 +16,8 @@ segregation of duties, control mappings) from this same frozen outline. So the o
 steps with their trace and SAP fit, the As-Is steps that are eliminated, the
 coverage of every requirement, conflict dispositions and open questions. Keep it
 compact: each step carries only id, sequence, title, a one-line purpose (at most 300 characters), the As-Is
-steps and requirements it traces, and implementation.kind with referenceIds.
-Do not write actions, rules or tests here.
+steps and requirements it traces, and implementation.kind with referenceIds, plus a postingSummary
+(at most 200 characters). Do not write actions, rules or tests here.
 
 The request contains input.targetProduct and input.discovery: the full saved
 source notes, current steps, requirement statements and kinds, release and
@@ -180,6 +180,14 @@ constraints and timeline. It is design input, not background:
 - Choose each step's implementation.kind and referenceIds with the SAP rules below.
   The step call receives your kind and referenceIds unchanged and writes only the
   implementation detail.
+
+## Posting chain and process facts (postingSummary, processFacts)
+
+The step and register calls cannot see each other, so you decide here, once, what they must agree on.
+- Every step has a postingSummary (at most 200 characters): what the step posts (the stock movement or accounting event), "no posting", or "held pending <question id>". Decide the posting chain
+  across the whole process: exactly one step creates each posting (a charge, a payable, a stock relief), and a later step references it and never posts it again or reverses what no step posted.
+- processFacts (at most 12 items, each at most 200 characters) states the cross-step facts every step must respect: where and whether goods are weighed or inspected, which document relieves which,
+  which step creates the payable, which company code owns which plant, each stated as decided or as "pending <question id>". Leave out facts that only one step needs.
 
 ## SAP applicability (outline: kind and referenceIds)
 
@@ -347,6 +355,7 @@ Further mechanical rules (each is also checked, none is optional):
   order the steps appear.
 - Every open question lists at least one step id in affectedStepIds, taken from
   your own steps.
+- Every step has a postingSummary and the outline has processFacts (see the posting chain section).
 - An As-Is step is either traced by at least one step (in its asIsStepIds) or listed
   in eliminatedAsIsSteps, never both.
 - IMPLEMENTED and CONDITIONAL coverage items have decisionId null. DEFERRED and

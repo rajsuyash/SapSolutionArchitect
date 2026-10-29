@@ -26,7 +26,7 @@ describe("orgCodeConflicts", () => {
   });
 });
 
-describe("ORG_CODE_INCONSISTENT blocker", () => {
+describe("ORG_CODE_MISMATCH blocker", () => {
   const withOrg = (stepText: string): DetailedDesign => {
     const draft = structuredClone(rentalDraftV3);
     draft.orgStructure = [{ ...draft.orgStructure![0]!, ...company, codeStatus: "CODE_CONFIRMED", owner: "Billing clerk" }];
@@ -34,12 +34,12 @@ describe("ORG_CODE_INCONSISTENT blocker", () => {
     return draft;
   };
   const context = { ...rentalContext, companyContext: [{ fieldId: "org", value: "Company code 2000" }] };
-  const found = (draft: DetailedDesign) => evaluateDesign(context, draft).blockers.filter(item => item.code === "ORG_CODE_INCONSISTENT");
+  const found = (draft: DetailedDesign) => evaluateDesign(context, draft).blockers.filter(item => item.code === "ORG_CODE_MISMATCH");
 
   it("blocks a step that states another code for the unit, with the two codes in the detail, and is fixable", () => {
     const draft = withOrg("Chakan (company code 1000) receives the hire order.");
-    expect(found(draft)).toEqual([{ code: "ORG_CODE_INCONSISTENT", path: "draft.steps.0", detail: "Chakan is 2000, text says 1000" }]);
-    expect(FIXABLE_BLOCKERS.has("ORG_CODE_INCONSISTENT")).toBe(true);
+    expect(found(draft)).toEqual([{ code: "ORG_CODE_MISMATCH", path: "draft.steps.0", detail: "Chakan is 2000, text says 1000" }]);
+    expect(FIXABLE_BLOCKERS.has("ORG_CODE_MISMATCH")).toBe(true);
     const { targets } = collectTargets(draft, found(draft));
     expect(targets).toHaveLength(1);
     expect(targets[0]!.part).toEqual({ type: "step", stepId: draft.steps[0]!.id });

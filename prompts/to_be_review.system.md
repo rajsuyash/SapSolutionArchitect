@@ -42,6 +42,8 @@ Report only real problems between parts of this design that a reader would trip 
   model transition that a step rule forbids: CONTRADICTION. A reason code, number range or pricing element named in a step without a configuration row: UNRESOLVED_CODE.
   An owner or approver in any register or step that is not a role in the role catalogue: MISSING_LINK. A storage location, vendor location, plant or other organisation code a step uses that the
   organisation structure neither defines nor lists as to be provided: UNRESOLVED_CODE.
+- processContract (optional, in the request) lists processFacts and the postingChain (one postingSummary per step). Any step or register element that contradicts a process fact or a
+  step's postingSummary (a step posting, reversing or weighing what the contract says another step does or nobody does) is a CONTRADICTION; name both elements in paths.
 - INTERNAL_TERM: text meant for the client uses a working term of the tool that produced the design ("outline", "register call", "step call", "frozen").
 
 ## How to report
