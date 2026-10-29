@@ -137,7 +137,11 @@ async function main() {
     evaluation: valid?.evaluation ?? null, blockers: valid?.evaluation.blockers ?? [], reviewFindings, unresolvedInputQuestions: valid?.unresolvedInputQuestions ?? [],
     metrics: { provider, model, inputTokens: run.inputTokens, outputTokens: run.outputTokens, attempts: run.attempts, durationSeconds: Math.round(run.latencyMs / 100) / 10,
       costUsd: costUsd(config, model, run.inputTokens, run.outputTokens), substages: run.substages },
-    job: { status: valid ? "SUCCEEDED" : "FAILED", error: errorCode ? { code: errorCode, ...(validationIssues.length && { issues: validationIssues }) } : null } }, null, 2));
+    job: { status: valid ? "SUCCEEDED" : "FAILED", error: errorCode ? { code: errorCode, ...(validationIssues.length && { issues: validationIssues }) } : null },
+    // A failed stage has no accepted design: the last assembled draft and the errors it failed with (needs --capture-raw), and the warnings the server settled on the way.
+    ...(!valid && metrics?.lastDraft && { failedDraft: { draft: metrics.lastDraft.design,
+      errors: metrics.lastDraft.errors.map(({ code, path, detail }) => ({ code, path, ...(detail && { detail }) })) } }),
+    ...(!valid && metrics?.warnings?.length && { warnings: metrics.warnings }) }, null, 2));
   console.log(`wrote ${out}`);
   if (errorCode === "AI_PROVIDER_CREDIT") console.error("run-tobe: the provider refused for credit/balance");
   process.exitCode = valid ? 0 : 1;

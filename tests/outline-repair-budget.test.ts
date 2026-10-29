@@ -79,7 +79,7 @@ describe("outline repair budget", () => {
   });
   const calls = async (deps: { maxOutlineRepairs?: number; remainingBudget?: () => number }) => {
     let n = 0;
-    const run = runDesign({ targetProduct: "S4HANA_PRIVATE_CLOUD", discovery: { targetRelease: "2023", requirements: [], asIsSteps: [] } } as never, [], {
+    const run = runDesign({ targetProduct: "S4HANA_PRIVATE_CLOUD", discovery: { targetRelease: "2023", requirements: [], asIsSteps: [], openQuestions: [] } } as never, [], {
       ask: async () => { n++; return { processName: "invalid" }; }, invalid: () => new Error("invalid"), record: () => {}, parallelism: 1, ...deps });
     await expect(run).rejects.toThrow("invalid");
     return n;

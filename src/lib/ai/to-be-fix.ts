@@ -17,7 +17,7 @@ export const FIXABLE_BLOCKERS: ReadonlySet<string> = new Set([
   "CONTROL_UNMAPPED", "UNRESOLVED_CODE", "REPORT_PAIN_POINT_UNCOVERED", "E2E_STEP_UNCOVERED", "INTERFACE_STEP_UNCOVERED", "ROLE_STEP_UNCOVERED",
   "ROLE_ACTOR_UNMATCHED", "SOD_CONFLICT_STEPS", "PERIOD_END_MISSING", "ORG_CODE_NOT_IN_CONTEXT", "KPI_VALUE_IGNORED", "INTERNAL_TERM", "DANGLING_ID_REFERENCE",
   "TRUNCATED_TEXT", "LANGUAGE_FRAGMENT", "STATUS_MODEL_UNCOVERED", "STATUS_TRANSITION_STEP_MISMATCH", "ROLE_OWNER_UNCATALOGUED", "CUTOVER_INTERFACE_UNCOVERED",
-  "REQUIRED_OUTPUT_UNCOVERED", "RULE_RESTATED", "BUILD_REALIZATION_UNLISTED",
+  "REQUIRED_OUTPUT_UNCOVERED", "RULE_RESTATED", "BUILD_REALIZATION_UNLISTED", "UNKNOWN_QUESTION_REFERENCE", "ORG_CODE_INCONSISTENT",
 ]);
 /** Some blockers point at a step but are cleared in a register: the interface, role or report row has to be added there. */
 const GROUP_OF_CODE: Readonly<Record<string, RegisterGroup>> = { INTERFACE_STEP_UNCOVERED: "integration", ROLE_STEP_UNCOVERED: "governance", ROLE_ACTOR_UNMATCHED: "governance" };
@@ -39,6 +39,7 @@ export function blockerPart(blocker: Blocker, design: DetailedDesign): Part | un
 export type FixTarget = { part: Part; blockers: Blocker[]; findingIndexes: number[] };
 /** An open question the text cites that the outline does not hold: `stepIds` are the steps whose text cites it. */
 export type MissingQuestion = { token: string; stepIds: string[] };
+const QUESTION_REF_TEST = /^(?:IQ|[A-Z][A-Z0-9]*-OQ)-\d+/;
 const key = (part: Part) => part.type === "step" ? `step:${part.stepId}` : `group:${part.group}`;
 
 /** The id a DANGLING_ID_REFERENCE blocker names, when it follows the pattern of the design's own open questions (ETO-OQ-5-F1 beside ETO-OQ-1..5): then the question is what
@@ -46,6 +47,7 @@ const key = (part: Part) => part.type === "step" ? `step:${part.stepId}` : `grou
 function missingQuestionToken(blocker: Blocker, design: DetailedDesign): string | undefined {
   const token = blocker.code === "DANGLING_ID_REFERENCE" ? /^(\S+) does not exist/.exec(blocker.detail ?? "")?.[1] : undefined;
   const family = token && idFamily(token);
+  if (token && QUESTION_REF_TEST.test(token)) return undefined; // a question id the text cites that no register holds is a wrong citation of its step (UNKNOWN_QUESTION_REFERENCE)
   return family && design.openQuestions.some(question => idFamily(question.id) === family) ? token : undefined;
 }
 
@@ -131,6 +133,8 @@ export function explainBlocker(blocker: Blocker, design: DetailedDesign, input: 
     case "REQUIRED_OUTPUT_UNCOVERED": return `Required outputs with no report or KPI (${blocker.detail ?? "see the company context"}): add a report or KPI for each, or add an out-of-scope statement that names it.`;
     case "RULE_RESTATED": return `Step ${design.steps[at]?.id ?? "?"} restates a rule of an earlier step (${blocker.detail ?? "?"}): refer to it as "as <rule id>" and write only what differs.`;
     case "BUILD_REALIZATION_UNLISTED": return `Step ${design.steps[at]?.id ?? "?"} names something to build (extension, custom field or logic, report, form, workflow) but is not realised as an extension or integration and no built fit-gap row lists it: set its implementation kind to EXTENSION or INTEGRATION, or reword it as standard.`;
+    case "UNKNOWN_QUESTION_REFERENCE": return `Step ${design.steps[at]?.id ?? "?"} cites open questions that do not exist (${blocker.detail ?? "see the step"}): cite only a listed question id, or remove the reference.`;
+    case "ORG_CODE_INCONSISTENT": return `Text gives an organisation unit a code that differs from the organisation structure (${blocker.detail ?? "see the part"}): use the organisation structure's code everywhere, or, if the text is right, say so as an open point instead of stating two codes.`;
     case "INTERNAL_TERM": return `Client text uses the generation process's working term "${blocker.detail ?? "?"}": reword it in business language.`;
     case "TRUNCATED_TEXT": return `Text that ${blocker.detail ?? "stops early"}: the sentence is not finished, so write it out in full.`;
     case "LANGUAGE_FRAGMENT": return `Text with a fragment that is not English (${blocker.detail ?? "see the part"}): rewrite it in English; SAP terms may stay.`;

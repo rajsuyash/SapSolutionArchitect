@@ -14,6 +14,13 @@ describe("placeholder text", () => {
       expect(junkHits({ steps: [{ id: "S-1", outputDocuments: [value] }] }), value).toEqual([{ path: "draft.steps.0", detail: "placeholder text in field outputDocuments" }]);
     }
   });
+  it("does not flag real SAP field names in a fields list, but still flags unambiguous placeholders there and in free text", () => {
+    const fields = (list: string[]) => junkHits({ steps: [{ id: "S-1", actions: [{ fields: list }] }] });
+    expect(fields(["value", "Text", "Here", "Consignment value"])).toEqual([]);
+    expect(fields(["TBD"])).toEqual([{ path: "draft.steps.0", detail: "placeholder text in field fields" }]);
+    expect(junkHits(step("rule", "TBD"))).toHaveLength(1);
+    expect(junkHits(step("rule", "lorem ipsum dolor sit amet"))).toHaveLength(1);
+  });
   it("flags an id written with a question mark where its number goes, and a bracketed gap marker", () => {
     expect(junkHits(step("addedValue", "The open question ETO-OQ-? covers the release."))).toEqual([{ path: "draft.steps.0", detail: "placeholder in text in field addedValue" }]);
     expect(junkHits(step("addedValue", "Owner is [TBD] until the review."))).toHaveLength(1);

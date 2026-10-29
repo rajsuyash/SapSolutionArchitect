@@ -71,10 +71,14 @@ const schema = z.object({
   // Fix pass: after the review, every fixable heuristic blocker and unresolved review finding that names a step or register group sends that part back once (all findings for
   // the part in one call), at most this many parts (0 = off). It only runs while more than a quarter of the stage budget remains; adding a step through an outline patch needs 40%.
   AI_TO_BE_FIX_MAX_PARTS: whole(8, 0, 20),
+  // Review rounds (1-3): round 1 is the review plus the fix pass above; each further round reads the repaired design again and sends only its NEW findings back to the parts concerned for one more repair,
+  // while the stage budget allows another round (about as much as the first took). 1 = a single review.
+  AI_TO_BE_REVIEW_ROUNDS: whole(2, 1, 3),
   // Output-token ceilings (max_tokens) of the three To-Be request kinds. Reasoning tokens count against them, so a model that
-  // thinks needs room above the visible JSON (outline ~3k, step ~3k, register group ~3.5k tokens without reasoning).
+  // thinks needs room above the visible JSON (outline ~5-6k for 14 steps and 35 requirements, step ~3k, register group ~3.5k tokens without reasoning).
+  // The outline thinks (effort max on OpenRouter) and measured 32k-64k tokens in total on that input, so it starts at 32000: 16000 always burned one truncated call.
   // A call whose answer was cut off or empty is asked again with the ceiling doubled, up to TO_BE_MAX_TOKENS_CAP.
-  AI_TO_BE_OUTLINE_MAX_TOKENS: whole(16000, 1000, TO_BE_MAX_TOKENS_CAP),
+  AI_TO_BE_OUTLINE_MAX_TOKENS: whole(32000, 1000, TO_BE_MAX_TOKENS_CAP),
   AI_TO_BE_STEP_MAX_TOKENS: whole(8000, 1000, TO_BE_MAX_TOKENS_CAP),
   AI_TO_BE_REGISTERS_MAX_TOKENS: whole(8000, 1000, TO_BE_MAX_TOKENS_CAP),
   // Stages run with model reasoning off (DeepInfra and OpenRouter; `thinking: {type: "disabled"}`). Empty = every stage keeps default reasoning.
@@ -82,6 +86,9 @@ const schema = z.object({
   // OpenRouter only: reasoning effort sent as `output_config: {effort}` (OpenRouter maps it to its unified reasoning.effort); "none" sends
   // thinking disabled. Unset = "max" (OpenRouter accepts max, xhigh, high, medium, low, minimal, none). Ignored by the other providers.
   AI_REASONING_EFFORT: z.preprocess(blankToUndefined, z.enum(REASONING_EFFORTS).optional()),
+  // OpenRouter, and DeepInfra with a DeepSeek model (sent as thinking.budget_tokens: low 4000, medium 12000, high 24000, max 48000), optional: effort for the to_be_outline substage alone, used while AI_REASONING_EFFORT is unset (an explicit AI_REASONING_EFFORT
+  // wins for every call). Unset = "max". Reasoning tokens count against max_tokens, so a lower effort keeps the outline under its ceiling; "none" sends thinking disabled.
+  AI_OUTLINE_REASONING_EFFORT: z.preprocess(blankToUndefined, z.enum(REASONING_EFFORTS).optional()),
   AI_FAULT_INJECTION: z.string().regex(
     /^(problem_analysis|as_is|gap|to_be|change_doc|blueprint_narrative):(timeout|invalid|error)(:once)?$/,
   ).optional(),

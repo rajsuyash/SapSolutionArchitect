@@ -100,9 +100,13 @@ references to earlier documents and the change of status.
 
 If the step's outline says it dispatches, bills, receives or posts, its actions must
 include that posting or document creation and its effects the accounting entry.
+A rule that rejects, scraps, blocks or returns goods must state the stock and accounting posting it causes, or point to the step that posts it, or hold it
+pending the question that decides it (quarantine, scrap and rejection are not "no effect" by default). A report or output the step is named as producing
+needs its data created by this step's actions.
 
 Express each business rule as a condition and observable response. Cover applicable
-approval and reapproval triggers, partial processing, rejected/blocked transactions,
+approval and reapproval triggers (every approval states its level(s), the approver role taken from the step actors or companyContext, and the threshold, or cites
+the open question or decision that sets them and still names the interim approver), partial processing, rejected/blocked transactions,
 cancellation/correction, duplicate execution and handoffs. Do not manufacture an
 exception solely to fill a field; give a reason if none applies.
 
@@ -159,6 +163,9 @@ from on-hand stock. An exclusion of one cost category is not permission to
 exclude every other category. Unknown cost allocation must remain unknown,
 not become zero cost or a claimed final margin.
 
+A rule held on an open question (an inputOpenQuestions item, shown as IQ-n, or an outline question) is held everywhere in the step: the coverage the step
+supports is conditional on it, so no effect, test or implementation detail may state the held behaviour as settled.
+
 Normal-path tests must include all approved-policy prerequisites required by
 the corresponding action, including accounting and allocation when relevant.
 Also test the unresolved-policy hold, missing data, and recovery path. Verify
@@ -185,7 +192,8 @@ their requirementIds empty.
   receipt / invoice receipt clearing, project work in progress, customer receivable, revenue) or the account-determination key the cited reference names, and the
   document that carries the posting. When the step posts nothing, write "None: " and the reason. Never write a G/L account number, a tax rate or a posting rule
   that no source, reference or companyContext gives. When the policy is open, write "Pending " followed by the open question or decision id and what it must
-  decide; then the step holds the posting until it is answered. effects.financial still describes the business effect; the entry is the accounting side of it.
+  decide, and still name the debit and credit categories it would post once decided; then the step holds the posting until it is answered. A step that scraps,
+  writes off, removes or returns stock states its entry too (never an empty field). effects.financial still describes the business effect; the entry is the accounting side of it.
 - Cite only ids that exist. A step, business rule, acceptance test, open question or decision id written inside any text
   must be an id of the outline, of your own rules and tests, or of the decision register, spelled exactly as it is there; an id that does not
   exist is rejected (DANGLING_ID_REFERENCE). To refer to something you have no id for, describe it in words.
@@ -193,9 +201,11 @@ their requirementIds empty.
   organisation) only when a reference, companyContext or a source gives it. The registers list every code you use (the configuration catalogue and the
   organisation structure), and a code that no register defines is raised as a finding against this step. A thing the business has not named by code is
   described by its name and left for the business to provide.
+  Every storage location, vendor location, plant or other organisation code the step uses must be one the organisation structure defines or lists as
+  BUSINESS_TO_PROVIDE; where it is not given, name the unit in words and do not coin a code.
 - A system boundary is a step to be seen. When the step sends or receives a message from a retained system or external party (an order, a delivery
-  confirmation, a proof of delivery, a payment advice), name that party as the system of the action and say what is exchanged; an interface register row
-  is written for each such exchange.
+  confirmation, a proof of delivery, a payment advice, even a file upload or a manual portal entry), name that party as the system of the action and say what is
+  exchanged, and state how a failed exchange is seen, who is alerted and how it is safely redone without duplicating; an interface register row is written for each.
 - implementation.detail is at most 600 characters: the concrete SAP objects from the cited references, the one custom element if any, and the validation
   points. No history, no restating the step, no list of everything the reference says.
 - Everything you write is read by the client. Never use the vocabulary of this process: not "the outline", "register call", "step call", "frozen",
@@ -212,8 +222,10 @@ their requirementIds empty.
   120-day ageing bucket) is written as a proposal that needs validation ("Proposed: ..., to be validated by <role>") or held on an open question, never stated as policy.
   Re-read each sentence the way the client will: no garbled or half-finished phrase, one term for one thing.
 - Document status. A status you describe is set by the action that sets it: attribute "goods issued", "in transit" or "billed" to the step whose action performs it,
-  and say in this step only the status change this step makes. A document this step outputs that has a lifecycle (delivery, advance shipping notice, billing or
+  and say in this step only the status change this step makes; a cancellation or reversal this step allows must agree with every rule of this and the other steps that forbids it. A document this step outputs that has a lifecycle (delivery, advance shipping notice, billing or
   credit-memo request, e-way bill, scheduling agreement) is listed in outputDocuments, because the document status models are built from it.
+  Where a step introduces a lifecycle document (gate clearance, payment proposal, outbound delivery, credit note), either its statuses are stated in the step or the
+  step says the standard SAP status is used; every such document type is also a configuration item (a document type) for the business or the catalog to confirm.
 - Variants. When the outline says this step is a variant of another step's flow (for example a return to the issuing plant versus a direct return to another
   plant), do not restate what the flow shares: refer to the other step by its id ("same handling as step <id> for ...", or "as <rule id>" when you know a rule id) and
   write in full only what differs. A business rule that repeats an earlier step's is raised as a finding against this step.
@@ -367,7 +379,8 @@ Step type and phase are checked mechanically:
 - phase is exactly "Phase 1" (live at go-live), "Phase 2", "Phase 3" and so on, or
   "Deferred". Use "Phase 1" unless companyContext (timeline, scope) or an open question
   says the step comes later. Any value other than "Phase 1" needs interimProcess: one or
-  two sentences on what the business does meanwhile. For "Phase 1" interimProcess is null.
+  two sentences on what the business does meanwhile. For "Phase 1" interimProcess is null, unless the step is not live at some site: it then names those sites and the interim process there.
+  Every step states in its rules the site(s) it applies to.
 - actor is a role (never a person's name), written the same way in every step where
   that role acts, because a role catalogue is built from the actors.
 

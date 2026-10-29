@@ -15,7 +15,7 @@ reports, end-to-end tests, document status models, configuration catalogue, role
 segregation of duties, control mappings) from this same frozen outline. So the outline must be complete and consistent on its own: the
 steps with their trace and SAP fit, the As-Is steps that are eliminated, the
 coverage of every requirement, conflict dispositions and open questions. Keep it
-compact: each step carries only id, sequence, title, a one-line purpose, the As-Is
+compact: each step carries only id, sequence, title, a one-line purpose (at most 300 characters), the As-Is
 steps and requirements it traces, and implementation.kind with referenceIds.
 Do not write actions, rules or tests here.
 
@@ -131,6 +131,10 @@ constraints and timeline. It is design input, not background:
   visible as a review blocker; do not use it for designed behaviour that merely
   awaits a policy value, and do not hide a partial design behind IMPLEMENTED and a
   hedging rationale.
+- Coverage, key design decisions and fit-gap must agree with the holds. A requirement whose rule or action is held pending an input open question
+  (IQ-n) or an outline open question, where the held part is the requirement's behaviour itself (for example whether a posting or issue is allowed),
+  is CONDITIONAL with that question in questionIds and named in the rationale, never IMPLEMENTED. A key design decision whose option an open
+  question still leaves undecided stays a proposal with its options and cites that question; it never states the option as chosen.
 - A future-phase option still needs a bounded proposed design, prerequisites
   and meaningful acceptance criteria if its coverage is IMPLEMENTED. Merely
   saying it is unavailable now does not describe or test the future capability.
@@ -147,11 +151,17 @@ constraints and timeline. It is design input, not background:
 - Every pain point (requirement of kind PAIN_POINT) and every output in companyContext.required_outputs must be something the design can show or measure
   later: either a step produces the data for a report or KPI, or the scope excludes it, in which case raise an open question that asks whether it is out
   of scope so the registers can record the exclusion with its reason. Do not leave one silently unaddressed.
+  A report or analysis the process needs (for example a margin by part) needs a producing step whose actions create its data, or is excluded as above
+  with its pain point named.
 - Every document, posting or status that a step consumes or a rule relies on must be
   created or posted by an earlier (or the same) step, or be stated as coming from an
   external party or retained system. A dispatch step posts the goods issue and a billing
   step creates the billing document before any step uses them; likewise a goods receipt
   before invoice verification, a journal posting before reconciliation.
+  A business rule that rejects, scraps or blocks goods needs a step that posts that stock or financial movement, or says the posting is held on a named question.
+  A step purpose also says which site(s) and phase it applies to when not every site at go-live, and each approval's approver role, so the step calls can state interim processes and levels.
+  A lifecycle document a step introduces (gate clearance, payment proposal, outbound delivery, credit note) is stated in the purpose, so that a status
+  model (or the standard SAP status) and a document-type entry can be written for it.
 - List in requirementIds only the requirements the step genuinely implements, each
   belonging to one of the step's asIsStepIds. Every supplied requirement must end
   up in coverage exactly once, and every implemented one on exactly the steps that

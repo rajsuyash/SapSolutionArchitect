@@ -63,7 +63,7 @@ describe("detailed generation protocol", () => {
     expect(h.sent.slice(1).map(body => body.tools[0]!.name)).toEqual(["submit_to_be_step", "submit_to_be_step", "submit_to_be_step"]);
     expect(h.sent[0]!.tool_choice).toEqual({ type: "auto", disable_parallel_tool_use: true });
     expect(result.payload.design).toEqual(rentalDraftV3);
-    expect(result.payload.unresolvedInputQuestions).toEqual(input.discovery.openQuestions);
+    expect(result.payload.unresolvedInputQuestions).toEqual(input.discovery.openQuestions.map((question, i) => ({ ...question, label: `IQ-${i + 1}` })));
     expect(result.payload.evaluation).toMatchObject({ structurallyValid: true, reviewStatus: "BLOCKED",
       blockers: expect.arrayContaining([{ code: "INPUT_QUESTION_UNRESOLVED", path: "input.openQuestions.0" }]) });
     // One outline call plus one call per step (3), each reported as 100 in / 200 out.
@@ -87,8 +87,8 @@ describe("detailed generation protocol", () => {
     if (kind === "unverified SAP") wrong.steps[0]!.implementation = { kind: "STANDARD", detail: "Claimed standard", referenceIds: [] };
     const h = harness(() => response(wrong, kind === "truncated" ? "max_tokens" : kind === "no tool" ? "end_turn" : "tool_use",
       kind === "wrong tool" ? "other_tool" : "submit_to_be"));
-    // First answer plus two outline repairs; a cut-off outline is also asked twice more with its ceiling doubled (16000, 32000, 64000), which costs no repair.
-    const calls = kind === "truncated" ? 5 : 3;
+    // First answer plus two outline repairs; a cut-off outline is also asked twice more with its ceiling doubled (32000, 64000), which costs no repair.
+    const calls = kind === "truncated" ? 4 : 3;
     await expect(h.generate(fixture())).rejects.toMatchObject({ code: "AI_INVALID_OUTPUT", metrics: { attempts: calls } });
     expect(h.sent).toHaveLength(calls);
   });

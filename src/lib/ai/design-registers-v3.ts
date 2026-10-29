@@ -34,12 +34,20 @@ export function buildTypeOf(text: string): { type: string } | null {
   return null;
 }
 const LIFECYCLE_DOCUMENT = /\b(?:order|delivery|shipment|asn|advance shipping notice|credit memo|debit memo|invoice|billing (?:document|request)|e-?way bill|scheduling agreement|contract|quotation|requisition|reservation|claim)s?\b/i;
-const OWNER_FIELDS: readonly (readonly [register: string, field: string])[] = [["keyDesignDecisions", "owner"], ["fitGap", "owner"], ["orgStructure", "owner"],
+export const OWNER_FIELDS: readonly (readonly [register: string, field: string])[] = [["keyDesignDecisions", "owner"], ["fitGap", "owner"], ["orgStructure", "owner"],
   ["masterDataPrerequisites", "owner"], ["interfaces", "errorOwner"], ["kpis", "owner"], ["cutover", "owner"], ["periodEndActivities", "owner"], ["configurationCatalogue", "owner"]];
 /** An owner that says nobody is named yet is an open item, not a role. */
-const NO_OWNER_YET = /^(?:to be (?:confirmed|assigned|nominated|named)|tbd|not (?:provided|assigned|named)|the business|business (?:to|must))/i;
-/** A role name compared without case, punctuation or spacing, so "Plant Head Chakan" and "Plant head, Chakan" are one role. */
-const roleKey = (value: string) => value.toLowerCase().replace(/[^\p{L}\p{M}\p{N}]+/gu, "");
+export const NO_OWNER_YET = /^(?:to be (?:confirmed|assigned|nominated|named)|tbd|not (?:provided|assigned|named)|the business|business (?:to|must))/i;
+const ROLE_STOPWORDS = new Set(["of", "the", "and", "at"]);
+/** A role name compared without case, punctuation, word order or filler words, so "Plant Head Chakan", "Plant head, Chakan" and "Chakan plant head" (and "Chakan store keeper" / "Store keeper, Chakan") are one role. */
+/** Abbreviations read as the words they stand for before role names are compared, so "AP clerk" and "Accounts payable clerk" are one role. Ambiguous ones (MM, FI) are left out. */
+const ROLE_ABBREVIATIONS: Readonly<Record<string, string>> = { ap: "accounts payable", ar: "accounts receivable", qa: "quality assurance", qc: "quality control", gm: "general manager",
+  md: "managing director", cfo: "chief financial officer", hod: "head of department", mgr: "manager", exec: "executive", supvr: "supervisor", supv: "supervisor" };
+export const roleKey = (value: string) => {
+  const words = value.toLowerCase().split(/[^\p{L}\p{M}\p{N}]+/u).filter(Boolean).flatMap(word => (ROLE_ABBREVIATIONS[word] ?? word).split(" "));
+  const kept = words.filter(word => !ROLE_STOPWORDS.has(word));
+  return [...new Set(kept.length ? kept : words)].sort().join(" ");
+};
 const wordSet = (value: string) => new Set(norm(value).split(/[^\p{L}\p{M}\p{N}]+/u).filter(Boolean));
 const MIN_RULE_WORDS = 8, RULE_SIMILARITY = 0.85, MAX_LISTED = 5;
 const similar = (a: Set<string>, b: Set<string>) => { const shared = [...a].filter(word => b.has(word)).length; return shared / (a.size + b.size - shared) >= RULE_SIMILARITY; };

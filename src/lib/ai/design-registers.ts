@@ -1,9 +1,9 @@
 import { z } from "zod";
 import { FIT_TYPES, basis, id, ids, list, text, trace } from "./design-primitives";
-import { mentionsSubject, norm, overlaps, type RegisterContext, type Report, type Row } from "./design-register-types";
+import { norm, overlaps, type RegisterContext, type Report, type Row } from "./design-register-types";
 import {
   ConfigurationItemSchema, ControlMappingSchema, DocumentStatusModelSchema, EndToEndTestSchema, ObjectiveSchema, ReportRowSchema, RoleSchema,
-  BUILT_CLASSES, PeriodEndActivitySchema, ScopeStatementSchema, SodAssessmentSchema, checkVersion3, fitGapExtension, interfaceExtension, kpiExtension, masterDataExtension, orgExtension,
+  BUILT_CLASSES, OWNER_FIELDS, PeriodEndActivitySchema, ScopeStatementSchema, SodAssessmentSchema, buildTypeOf, checkVersion3, roleKey, fitGapExtension, interfaceExtension, kpiExtension, masterDataExtension, orgExtension,
 } from "./design-registers-v3";
 
 export type { RegisterContext } from "./design-register-types";
@@ -14,6 +14,8 @@ export type { RegisterContext } from "./design-register-types";
 export const FIT_CLASSES = ["STANDARD", "CONFIGURATION", "STANDARD_INTEGRATION", "KEY_USER_EXTENSION", "SIDE_BY_SIDE_BTP", "CLASSIC_RICEFW", "MANUAL_WORKAROUND"] as const;
 export const RICEFW_TYPES = ["REPORT", "INTERFACE", "CONVERSION", "ENHANCEMENT", "FORM", "WORKFLOW"] as const;
 export const NOT_PROVIDED = "not provided";
+/** A KPI value that says nothing is provided: exactly "not provided", or "not provided — <plan to obtain it>" (see addKpiPlans). Compared normalised. */
+export const isNotProvided = (value: string) => { const claimed = norm(value); return claimed === NOT_PROVIDED || claimed.startsWith(`${NOT_PROVIDED} — `); };
 
 /** The fields version 3 adds to a version 2 row are required when the model answers and optional when a stored design is read. */
 const optionally = <T extends z.ZodRawShape>(shape: T) =>
@@ -97,13 +99,126 @@ type Draft = { schemaVersion: 1 | 2 | 3 } & { [K in RegisterKey]?: unknown[] };
 export const segments = (value: string, needsDigit = false) => value.split(/\r?\n|;/).map(norm).filter(part =>
   part.length >= 3 && !part.endsWith(":") && (!needsDigit || /\d/.test(part)));
 
-/** A KPI value must sit inside ONE line/semicolon item of the answer and speak only of this KPI's measure: pasting the whole answer (or its other
- * comma-separated figures) onto every KPI is not a figure for the measure. A leading "label:" is ignored when judging relevance. */
-const isAboutMeasure = (claimed: string, source: string, subject: string) => {
-  if (!segments(source).some(part => part.includes(claimed))) return false;
-  const items = claimed.replace(/^[^:,;]{1,40}:\s*/, "").split(/[,;]/).map(item => item.trim()).filter(Boolean);
-  return items.length > 0 && items.every(item => mentionsSubject(subject, item, true));
+/** Units, time words and generic business nouns: they say nothing about WHICH measure a sentence is about ("customers pay 60-90 days" is not a baseline for every day-count KPI). */
+const GENERIC_KPI_WORDS = new Set(["days", "day", "working", "period", "count", "counts", "share", "number", "numbers", "percent", "percentage", "value", "values", "total", "within", "month", "months", "monthly", "week", "weeks", "weekly",
+  "quarter", "quarterly", "year", "yearly", "annual", "rate", "rates", "time", "times", "older", "than", "from", "with", "that", "this", "over", "under", "open", "closed", "late", "often", "later", "average", "daily", "hours", "end",
+  "receipt", "receipts", "invoice", "invoices", "payment", "payments", "paid", "order", "orders", "document", "documents", "report", "reports", "finance", "business", "process", "flow", "carrying", "carried", "billed", "need", "needs", "must", "pending"]);
+const kpiSubjectStems = (value: string) => new Set((norm(value).match(/[a-z]{4,}/g) ?? []).filter(word => !GENERIC_KPI_WORDS.has(word)).map(word => word.slice(0, 5)));
+/** True when `text` shares a distinctive content word (stem of 4+ letters, not a unit/time/generic business word) with the KPI's NAME. A name with no distinctive word proves nothing. */
+const sharesKpiSubject = (name: string, text: string) => {
+  const wanted = kpiSubjectStems(name);
+  if (!wanted.size) return true;
+  const have = kpiSubjectStems(text);
+  return [...wanted].some(stem => have.has(stem));
 };
+/** A target is verbatim when it sits inside ONE segment of the answer and does not paste two or more of that segment's comma-separated figures at once. No relevance to the KPI's name is asked. */
+const isVerbatimTarget = (claimed: string, source: string) => segments(source).some(part => part.includes(claimed)
+  && part.replace(/^[^:,;]{1,40}:\s*/, "").split(",").map(item => item.trim()).filter(item => item.length >= 3 && claimed.includes(item)).length < 2);
+const stripEnumerator = (value: string) => value.replace(/^\s*\(\d+\)\s*/, "");
+
+/** A KPI value must sit inside ONE line/semicolon item of the answer and speak only of this KPI's measure: pasting the whole answer (or its other
+ * comma-separated figures) onto every KPI is not a figure for the measure. A leading "label:" or "(6)" is ignored when judging relevance. `name` is the KPI's name. */
+const isAboutMeasure = (claimed: string, source: string, name: string) => {
+  if (!segments(source).some(part => part.includes(claimed))) return false;
+  const items = stripEnumerator(claimed).replace(/^[^:,;]{1,40}:\s*/, "").split(/[,;]/).map(item => item.trim()).filter(Boolean);
+  return items.length > 0 && items.every(item => sharesKpiSubject(name, item));
+};
+
+/** A KPI baseline/target is a copy task, so the server settles it instead of failing the design: a value that is "not provided", or that already passes both KPI checks,
+ * stays; any other becomes the first line/semicolon item of the company-context answer that is about the KPI's own measure, else "not provided". Never invents text.
+ * Each replacement is reported as a KPI_VALUE_NORMALISED warning (code and path only). */
+export function normaliseKpiRows<T extends { name: string; measuredFrom: string; baseline: string; target: string }>(
+  kpis: readonly T[], companyContext: readonly { fieldId: string; value: string }[], basePath = "draft.kpis"): { rows: T[]; warnings: { code: string; path: string }[] } {
+  const known = new Map(companyContext.map(item => [item.fieldId, item.value]));
+  const warnings: { code: string; path: string }[] = [];
+  const itemsOf = (source: string) => source.split(/\r?\n|;/).map(item => stripEnumerator(item.trim()).replace(/^[^:,;]{1,40}:\s*(?=\S)/, ""));
+  const settle = (value: string, source: string | undefined, subject: string) => {
+    const claimed = norm(value);
+    if (isNotProvided(claimed)) return value;
+    if (source !== undefined && norm(source).includes(claimed) && isAboutMeasure(claimed, source, subject)) return value;
+    return source === undefined ? NOT_PROVIDED : itemsOf(source).find(item => segments(item).length > 0 && isAboutMeasure(norm(item), source, subject)) ?? NOT_PROVIDED;
+  };
+  const baselines = kpis.map(row => settle(row.baseline, known.get("kpi_baselines"), row.name));
+
+  // A target is a verbatim single segment (or a contiguous part of one) of kpi_targets and needs no relevance test ("close in 5 days" stays on a "Job-work flow close" KPI);
+  // the same text is never the target of two KPIs. A KPI left with "not provided" takes an unused segment that is about its own measure.
+  const targetSource = known.get("kpi_targets");
+  const used: string[] = [];
+  const isUsed = (text: string) => used.some(item => text.includes(item) || item.includes(text));
+  const targets = kpis.map(row => {
+    const claimed = norm(row.target);
+    if (isNotProvided(claimed)) return row.target;
+    if (targetSource !== undefined && isVerbatimTarget(claimed, targetSource)) { if (isUsed(claimed)) return NOT_PROVIDED; used.push(claimed); return row.target; }
+    const found = targetSource === undefined ? undefined : itemsOf(targetSource).find(item => segments(item).length > 0 && !isUsed(norm(item)) && isAboutMeasure(norm(item), targetSource, row.name));
+    if (found) used.push(norm(found));
+    return found ?? NOT_PROVIDED;
+  });
+  if (targetSource !== undefined) targets.forEach((target, i) => {
+    const name = kpis[i]!.name;
+    if (!isNotProvided(target) || kpiSubjectStems(name).size === 0) return;
+    const found = itemsOf(targetSource).find(item => segments(item).length > 0 && !isUsed(norm(item)) && isAboutMeasure(norm(item), targetSource, name));
+    if (found) { used.push(norm(found)); targets[i] = found; }
+  });
+  const rows = kpis.map((row, i) => {
+    const baseline = baselines[i]!, target = targets[i]!;
+    if (baseline !== row.baseline) warnings.push({ code: "KPI_VALUE_NORMALISED", path: `${basePath}.${i}.baseline` });
+    if (target !== row.target) warnings.push({ code: "KPI_VALUE_NORMALISED", path: `${basePath}.${i}.target` });
+    return baseline === row.baseline && target === row.target ? row : { ...row, baseline, target };
+  });
+  return { rows, warnings };
+}
+
+type Warning = { code: string; path: string };
+type RoleRow = { id: string; name: string; responsibilities: string; stepIds: string[] };
+
+/** Roles whose names are one role (roleKey) become the first of them: its id and name stay, its step ids are the union and a responsibility the first does not already say is appended.
+ * Every reference to a dropped id (SoD roleIds, control mappings carry none) is rewritten to the kept id, and `renames` lists the dropped name variants (exact strings) for the caller to rewrite
+ * where roles are named in other registers or steps. One ROLE_MERGED warning per dropped row (code and path only). Rows with distinct names are returned untouched. */
+export function mergeDuplicateRoles<G extends { roles: RoleRow[]; sodAssessments: { roleIds: string[] }[] }>(group: G, basePath = "draft"):
+  { value: G; warnings: Warning[]; renames: Map<string, string> } {
+  const kept = new Map<string, RoleRow>(), idMap = new Map<string, string>(), renames = new Map<string, string>(), warnings: Warning[] = [];
+  group.roles.forEach((role, i) => {
+    const first = kept.get(roleKey(role.name));
+    if (!first) { kept.set(roleKey(role.name), role); return; }
+    idMap.set(role.id, first.id);
+    if (role.name !== first.name) renames.set(role.name, first.name);
+    warnings.push({ code: "ROLE_MERGED", path: `${basePath}.roles.${i}` });
+    const known = norm(first.responsibilities);
+    kept.set(roleKey(role.name), { ...first, stepIds: [...new Set([...first.stepIds, ...role.stepIds])],
+      responsibilities: role.responsibilities && !known.includes(norm(role.responsibilities)) ? `${first.responsibilities.replace(/\s+$/, "")} ${role.responsibilities}` : first.responsibilities });
+  });
+  if (!warnings.length) return { value: group, warnings, renames };
+  const roles = [...kept.values()];
+  const sodAssessments = group.sodAssessments.map(row => row.roleIds.some(roleId => idMap.has(roleId))
+    ? { ...row, roleIds: [...new Set(row.roleIds.map(roleId => idMap.get(roleId) ?? roleId))] } : row);
+  return { value: { ...group, roles, sodAssessments }, warnings, renames };
+}
+
+const OWNER_KEYS = new Set(["actor", "owner", "errorOwner", ...OWNER_FIELDS.map(([, field]) => field)]);
+/** Rewrites a dropped role-name variant to the kept name wherever a role is named by an actor or owner field (exact string match only), without touching the input. */
+export function renameRoleRefs<T>(value: T, renames: ReadonlyMap<string, string>): T {
+  if (!renames.size) return value;
+  const walk = (node: unknown, owned: boolean): unknown => {
+    if (typeof node === "string") return owned ? renames.get(node) ?? node : node;
+    if (Array.isArray(node)) return node.map(item => walk(item, owned));
+    if (node && typeof node === "object") return Object.fromEntries(Object.entries(node).map(([key, item]) => [key, walk(item, OWNER_KEYS.has(key) || key === "owners")]));
+    return node;
+  };
+  return walk(value, false) as T;
+}
+
+/** A built fit-gap row (key-user extension, side-by-side or classic development) with no RICEFW type takes the type its own justification names (a form, a custom report, a workflow, ...),
+ * with a RICEFW_TYPE_INFERRED warning; a justification that names none stays as it is for the model to fix. */
+export function inferRicefwTypes<T extends { classification: string; ricefwType: string | null; justification: string }>(rows: readonly T[], basePath = "draft.fitGap"): { rows: T[]; warnings: Warning[] } {
+  const warnings: Warning[] = [];
+  const out = rows.map((row, i) => {
+    const found = !row.ricefwType && BUILT_CLASSES.includes(row.classification) ? buildTypeOf(row.justification) : null;
+    if (!found) return row;
+    warnings.push({ code: "RICEFW_TYPE_INFERRED", path: `${basePath}.${i}` });
+    return { ...row, ricefwType: found.type };
+  });
+  return { rows: out, warnings };
+}
 
 /** Words that say nothing about WHICH system is meant (generic IT nouns and the verbs of "X stays, Y is replaced"). */
 const GENERIC_SYSTEM_WORDS = new Set(["system", "systems", "sap", "tool", "tools", "app", "apps", "application", "applications", "package", "packages", "the", "and", "with", "data",
@@ -124,6 +239,13 @@ export function checkRegisters(draft: Draft, ctx: RegisterContext, error: Report
   const rows = (key: RegisterKey) => (draft[key] ?? []) as (Row & Record<string, unknown>)[];
   const known = new Map(ctx.companyContext.map(item => [item.fieldId, item.value]));
   const dup = (values: string[], path: string, code: string) => { if (new Set(values).size !== values.length) error(code, path); };
+
+  // A step cites an open question (ETO-OQ-4, IQ-7) that is in no register: a blocker the step's fix pass clears, never an error.
+  const questionIds = [...ctx.takenIds].filter(item => new RegExp(QUESTION_REF.source).test(item));
+  (ctx.steps ?? []).forEach((step, i) => {
+    const missing = [...new Set((step.texts ?? []).flatMap(text => [...text.matchAll(QUESTION_REF)].map(hit => hit[0])))].filter(token => !ctx.takenIds.has(token));
+    if (missing.length) block("UNKNOWN_QUESTION_REFERENCE", `draft.steps.${i}`, `${missing.slice(0, 5).join(", ")} ${missing.length > 1 ? "do" : "does"} not exist; valid question ids: ${questionIds.slice(0, 12).join(", ") || "none"}`);
+  });
 
   const seenIds = new Set(ctx.takenIds);
   for (const key of REGISTER_KEYS) rows(key).forEach((row, i) => {
@@ -204,25 +326,132 @@ export function checkRegisters(draft: Draft, ctx: RegisterContext, error: Report
     traced("kpis", row, i);
     based("kpis", row, i);
     const path = `draft.kpis.${i}`;
-    for (const [value, source] of [[row.baseline, baselines], [row.target, targets]] as const) {
+    for (const [value, source, isTarget] of [[row.baseline, baselines, false], [row.target, targets, true]] as const) {
       const claimed = norm(value);
-      if (claimed === NOT_PROVIDED) continue;
+      if (isNotProvided(claimed)) continue;
       if (source === undefined || !norm(source).includes(claimed)) error("KPI_VALUE_NOT_VERBATIM", path);
-      else if (!isAboutMeasure(claimed, source, `${row.name} ${row.measuredFrom}`)) error("KPI_VALUE_NOT_FOR_MEASURE", path, "a KPI baseline or target must be the part of the company-context answer that is about this KPI's own measure: copy only that part (one line, never the whole answer or other measures' figures), or write exactly \"not provided\" and keep the measure if only a target exists");
+      else if (isTarget ? !isVerbatimTarget(claimed, source) : !isAboutMeasure(claimed, source, row.name)) error("KPI_VALUE_NOT_FOR_MEASURE", path, "a KPI baseline or target must be the part of the company-context answer that is about this KPI's own measure: copy only that part (one line, never the whole answer or other measures' figures), or write exactly \"not provided\" and keep the measure if only a target exists");
     }
     // "not provided" while the answer has a line about this measure is a value the design ignored (a review finding, fixable by the KPI call).
     for (const [value, source] of [[row.baseline, baselines], [row.target, targets]] as const) {
-      if (norm(value) === NOT_PROVIDED && source !== undefined && segments(source).some(part => part !== NOT_PROVIDED && /\d/.test(part) && mentionsSubject(`${row.name} ${row.measuredFrom}`, part, false))) {
+      if (isNotProvided(value) && source !== undefined && segments(source).some(part => part !== NOT_PROVIDED && /\d/.test(part) && kpiSubjectStems(row.name).size > 0 && sharesKpiSubject(row.name, part))) {
         block("KPI_VALUE_IGNORED", path); break;
       }
     }
   });
   if (targets !== undefined) {
-    const stated = kpis.map(row => norm(row.target)).filter(target => target !== NOT_PROVIDED);
-    if (segments(targets, true).some(part => !stated.some(target => overlaps(part, target)))) error("KPI_TARGET_UNCOVERED", "draft.kpis");
+    const stated = kpis.map(row => norm(row.target)).filter(target => !isNotProvided(target));
+    if (segments(targets, true).some(part => !stated.some(target => overlaps(part, target)))) block("KPI_TARGET_UNCOVERED", "draft.kpis"); // a finding, not a fatal error: a target the normaliser had to turn into "not provided" lands here
   }
   if (draft.schemaVersion === 3) {
     checkVersion3({ ctx, error, block, known, dup, rows: key => rows(key as RegisterKey), based: (key, row, i, needed) => based(key as RegisterKey, row, i, needed),
       traced: (key, row, i, extra, required) => traced(key as RegisterKey, row, i, extra, required) });
   }
+}
+
+// --- deterministic text rewrites on the assembled design -----------------------------------------------------
+
+type TextRewrite = (text: string, key: string, parent: Record<string, unknown>) => string;
+/** A copy of `value` with every string replaced by `rewrite(text, key, parentObject)`; each change is reported at its path as `code`. Ids are never rewritten here. */
+export function rewriteStrings<T>(value: T, rewrite: TextRewrite, code: string, basePath = "draft"): { value: T; warnings: Warning[] } {
+  const warnings: Warning[] = [];
+  const walk = (node: unknown, path: string, key: string, parent: Record<string, unknown>): unknown => {
+    if (typeof node === "string") {
+      if (key === "id" || key.endsWith("Id") || key.endsWith("Ids")) return node;
+      const next = rewrite(node, key, parent);
+      if (next !== node) warnings.push({ code, path });
+      return next;
+    }
+    if (Array.isArray(node)) return node.map((item, i) => walk(item, `${path}.${i}`, key, parent));
+    if (node && typeof node === "object") {
+      const object = node as Record<string, unknown>;
+      return Object.fromEntries(Object.entries(object).map(([k, v]) => [k, walk(v, `${path}.${k}`, k, object)]));
+    }
+    return node;
+  };
+  return { value: walk(value, basePath, "", {}) as T, warnings };
+}
+
+const HONORIFIC = String.raw`(?:Mr|Mrs|Ms|Miss|Dr|Shri|Smt)\.?\s+`;
+const NAME_WORDS = String.raw`\p{Lu}\p{Ll}+(?:\s+\p{Lu}\p{Ll}+){0,2}`;
+const PERSON = String.raw`${HONORIFIC}${NAME_WORDS}`;
+const escapeRegExp = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+/** Names that follow an honorific in the discovery text (sources, company-context answers): the full name and its "First Last" and leading two-word forms, longest first.
+ * A single word is never listed (a surname alone is too ambiguous); the honorific rules still remove "Mr. Sharma". */
+export function personNamesIn(texts: readonly string[]): string[] {
+  const names = new Set<string>();
+  for (const text of texts) for (const hit of text.matchAll(new RegExp(`${HONORIFIC}(${NAME_WORDS})`, "gu"))) {
+    const words = hit[1]!.split(/\s+/);
+    if (words.length < 2) continue;
+    names.add(words.join(" ")); names.add(`${words[0]} ${words[1]}`); names.add(`${words[0]} ${words[words.length - 1]}`);
+  }
+  return [...names].sort((a, b) => b.length - a.length);
+}
+const personPatterns = (names: readonly string[]) => {
+  const known = names.length ? `(?<![\\p{L}\\p{M}])(?:${names.map(escapeRegExp).map(name => name.replace(/ /g, "\\s+")).join("|")})(?![\\p{L}\\p{M}])` : undefined;
+  const person = known ? `(?:${PERSON}|${known})` : PERSON;
+  return { wrapped: new RegExp(String.raw`\s*[(\[]\s*${person}\s*[)\]]`, "gu"), afterDash: new RegExp(String.raw`\s*[,—–-]\s*${person}(?=\s*(?:[,;.)]|$))`, "gu"),
+    bare: new RegExp(person, "gu"), test: new RegExp(person, "u") };
+};
+const KPI_SOURCE_KEYS = new Set(["baseline", "target"]);
+/** "CFO (Mr. Rajesh Kulkarni)" becomes "CFO": a To-Be names roles, not people. A field that was only a name becomes the title of the object it sits in, else a placeholder.
+ * KPI baselines and targets are copies of the company-context answer and stay as written. An honorific (Mr, Ms, Mrs, Miss, Dr, Shri, Smt) followed by 1-3 capitalised words is removed,
+ * and so is any name in `knownNames` (see personNamesIn) written without its honorific. */
+export function removePersonNames<T>(design: T, knownNames: readonly string[] = []): { design: T; warnings: Warning[] } {
+  const patterns = personPatterns(knownNames);
+  const tidy = (text: string) => text.replace(/\(\s*\)|\[\s*\]/g, "").replace(/\s+([,;.])/g, "$1").replace(/\s{2,}/g, " ").replace(/^[\s,;—–-]+|[\s,;—–-]+$/g, "");
+  const { value, warnings } = rewriteStrings(design, (text, key, parent) => {
+    if ((KPI_SOURCE_KEYS.has(key) && "measuredFrom" in parent) || !patterns.test.test(text)) return text;
+    const stripped = tidy(text.replace(patterns.wrapped, "").replace(patterns.afterDash, "").replace(patterns.bare, ""));
+    if (stripped) return stripped;
+    const role = [parent.title, parent.name].find(item => typeof item === "string" && item.trim() && !patterns.test.test(item));
+    return typeof role === "string" ? role : "Role to be confirmed";
+  }, "PERSON_NAME_REMOVED");
+  return { design: value, warnings };
+}
+
+/** Every occurrence of an input question's raw id in the design's text becomes its readable IQ-n label. */
+export function rewriteQuestionIds<T>(design: T, labels: ReadonlyMap<string, string>): { design: T; warnings: Warning[] } {
+  if (!labels.size) return { design, warnings: [] };
+  const escaped = [...labels.keys()].sort((a, b) => b.length - a.length).map(id => id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+  const pattern = new RegExp(`(?<![A-Za-z0-9_-])(?:${escaped.join("|")})(?![A-Za-z0-9_-])`, "g");
+  const { value, warnings } = rewriteStrings(design, text => text.replace(pattern, id => labels.get(id) ?? id), "INPUT_QUESTION_ID_REWRITTEN");
+  return { design: value, warnings };
+}
+
+const INPUT_QUESTION_REF = /(?<![A-Za-z0-9_-])IQ-\d+(?![A-Za-z0-9_-])/g;
+/** The question-id pattern of a design: the model's own questions (ETO-OQ-4, ETO-OQ-5-F1) and the input questions (IQ-7). */
+export const QUESTION_REF = /(?<![A-Za-z0-9_-])(?:IQ|[A-Z][A-Z0-9]*-OQ)-\d+(?:-[A-Z]+\d*)*(?![A-Za-z0-9_-])/g;
+const PROCESS_OWNER = "Process owner";
+type QuestionDesign = { steps: { id: string }[]; openQuestions: { id: string; question: string; owner: string; affectedStepIds: string[]; decisionIds?: string[] }[] };
+
+/** Every input question (IQ-n) the design's text or id lists cite becomes an entry of design.openQuestions (the register a hold such as "Pending IQ-7" points at): the input's question text and owner
+ * ("Process owner" when it names none) and, as affected steps, the steps whose text cites it (the steps of the register row that cites it, else the first step). An id the register already holds is left alone;
+ * an IQ id the input does not have is not invented here (the question-reference check reports it). One INPUT_QUESTION_REGISTERED warning per entry added. */
+export function registerInputQuestions<D extends QuestionDesign>(design: D, inputQuestions: readonly { id: string; question: string; owner: string }[]): { design: D; warnings: Warning[] } {
+  const wanted = new Map(inputQuestions.map(item => [item.id, item]));
+  const cited = new Map<string, Set<string>>();
+  const walk = (node: unknown, stepIds: readonly string[]) => {
+    if (typeof node === "string") { for (const [token] of node.matchAll(INPUT_QUESTION_REF)) { const set = cited.get(token) ?? new Set<string>(); stepIds.forEach(step => set.add(step)); cited.set(token, set); } return; }
+    if (Array.isArray(node)) { node.forEach(item => walk(item, stepIds)); return; }
+    if (!node || typeof node !== "object") return;
+    const object = node as Record<string, unknown>;
+    const own = Array.isArray(object.stepIds) ? object.stepIds.filter((item): item is string => typeof item === "string") : undefined;
+    const here = own?.length ? own : stepIds;
+    Object.values(object).forEach(value => walk(value, here));
+  };
+  const top = design as unknown as Record<string, unknown>;
+  for (const [key, value] of Object.entries(top)) {
+    if (key === "openQuestions") continue;
+    if (key === "steps" && Array.isArray(value)) value.forEach(step => walk(step, [(step as { id: string }).id]));
+    else walk(value, []);
+  }
+  const held = new Set(design.openQuestions.map(item => item.id));
+  const added = [...cited].filter(([token]) => wanted.has(token) && !held.has(token)).map(([token, stepIds]) => {
+    const item = wanted.get(token)!;
+    return { id: token, question: item.question, owner: item.owner.trim() || PROCESS_OWNER, affectedStepIds: stepIds.size ? [...stepIds] : design.steps.slice(0, 1).map(step => step.id) };
+  }).filter(entry => entry.affectedStepIds.length > 0);
+  if (!added.length) return { design, warnings: [] };
+  const warnings = added.map((_, i) => ({ code: "INPUT_QUESTION_REGISTERED", path: `draft.openQuestions.${design.openQuestions.length + i}` }));
+  return { design: { ...design, openQuestions: [...design.openQuestions, ...added] }, warnings };
 }

@@ -183,3 +183,22 @@ describe("solution-design registers in the report (schemaVersion 2)", () => {
     for (const key of ["keyDesignDecisions", "fitGap", "orgStructure", "masterDataPrerequisites", "interfaces", "kpis", "dataMigration", "cutover"] as const) expect(roundTripped[key]).toHaveLength(1);
   });
 });
+
+describe("input open questions read as IQ-n in the report", () => {
+  const raw = "q_st_c170b433-e309-4f1a-9b2a-1d2e3f4a5b6c_7";
+  it("lists the IQ-n label as the register id, keeps the original id, and carries the list in the derived sections", () => {
+    const model = buildReport({ ...data, unresolvedInputQuestions: [{ id: "q_obs_1", question: "Who pays freight?", owner: "Finance lead" }, { id: raw, question: "Which plants?", owner: "Process owner", label: "IQ-2" }] });
+    const listed = model.registers.questions.filter(item => item.sourceId);
+    expect(listed.map(item => [item.id, item.sourceId, item.text])).toEqual([["IQ-1", "q_obs_1", "Who pays freight?"], ["IQ-2", raw, "Which plants?"]]);
+    expect(model.derived.inputQuestions).toEqual([{ label: "IQ-1", id: "q_obs_1", question: "Who pays freight?", owner: "Finance lead" }, { label: "IQ-2", id: raw, question: "Which plants?", owner: "Process owner" }]);
+  });
+});
+
+describe("an input question the design already registers is listed once", () => {
+  it("shows the design's IQ-n entry (with its source id) and no second row for the same label", () => {
+    const withIq = { ...design, openQuestions: [...design.openQuestions, { id: "IQ-1", question: "Which plants are in scope?", owner: "Process owner", affectedStepIds: ["TB-1"] }] };
+    const model = buildReport({ ...data, design: withIq, unresolvedInputQuestions: [{ id: "q_raw_1", question: "Which plants are in scope?", owner: "Process owner", label: "IQ-1" }, { id: "q_raw_2", question: "Who pays freight?", owner: "Finance lead", label: "IQ-2" }] });
+    expect(model.registers.questions.filter(item => item.id === "IQ-1")).toEqual([expect.objectContaining({ sourceId: "q_raw_1", affects: expect.stringContaining("Record return") })]);
+    expect(model.registers.questions.filter(item => item.id === "IQ-2")).toHaveLength(1);
+  });
+});

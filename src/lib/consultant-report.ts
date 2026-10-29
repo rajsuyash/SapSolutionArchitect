@@ -3,7 +3,7 @@
 import { z } from "zod";
 import { DetailedDesignSchema, type DetailedDesign, type TrustedReference } from "./ai/design-quality";
 import type { DiscoveryInput } from "./discovery";
-import { deriveSections } from "./to-be-derived";
+import { deriveSections, inputQuestionRows } from "./to-be-derived";
 import { WORKSPACE_FIELDS } from "./workspace-fields";
 
 /** What the server stores plus the context needed to read it. Never contains provider metrics, sources text or secrets. */
@@ -15,7 +15,7 @@ export type ReportData = {
   /** The frozen discovery revision the design was generated from (document control). */
   snapshotId?: string | null;
   design: DetailedDesign; blockers: { code: string; path: string; detail?: string }[];
-  unresolvedInputQuestions: { id: string; question: string; owner: string }[];
+  unresolvedInputQuestions: { id: string; question: string; owner: string; label?: string }[];
   /** Only references the design cites, resolved from the curated catalog at read time. */
   references: TrustedReference[];
   /** Size of the curated catalog for this product and release; 0 means no SAP claim in the design could be verified. */
@@ -25,7 +25,7 @@ export type ReportData = {
 const StoredSchema = z.object({
   design: DetailedDesignSchema,
   evaluation: z.object({ blockers: z.array(z.object({ code: z.string().max(80), path: z.string().max(200), detail: z.string().max(500).optional() })).max(1000) }),
-  unresolvedInputQuestions: z.array(z.object({ id: z.string(), question: z.string(), owner: z.string() })).max(100),
+  unresolvedInputQuestions: z.array(z.object({ id: z.string(), question: z.string(), owner: z.string(), label: z.string().optional() })).max(100),
   sourceRevision: z.number().int(), snapshotId: z.string(),
 });
 /** Re-validates what was stored; a corrupted row must fail loudly rather than render partially. */
@@ -75,6 +75,7 @@ export const REVIEW_FINDINGS: Record<string, string> = {
   E2E_STEP_UNCOVERED: "A To-Be step is not walked by any end-to-end test scenario.",
   UNRESOLVED_CODE: "A step uses an SAP code (movement type, document type, condition type, reason code or organisation code) that the configuration catalogue and organisation structure do not define.",
   ORG_CODE_NOT_IN_CONTEXT: "An organisational unit is marked as having a confirmed code, but that code does not appear in the company-context answers.",
+  ORG_CODE_INCONSISTENT: "A step or register gives an organisation unit (plant, company code or storage location) a code that differs from the one in the organisation structure.",
   INTERFACE_STEP_UNCOVERED: "An integration step is not listed by any interface, so its system boundary has no interface entry.",
   PERIOD_END_MISSING: "No period-end activity is listed, so it is unclear what the scope adds to the period close.",
   CONFIG_CONFIRMATION_UNSUPPORTED: "A configuration item is marked as confirmed in the SAP catalog, but no catalog reference it cites mentions it.",
@@ -90,6 +91,7 @@ export const REVIEW_FINDINGS: Record<string, string> = {
   RULE_RESTATED: "A step repeats a business rule of an earlier step instead of referring to it; only the differences should be written out.",
   BUILD_REALIZATION_UNLISTED: "A step's realization names something to build, but it is neither an extension or integration step nor listed by a built fit-gap row, so the RICEFW list would miss it.",
   DANGLING_ID_REFERENCE: "Text cites an id in this design's own pattern (a step, rule, test, question or register row) that does not exist. Correct the id or remove the reference.",
+  UNKNOWN_QUESTION_REFERENCE: "A step cites an open question id (for example ETO-OQ-4 or IQ-7) that no register holds. Correct the id or remove the reference.",
   ...REVIEW_PASS_FINDINGS,
 };
 const BLOCKERS: Record<string, { category: string; label: string }> = {
@@ -131,7 +133,7 @@ export type ComparisonRow = {
 };
 export type TraceRow = { id: string; label: string; kindLabel: string; statement: string; critical: boolean; asIs: string; disposition: string;
   rationale: string; steps: string[]; rules: string[]; tests: string[] };
-export type Register = { id: string; text: string; owner: string; affects: string; state: string };
+export type Register = { id: string; sourceId?: string; text: string; owner: string; affects: string; state: string };
 /** Solution-design registers of a schemaVersion 2 or 3 design, already labelled. Null for a version 1 design. The version 3 lists are empty for version 2. */
 export type SolutionView = {
   version3: boolean;
@@ -228,8 +230,8 @@ export function buildReport(data: ReportData) {
 
   const stepNames = (ids: string[]) => ids.map(id => design.steps.find(step => step.id === id)).flatMap(step => step ? [stepTitle(step)] : []).join("; ");
   const questions: Register[] = [
-    ...design.openQuestions.map(item => ({ id: item.id, text: item.question, owner: item.owner, affects: stepNames(item.affectedStepIds), state: "Open" })),
-    ...data.unresolvedInputQuestions.map(item => ({ id: item.id, text: item.question, owner: item.owner, affects: "Whole process", state: "Open" })),
+    ...design.openQuestions.map(item => ({ id: item.id, sourceId: inputQuestionRows(data.unresolvedInputQuestions).find(row => row.label === item.id)?.id, text: item.question, owner: item.owner, affects: stepNames(item.affectedStepIds), state: "Open" })),
+    ...inputQuestionRows(data.unresolvedInputQuestions).filter(item => !design.openQuestions.some(held => held.id === item.label)).map(item => ({ id: item.label, sourceId: item.id, text: item.question, owner: item.owner, affects: "Whole process", state: "Open" })),
   ];
   const conflicts: Register[] = discovery.conflicts.map(conflict => {
     const decision = design.conflictDecisions.find(item => item.conflictId === conflict.id);
@@ -344,7 +346,7 @@ export function buildReport(data: ReportData) {
     comparison, steps: stepViews, traceability, registers: { questions, conflicts, sapPoints }, solution,
     sources: discovery.sources,
     /** Document control, As-Is narratives, RICEFW list and actor-role matrix: built from trusted inputs, no model involved. */
-    derived: deriveSections({ design, asIsSteps: discovery.asIsSteps, meta: { sourceRevision: data.sourceRevision, variantCode: data.variant.code, variantName: data.variant.name,
+    derived: deriveSections({ design, asIsSteps: discovery.asIsSteps, inputQuestions: data.unresolvedInputQuestions, meta: { sourceRevision: data.sourceRevision, variantCode: data.variant.code, variantName: data.variant.name,
       snapshotId: data.snapshotId ?? null, generatedAt: data.generatedAt, targetProduct: data.targetProduct, targetRelease: data.targetRelease, sources: discovery.sources } }),
   };
 }

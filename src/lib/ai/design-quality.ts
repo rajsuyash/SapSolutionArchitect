@@ -1,7 +1,7 @@
 import { z } from "zod";
 
 import { FIT_TYPES, STEP_TYPES, id, ids, list, phase, text, texts } from "./design-primitives";
-import { checkRegisters, RegistersShape } from "./design-registers";
+import { checkRegisters, REGISTER_KEYS, RegistersShape } from "./design-registers";
 import { danglingIdHits, designIds, internalTermHits, textFields } from "./design-text-lint";
 import { junkHits, languageHits, truncationHits } from "./design-text-quality";
 import { lintSapObjects } from "./sap-object-lint";
@@ -127,6 +127,49 @@ export type DesignEvaluation = {
   structurallyValid: boolean; errors: Issue[]; blockers: Issue[];
   reviewStatus: "BLOCKED" | "HUMAN_REVIEW_REQUIRED";
 };
+
+// --- organisation codes: one unit, one code, in every text --------------------------------------------------------------------------
+
+type OrgRow = { id: string; unitType: string; proposal: string; name?: string; parentId?: string | null; code?: string | null };
+const ORG_KIND_WORDS = String.raw`(company\s+codes?|plants?|storage\s+locations?)`;
+const ORG_NAME_STOP = new Set(["one", "the", "this", "that", "each", "all", "both", "two", "three", "new", "use", "keep", "single", "separate", "existing", "proposed", "company", "code",
+  "plant", "storage", "location", "sales", "purchasing", "organisation", "organization", "controlling", "area", "cost", "profit", "centre", "center", "legal", "entity", "business", "confirm"]);
+const orgKind = (words: string) => /company/i.test(words) ? "company" : /storage/i.test(words) ? "storage" : /plant/i.test(words) ? "plant" : undefined;
+const escapeName = (name: string) => name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/\s+/g, String.raw`\s+`);
+/** The proper names an organisation unit goes by: its own name field when it has one, else the capitalised words of its proposal (generic organisation words left out). */
+const orgUnitNames = (row: OrgRow) => [...new Set([...(row.name ? [row.name] : []), ...(row.proposal.match(/\b[A-Z][A-Za-z0-9]+(?:\s+[A-Z][A-Za-z0-9]+)*/g) ?? [])]
+  .map(name => name.split(/\s+/).filter(word => !ORG_NAME_STOP.has(word.toLowerCase())).join(" ")).filter(name => name.length >= 4))];
+
+/** Texts that pair a known organisation unit with a plant, company code or storage location number different from the one the organisation structure holds for it
+ * ("Chakan (company code 1000)" where the structure says Chakan is 2000). A unit answers for its own kind; for another kind it answers through its nearest ancestor of that
+ * kind (a plant's company code); when neither exists the pairing cannot be judged and is left alone. Patterns: "<unit> ... <kind> NNNN" within one clause, and "<kind> NNNN (<unit>)". */
+export function orgCodeConflicts(org: readonly OrgRow[], texts: readonly { path: string; text: string }[]): { path: string; detail: string }[] {
+  const byId = new Map(org.map(row => [row.id, row]));
+  const kindOf = (row: OrgRow) => orgKind(row.unitType);
+  const expectedCode = (row: OrgRow, kind: string): string | undefined => {
+    for (let at: OrgRow | undefined = row, hops = 0; at && hops++ <= org.length; at = at.parentId ? byId.get(at.parentId) : undefined) {
+      if (kindOf(at) === kind || (at === row && !kindOf(row))) return at.code ?? undefined; // a unit of a kind the text does not name answers through its ancestors; one of no known kind answers with its own code
+    }
+    return undefined;
+  };
+  const named = org.flatMap(row => row.code ? orgUnitNames(row).map(name => ({ row, name, pattern: escapeName(name) })) : []);
+  const found = new Map<string, { path: string; detail: string }>();
+  for (const { path, text } of texts) {
+    const seen: { name: string; kind: string; code: string }[] = [];
+    for (const { name, pattern } of named) {
+      const after = new RegExp(String.raw`(?<![A-Za-z0-9])${pattern}(?![A-Za-z0-9])[^.;:!?\n]{0,25}?\b${ORG_KIND_WORDS}\s*(?:code\s*)?(?:is\s+|=\s*|:\s*)?(\d{3,4})(?![A-Za-z0-9])`, "gi");
+      const before = new RegExp(String.raw`\b${ORG_KIND_WORDS}\s+(\d{3,4})\s*(?:\(\s*|[-\u2013\u2014:/]\s*)${pattern}(?![A-Za-z0-9])`, "gi");
+      for (const match of text.matchAll(after)) seen.push({ name, kind: orgKind(match[1]!)!, code: match[2]! });
+      for (const match of text.matchAll(before)) seen.push({ name, kind: orgKind(match[1]!)!, code: match[2]! });
+    }
+    for (const { name, kind, code } of seen) {
+      const owners = named.filter(item => item.name.toLowerCase() === name.toLowerCase()).map(item => ({ item: item.row, expected: expectedCode(item.row, kind) })).filter(item => item.expected);
+      if (!owners.length || owners.some(item => item.expected === code)) continue;
+      found.set(`${path}|${name}|${code}`, { path, detail: `${name} is ${owners[0]!.expected}, text says ${code}` });
+    }
+  }
+  return [...found.values()];
+}
 
 /** This checks structure and trace integrity, not semantic correctness.
  * Even a clean result requires a consultant to review business/SAP fit. */
@@ -331,6 +374,9 @@ export function evaluateDesign(input: unknown, value: unknown): DesignEvaluation
     takenIds: new Set([...steps.keys(), ...draft.steps.flatMap(step => [...step.businessRules.map(rule => rule.id), ...step.acceptanceTests.map(test => test.id)]),
       ...draft.openQuestions.map(question => question.id)]),
   }, error, block);
+  const orgTexts = [...draft.steps.flatMap((step, i) => textFields(step).map(text => ({ path: `draft.steps.${i}`, text }))),
+    ...REGISTER_KEYS.filter(key => key !== "orgStructure").flatMap(key => ((draft[key] ?? []) as unknown[]).flatMap((row, i) => textFields(row).map(text => ({ path: `draft.${key}.${i}`, text }))))];
+  for (const hit of orgCodeConflicts((draft.orgStructure ?? []) as OrgRow[], orgTexts)) block("ORG_CODE_INCONSISTENT", hit.path, hit.detail);
   return result();
 }
 

@@ -158,7 +158,7 @@ describe("OpenRouter provider", () => {
     const outline = (await spied()).requests[0]!.body;
     expect(Object.keys(outline).sort()).toEqual(["max_tokens", "messages", "model", "output_config", "stream", "system", "tool_choice", "tools"]);
     expect({ ...outline, system: "<system prompt>", messages: "<1 user message>", tools: outline.tools.map(tool => tool.name) }).toEqual({
-      model: MODEL, max_tokens: 16000, stream: true, system: "<system prompt>", messages: "<1 user message>", tools: ["submit_to_be_outline"],
+      model: MODEL, max_tokens: 32000, stream: true, system: "<system prompt>", messages: "<1 user message>", tools: ["submit_to_be_outline"],
       tool_choice: { type: "tool", name: "submit_to_be_outline", disable_parallel_tool_use: true }, output_config: { effort: "max" } });
     if (process.env.PRINT_OPENROUTER_BODY) writeFileSync(process.env.PRINT_OPENROUTER_BODY, JSON.stringify({ ...outline, system: `<${String(outline.system).length} chars>`,
       messages: `<${JSON.stringify(outline.messages).length} chars>`, tools: outline.tools.map(tool => ({ name: tool.name, input_schema: "<JSON schema>" })) }, null, 2));
@@ -168,6 +168,75 @@ describe("OpenRouter provider", () => {
       expect(request.body.output_config).toEqual({ effort: "max" });
       expect(request.body.thinking).toBeUndefined();
     }
+  });
+  describe("AI_OUTLINE_REASONING_EFFORT", () => {
+    const isOutline = (request: { body: RequestBody }) => request.body.tools[0]!.name === "submit_to_be_outline";
+    it("validates the value and treats blank as unset", () => {
+      expect(() => settings({ ...openrouter, AI_OUTLINE_REASONING_EFFORT: "extreme" })).toThrow("AI_OUTLINE_REASONING_EFFORT");
+      expect(settings({ ...openrouter, AI_OUTLINE_REASONING_EFFORT: " " }).AI_OUTLINE_REASONING_EFFORT).toBeUndefined();
+      expect(settings({ ...openrouter, AI_OUTLINE_REASONING_EFFORT: "high" }).AI_OUTLINE_REASONING_EFFORT).toBe("high");
+    });
+    it("sets the outline effort to high and leaves the other substages unchanged", async () => {
+      const { requests } = await spied({ AI_OUTLINE_REASONING_EFFORT: "high" });
+      expect(requests.some(isOutline) && requests.some(request => !isOutline(request))).toBe(true);
+      for (const request of requests) {
+        expect(request.body.output_config).toEqual(isOutline(request) ? { effort: "high" } : undefined);
+        expect(request.body.thinking).toEqual(isOutline(request) ? undefined : { type: "disabled" });
+      }
+    });
+    it("none sends thinking disabled for the outline too, with no effort", async () => {
+      const { requests } = await spied({ AI_OUTLINE_REASONING_EFFORT: "none" });
+      for (const request of requests) { expect(request.body.thinking).toEqual({ type: "disabled" }); expect(request.body.output_config).toBeUndefined(); }
+    });
+    it("an explicit AI_REASONING_EFFORT overrides it for every call", async () => {
+      for (const request of (await spied({ AI_REASONING_EFFORT: "medium", AI_OUTLINE_REASONING_EFFORT: "low" })).requests) expect(request.body.output_config).toEqual({ effort: "medium" });
+    });
+  });
+  describe("DeepInfra DeepSeek outline thinking", () => {
+    const DI = { AI_PROVIDER: "deepinfra", DEEPINFRA_API_KEY: "synthetic-di-key", AI_MODEL: "deepseek-ai/DeepSeek-V4.1-Flash-1017" };
+    // count_tokens probes carry the tools too; only generation requests have max_tokens.
+    const isOutline = (request: { body: RequestBody }) => request.body.max_tokens !== undefined && request.body.tools[0]!.name === "submit_to_be_outline";
+    const outlineOf = async (overrides: Record<string, string> = {}) => (await spied({ ...DI, ...overrides })).requests.find(isOutline)!.body;
+    it("sends thinking enabled with budget 48000 and max_tokens raised to 64000 by default, with tool_choice auto", async () => {
+      const { requests } = await spied(DI);
+      const outline = requests.find(isOutline)!.body;
+      expect(outline.thinking).toEqual({ type: "enabled", budget_tokens: 48000 });
+      expect(outline.max_tokens).toBe(64000);
+      expect(outline.tool_choice).toEqual({ type: "auto", disable_parallel_tool_use: true });
+      expect(outline.output_config).toBeUndefined();
+      for (const request of requests.filter(request => request.body.max_tokens !== undefined && !isOutline(request))) {
+        expect(request.body.thinking).toBeUndefined();
+        expect(request.body.max_tokens).toBeLessThan(64000);
+        expect(request.body.tool_choice).toEqual({ type: "tool", name: request.body.tools[0]!.name, disable_parallel_tool_use: true });
+      }
+    });
+    it("derives the budget from AI_OUTLINE_REASONING_EFFORT and keeps max_tokens at least budget + 16000", async () => {
+      for (const [effort, budget, maxTokens] of [["low", 4000, 32000], ["medium", 12000, 32000], ["high", 24000, 40000]] as const) {
+        const outline = await outlineOf({ AI_OUTLINE_REASONING_EFFORT: effort });
+        expect(outline.thinking).toEqual({ type: "enabled", budget_tokens: budget });
+        expect(outline.max_tokens).toBe(maxTokens);
+        expect(outline.tool_choice).toEqual({ type: "auto", disable_parallel_tool_use: true });
+      }
+    });
+    it("none sends no thinking field and keeps the forced tool", async () => {
+      const outline = await outlineOf({ AI_OUTLINE_REASONING_EFFORT: "none" });
+      expect(outline.thinking).toBeUndefined();
+      expect(outline.max_tokens).toBe(32000);
+      expect(outline.tool_choice).toEqual({ type: "tool", name: "submit_to_be_outline", disable_parallel_tool_use: true });
+    });
+    it("is off for AI_NO_THINKING_STAGES (disabled wins), an explicit AI_REASONING_EFFORT, and a non-DeepSeek model", async () => {
+      expect((await outlineOf({ AI_NO_THINKING_STAGES: "to_be_outline" })).thinking).toEqual({ type: "disabled" });
+      expect((await outlineOf({ AI_REASONING_EFFORT: "high" })).thinking).toBeUndefined();
+      const mimo = await outlineOf({ AI_MODEL: "XiaomiMiMo/MiMo-V2.6-Flash" });
+      expect(mimo.thinking).toBeUndefined();
+      expect(mimo.tool_choice).toEqual({ type: "tool", name: "submit_to_be_outline", disable_parallel_tool_use: true });
+    });
+    it("leaves OpenRouter requests as they were", async () => {
+      const outline = (await spied({ AI_OUTLINE_REASONING_EFFORT: "high" })).requests.find(isOutline)!.body;
+      expect(outline.thinking).toBeUndefined();
+      expect(outline.output_config).toEqual({ effort: "high" });
+      expect(outline.max_tokens).toBe(32000);
+    });
   });
   it("applies AI_REASONING_EFFORT and AI_NO_THINKING_STAGES per request kind", async () => {
     const medium = (await spied({ AI_REASONING_EFFORT: "medium" })).requests;
@@ -465,6 +534,16 @@ describe("company context as design input", () => {
       expect(sent.sources).toBeUndefined();
     }
   });
+  it("settles a KPI baseline that pastes the whole answer, on the first call and in every later pass: the stage succeeds with a KPI_VALUE_NORMALISED warning", async () => {
+    const blobAnswers = { ...answers, kpi_baselines: "Quote turnaround today 5 days; Credit memo backlog 40 items" };
+    const blob = { ...kpiRows[0]!, baseline: "Quote turnaround today 5 days, credit memo backlog 40 items", contextFieldIds: ["kpi_targets", "kpi_baselines"] };
+    const h = harness({ registers: group => group === "integration" ? { ...rentalRegisterGroups.integration, kpis: [blob] } : registers(group) });
+    const result = await h.run(withCompanyContext(fixture(), blobAnswers));
+    expect(result.metrics.warnings).toContainEqual({ code: "KPI_VALUE_NORMALISED", path: "draft.kpis.0.baseline" });
+    expect(result.metrics.warnings?.some(w => w.code === "KPI_VALUE_NORMALISED" && w.path.endsWith(".target"))).toBe(false);
+    const kpis = (result.payload.design as unknown as { kpis: { baseline: string; target: string }[] }).kpis;
+    expect(kpis[0]).toMatchObject({ baseline: "Quote turnaround today 5 days", target: "Quote turnaround under 2 days" });
+  });
   it("sends each step call only the fields a step needs, with long values cut", async () => {
     const h = harness({ registers: group => registers(group) });
     await h.run(input());
@@ -570,9 +649,9 @@ describe("register calls: repair and checks", () => {
 describe("output ceilings and truncation", () => {
   const cut = (tool: string) => toolResponse({ processName: "private-cut-off-text" }, tool, "max_tokens");
   const maxTokens = (body: RequestBody) => (body as RequestBody & { max_tokens: number }).max_tokens;
-  it("defaults to 16000 / 8000 / 8000 and takes overrides from the environment", async () => {
+  it("defaults to 32000 / 8000 / 8000 and takes overrides from the environment", async () => {
     const h = harness(); await h.run();
-    expect([maxTokens(h.outlineCalls[0]!), maxTokens(h.stepCalls[0]!.body), maxTokens(h.registerCalls[0]!.body)]).toEqual([16000, 8000, 8000]);
+    expect([maxTokens(h.outlineCalls[0]!), maxTokens(h.stepCalls[0]!.body), maxTokens(h.registerCalls[0]!.body)]).toEqual([32000, 8000, 8000]);
     const o = harness({ overrides: { AI_TO_BE_OUTLINE_MAX_TOKENS: "20000", AI_TO_BE_STEP_MAX_TOKENS: "5000", AI_TO_BE_REGISTERS_MAX_TOKENS: "4000" } }); await o.run();
     expect([maxTokens(o.outlineCalls[0]!), maxTokens(o.stepCalls[0]!.body), maxTokens(o.registerCalls[0]!.body)]).toEqual([20000, 5000, 4000]);
   });
@@ -583,11 +662,11 @@ describe("output ceilings and truncation", () => {
   it("reports a max_tokens outline as OUTPUT_TRUNCATED and asks the repair for a shorter answer, without echoing the cut text", async () => {
     const h = harness({ outline: () => cut("submit_to_be_outline") });
     const error = await h.run().then(() => null, e => e);
-    // The first two cut-off answers are free (16000 -> 32000 -> 64000); at the cap the two ordinary repairs follow.
-    expect(error).toMatchObject({ code: "AI_INVALID_OUTPUT", metrics: { attempts: 5, stopReasons: Array(5).fill("max_tokens") } });
-    expect(error.metrics.attemptIssues).toEqual(Array(5).fill([{ path: "to_be_outline", code: "OUTPUT_TRUNCATED" }]));
-    expect(error.metrics.substages.to_be_outline.calls).toBe(5);
-    expect(h.outlineCalls.map(maxTokens)).toEqual([16000, 32000, 64000, 64000, 64000]);
+    // The first cut-off answer is free (32000 -> 64000); at the cap the two ordinary repairs follow.
+    expect(error).toMatchObject({ code: "AI_INVALID_OUTPUT", metrics: { attempts: 4, stopReasons: Array(4).fill("max_tokens") } });
+    expect(error.metrics.attemptIssues).toEqual(Array(4).fill([{ path: "to_be_outline", code: "OUTPUT_TRUNCATED" }]));
+    expect(error.metrics.substages.to_be_outline.calls).toBe(4);
+    expect(h.outlineCalls.map(maxTokens)).toEqual([32000, 64000, 64000, 64000]);
     const first = h.outlineCalls[0]!.messages[0]!.content, repair = h.outlineCalls[1]!.messages[0]!.content;
     expect(first).not.toContain("repairNote");
     expect(repair).toContain("OUTPUT_TRUNCATED"); expect(repair).toContain("cut off"); expect(repair).toContain("more concisely");
@@ -856,14 +935,51 @@ describe("late register groups (documents, governance)", () => {
       expect(sent.steps![0]!.businessRules.map(rule => rule.id)).toEqual(["BR-1", "BR-2"]);
     }
   });
-  it("a governance answer whose roles do not match the step actors is delivered as a review finding, with no repair call", async () => {
+  it("merges roles whose names differ only in case or punctuation: the stage succeeds with ROLE_MERGED, references to the dropped id and name point at the kept role, and governance is asked once", async () => {
+    const g = rentalRegisterGroups.governance;
+    const twin = { id: "ROLE-9", name: "rental  Coordinator.", responsibilities: "Answers hire enquiries.", stepIds: ["TB-2"] };
+    const governance = { ...g, roles: [...g.roles, twin], sodAssessments: [{ ...g.sodAssessments[0]!, roleIds: ["ROLE-9", "ROLE-3"] }] };
+    const h = harness({ registers: group => group === "governance" ? governance : rentalRegisterGroups[group],
+      step: id => id === "TB-2" ? { ...split.details[id]!, exceptions: split.details[id]!.exceptions.map(item => ({ ...item, owner: "rental  Coordinator." })) } : split.details[id] });
+    const result = await h.run();
+    expect(h.registerCount.governance).toBe(1);
+    expect(result.metrics.warnings).toContainEqual({ code: "ROLE_MERGED", path: "draft.roles.3" });
+    const design = result.payload.design as unknown as { roles: { id: string; name: string; stepIds: string[] }[]; sodAssessments: { roleIds: string[] }[]; steps: { id: string; exceptions: { owner: string }[] }[] };
+    expect(design.roles.map(role => role.id)).toEqual(["ROLE-1", "ROLE-2", "ROLE-3"]);
+    expect(design.roles[0]!.stepIds).toEqual(["TB-1", "TB-2"]);
+    expect(design.sodAssessments[0]!.roleIds).toEqual(["ROLE-1", "ROLE-3"]);
+    expect(design.steps.find(step => step.id === "TB-2")!.exceptions.map(item => item.owner)).toEqual(split.details["TB-2"]!.exceptions.map(() => "Rental coordinator"));
+  });
+  it("fills a missing RICEFW type that the fit-gap justification names, with a warning and no repair call", async () => {
+    const g = rentalRegisterGroups.fitgap;
+    const built = { ...g.fitGap[0]!, classification: "KEY_USER_EXTENSION", ricefwType: null, mitigationType: "EXTEND_KEY_USER", justification: "A custom report over the hire items is built by key users." };
+    const h = harness({ registers: group => group === "fitgap" ? { fitGap: [built, ...g.fitGap.slice(1)] } : rentalRegisterGroups[group] });
+    const result = await h.run();
+    expect(h.registerCount.fitgap).toBe(1);
+    expect(result.metrics.warnings).toContainEqual({ code: "RICEFW_TYPE_INFERRED", path: "draft.fitGap.0" });
+  });
+  it("a stage that ends on an invalid design keeps the last assembled draft and its errors in metrics when raw capture is on, and nothing otherwise", async () => {
+    const g = rentalRegisterGroups.governance;
+    const broken = { ...g, sodAssessments: [{ ...g.sodAssessments[0]!, roleIds: ["ROLE-99"] }] };
+    const attempt = async (captureRaw: boolean) => {
+      const h = harness({ registers: group => group === "governance" ? broken : rentalRegisterGroups[group] });
+      return createStageRunner(settings(), { fetch: h.fetch, captureRaw })("to_be", fixture()).then(() => null, (error: unknown) => (error as { metrics: { lastDraft?: { design: { roles: unknown[] }; errors: { code: string }[] } } }).metrics);
+    };
+    const on = await attempt(true);
+    expect(on?.lastDraft?.errors.map(item => item.code)).toContain("UNKNOWN_ROLE");
+    expect(on?.lastDraft?.design.roles).toHaveLength(3);
+    expect((await attempt(false))?.lastDraft).toBeUndefined();
+  });
+  it("a governance answer whose roles do not match the step actors is settled by the owner roles the server adds, with no repair call", async () => {
     const wrong = { ...rentalRegisterGroups.governance, roles: rentalRegisterGroups.governance.roles.map((role, i) => i === 2 ? { ...role, name: "Accounts clerk" } : role) };
     const h = harness({ registers: group => group === "governance" ? wrong : rentalRegisterGroups[group] });
     const result = await h.run();
     expect(h.registerCount).toEqual(Object.fromEntries(REGISTER_GROUP_NAMES.map(group => [group, 1])));
     const evaluation = evaluateDesign(toBeContext(parseToBeInput(fixture())), result.payload.design);
     expect(evaluation.errors).toEqual([]);
-    expect(evaluation.blockers).toContainEqual({ code: "ROLE_ACTOR_UNMATCHED", path: "draft.steps.2" });
+    // The step's actor is also named as an owner, so the server adds the catalogue role it lacks (ROLE_ADDED_FOR_OWNER) and the mismatch is settled without a repair call.
+    expect(result.metrics.warnings).toContainEqual({ code: "ROLE_ADDED_FOR_OWNER", path: "draft.roles.3" });
+    expect(evaluation.blockers).not.toContainEqual({ code: "ROLE_ACTOR_UNMATCHED", path: "draft.steps.2" });
   });
   it("a governance answer that cites an unknown role is a structural error and goes back to governance alone", async () => {
     const sod = rentalRegisterGroups.governance.sodAssessments.map((row, i) => i === 0 ? { ...row, roleIds: ["ROLE-99"] } : row);
@@ -1108,5 +1224,49 @@ describe("repair requests", () => {
     const h = harness({ step: id => id === "TB-3" ? badTrace : split.details[id] });
     await expect(h.run()).rejects.toMatchObject({ code: "AI_INVALID_OUTPUT" });
     expect(h.stepCount["TB-3"]).toBe(3);
+  });
+});
+
+describe("readable input-question ids and no person names in the design", () => {
+  const raw = "q_st_c170b433-e309-4f1a-9b2a-1d2e3f4a5b6c_7";
+  const withRawQuestion = () => { const input = fixture(); return { ...input, discovery: { ...input.discovery, openQuestions: [{ id: raw, question: "Which timezone governs the actual return timestamp?", owner: "Rental operations lead" }] } }; };
+  const step = (id: string) => id !== "TB-1" ? split.details[id]! : { ...split.details[id]!, businessRules: split.details[id]!.businessRules.map((rule, i) => i === 0 ? { ...rule, condition: `${rule.condition} Pending ${raw}` } : rule) };
+  const roles = { ...rentalRegisterGroups.governance, roles: rentalRegisterGroups.governance.roles.map((role, i) => i === 0 ? { ...role, name: `${role.name} (Mr. Rajesh Kulkarni)` } : role) };
+  const run = async () => {
+    const h = harness({ step, registers: group => group === "governance" ? roles : rentalRegisterGroups[group] });
+    return { h, result: await h.run(withRawQuestion()) };
+  };
+  it("sends the model only IQ-n, rewrites a raw id left in the text, and keeps the original id with its label in the result", async () => {
+    const { h, result } = await run();
+    const sent = JSON.stringify([...h.outlineCalls, ...h.stepCalls.map(call => call.body), ...h.registerCalls.map(call => call.body)]);
+    expect(sent).not.toContain(raw);
+    expect(sent).toContain("IQ-1");
+    const design = JSON.stringify(result.payload.design);
+    expect(design).not.toContain(raw);
+    expect(design).toContain("Pending IQ-1");
+    expect(result.metrics.warnings).toContainEqual({ code: "INPUT_QUESTION_ID_REWRITTEN", path: "draft.steps.0.businessRules.0.condition" });
+    expect(result.payload.unresolvedInputQuestions).toEqual([{ id: raw, question: "Which timezone governs the actual return timestamp?", owner: "Rental operations lead", label: "IQ-1" }]);
+  });
+  it("registers the cited IQ-n in design.openQuestions with the input's text, owner and the citing step", async () => {
+    const { result } = await run();
+    const questions = (result.payload.design as unknown as { openQuestions: { id: string; question: string; owner: string; affectedStepIds: string[] }[] }).openQuestions;
+    expect(questions.filter(item => item.id === "IQ-1")).toEqual([{ id: "IQ-1", question: "Which timezone governs the actual return timestamp?", owner: "Rental operations lead", affectedStepIds: ["TB-1"] }]);
+    expect(result.metrics.warnings).toContainEqual({ code: "INPUT_QUESTION_REGISTERED", path: `draft.openQuestions.${questions.findIndex(item => item.id === "IQ-1")}` });
+  });
+  it("removes a person named after an honorific in the sources when the design writes the name without it", async () => {
+    const input = withRawQuestion();
+    const withSource = { ...input, discovery: { ...input.discovery, sources: input.discovery.sources.map((source, i) => i === 0 ? { ...source, text: `${source.text} Mr. Rajesh Kulkarni approves.` } : source) } };
+    const bare = { ...rentalRegisterGroups.governance, roles: rentalRegisterGroups.governance.roles.map((role, i) => i === 0 ? { ...role, responsibilities: `${role.responsibilities} Reports to Rajesh Kulkarni.` } : role) };
+    const h = harness({ step, registers: group => group === "governance" ? bare : rentalRegisterGroups[group] });
+    const result = await h.run(withSource);
+    expect(JSON.stringify(result.payload.design)).not.toContain("Kulkarni");
+    expect(result.metrics.warnings).toContainEqual({ code: "PERSON_NAME_REMOVED", path: "draft.roles.0.responsibilities" });
+  });
+  it("removes an honorific and name from a role, keeping the role, and warns", async () => {
+    const { result } = await run();
+    const design = result.payload.design as unknown as { roles: { name: string }[] };
+    expect(design.roles[0]!.name).toBe(rentalRegisterGroups.governance.roles[0]!.name);
+    expect(JSON.stringify(result.payload.design)).not.toContain("Kulkarni");
+    expect(result.metrics.warnings).toContainEqual({ code: "PERSON_NAME_REMOVED", path: "draft.roles.0.name" });
   });
 });

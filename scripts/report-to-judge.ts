@@ -11,14 +11,14 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { buildCaseBrief, loadToBe } from "../src/lib/eval-judge";
-import { deriveSections } from "../src/lib/to-be-derived";
+import { deriveSections, inputQuestionLabel, inputQuestionRows } from "../src/lib/to-be-derived";
 import type { DetailedDesign } from "../src/lib/ai/design-quality";
 import { flag, loadReport, readJson, sha256, type ReportLike, type StateLike } from "./tobe-input";
 
 type Step = ReportLike["discovery"]["asIsSteps"][number];
 type Requirement = ReportLike["discovery"]["requirements"][number];
 type Normalized = { caseId: string; project: ReportLike["project"]; variant: ReportLike["variant"]; targetProduct: string; targetRelease: string | null;
-  asIsSteps: readonly Step[]; requirements: readonly Requirement[]; design: Record<string, unknown>; derived: Record<string, unknown>;
+  asIsSteps: readonly Step[]; requirements: readonly Requirement[]; design: Record<string, unknown>; derived: Record<string, unknown>; inputQuestions: { id: string; question: string; owner: string; label?: string }[];
   problemStatement: string; catalog: Record<string, string>; generator: { provider: string | null; model: string } | null };
 const message = (error: unknown) => error instanceof Error ? error.message : String(error);
 const escape = (id: string) => id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -35,21 +35,23 @@ function normalize(path: string, state: StateLike | null): Normalized {
     if (!toBe?.design) throw new Error(`${path} has no design to judge (job ${raw.job?.status}: ${raw.job?.error?.code ?? "no error recorded"})`);
     const problemStatement = raw.input.problemStatement ?? state?.problemStatement;
     if (!problemStatement) throw new Error("No problem statement: the run output lacks it and no --state was given");
+    const questions = (raw.unresolvedInputQuestions ?? raw.transcript?.toBe?.unresolvedInputQuestions ?? []) as Normalized["inputQuestions"];
     const context = (raw.input.companyContext ?? []) as { fieldId: string; value: string }[];
     return { caseId: String(raw.transcript.caseId ?? "tobe-run"), project: raw.input.project, variant: raw.input.variant, targetProduct: raw.input.targetProduct,
       targetRelease: raw.input.targetRelease, asIsSteps: raw.input.discovery.asIsSteps, requirements: raw.input.discovery.requirements, design: toBe.design,
-      derived: toBe.derived ?? {}, problemStatement,
+      derived: { ...(toBe.derived ?? {}), ...(toBe.derived?.inputQuestions ? {} : { inputQuestions: inputQuestionRows(questions) }) }, inputQuestions: questions, problemStatement,
       catalog: catalogFrom(context.length ? context.map(c => ({ id: c.fieldId, value: c.value })) : (state?.facts ?? []).filter(f => f.status === "KNOWN")),
       generator: raw.transcript.model ? { provider: raw.transcript.provider ?? null, model: raw.transcript.model } : null };
   }
   const report = loadReport(path);
   if (!state) throw new Error("A production report has no problem statement or company context: pass --state <workspace state.json>");
   const design = report.design as unknown as DetailedDesign;
-  const derived = deriveSections({ design, asIsSteps: report.discovery.asIsSteps, meta: { sourceRevision: report.sourceRevision ?? null, variantCode: report.variant.code,
+  const questions = report.discovery.openQuestions as Normalized["inputQuestions"];
+  const derived = deriveSections({ design, asIsSteps: report.discovery.asIsSteps, inputQuestions: questions, meta: { sourceRevision: report.sourceRevision ?? null, variantCode: report.variant.code,
     variantName: report.variant.name, snapshotId: report.snapshotId ?? null, generatedAt: report.generatedAt ?? null, targetProduct: report.targetProduct, targetRelease: report.targetRelease,
     sources: report.discovery.sources.map(({ id, title, revision, digest, text }) => ({ id, title, revision, digest: digest ?? (text === undefined ? undefined : sha256(text)) })) } });
   return { caseId: `report-${report.jobId ?? "local"}`, project: report.project, variant: report.variant, targetProduct: report.targetProduct, targetRelease: report.targetRelease,
-    asIsSteps: report.discovery.asIsSteps, requirements: report.discovery.requirements, design: report.design, derived: derived as unknown as Record<string, unknown>,
+    asIsSteps: report.discovery.asIsSteps, requirements: report.discovery.requirements, design: report.design, derived: derived as unknown as Record<string, unknown>, inputQuestions: questions,
     problemStatement: state.problemStatement, catalog: catalogFrom(state.facts.filter(f => f.status === "KNOWN")), generator: null };
 }
 
@@ -66,15 +68,17 @@ function main() {
     if (!asIsN) throw new Error(`Requirement ${r.id} names an unknown As-Is step ${r.asIsStepId}`);
     return { key: `r${String(i + 1).padStart(2, "0")}`, origId: r.id, stepN: asIsN, kind: r.kind, critical: r.critical, statement: r.statement };
   });
-  const idMap = new Map<string, string>([...n.asIsSteps.map((s, i) => [s.id, `as_is_${i + 1}`] as const), ...reqs.map(r => [r.origId, `rq_${r.key}`] as const)]);
+  // Input open questions read as IQ-n (the label the To-Be itself uses); an older design that still cites a raw question id gets it rewritten the same way.
+  const idMap = new Map<string, string>([...n.asIsSteps.map((s, i) => [s.id, `as_is_${i + 1}`] as const), ...reqs.map(r => [r.origId, `rq_${r.key}`] as const),
+    ...n.inputQuestions.map((q, i) => [q.id, q.label ?? inputQuestionLabel(i)] as const).filter(([id, label]) => id !== label)]);
   if (new Set(idMap.values()).size !== idMap.size) throw new Error("Judge ids are not unique");
 
   // Longest first so an id never shadows a longer one it prefixes (_1 vs _10); the lookarounds stop a match inside a longer identifier.
   const ids = [...idMap.keys()].sort((a, b) => b.length - a.length);
   const pattern = new RegExp(`(?<![A-Za-z0-9_-])(?:${ids.map(escape).join("|")})(?![A-Za-z0-9_-])`, "g");
   const original = JSON.stringify({ design: n.design, derived: n.derived });
-  const counts = { asIs: 0, requirement: 0 };
-  const mapped = original.replace(pattern, id => { const to = idMap.get(id)!; if (to.startsWith("rq_")) counts.requirement++; else counts.asIs++; return to; });
+  const counts = { asIs: 0, requirement: 0, question: 0 };
+  const mapped = original.replace(pattern, id => { const to = idMap.get(id)!; if (to.startsWith("rq_")) counts.requirement++; else if (to.startsWith("IQ-")) counts.question++; else counts.asIs++; return to; });
   const { design, derived } = JSON.parse(mapped) as { design: Record<string, unknown>; derived: Record<string, unknown> };
 
   const residual = ids.filter(id => new RegExp(`(?<![A-Za-z0-9_-])${escape(id)}(?![A-Za-z0-9_-])`).test(mapped));
@@ -83,7 +87,7 @@ function main() {
   // Positive control: the detector must find ids in the unmapped text, otherwise "residual 0" proves nothing.
   const controlHits = ids.filter(id => new RegExp(`(?<![A-Za-z0-9_-])${escape(id)}(?![A-Za-z0-9_-])`).test(original)).length;
   const problems = [
-    ...(counts.asIs + counts.requirement === 0 ? ["no id was replaced"] : []), ...(controlHits === 0 ? ["positive control failed: detector found no original id in the input"] : []),
+    ...(counts.asIs + counts.requirement + counts.question === 0 ? ["no id was replaced"] : []), ...(controlHits === 0 ? ["positive control failed: detector found no original id in the input"] : []),
     ...(residual.length ? [`${residual.length} original ids remain`] : []), ...(uuidShaped ? [`${uuidShaped} uuid-shaped ids remain`] : []),
   ];
 

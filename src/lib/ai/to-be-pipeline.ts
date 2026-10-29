@@ -3,14 +3,17 @@ import { contextForStep } from "../company-context";
 import { phase } from "./design-primitives";
 import { DetailedDesignSchema, EFFECTS_SHAPE, IMPLEMENTATION_KINDS, STEP_TYPES, draftIssues, evaluateDesign, id, ids, list, text,
   inputIds, type DesignContext, type DetailedDesign } from "./design-quality";
-import { LATE_GROUPS, REGISTER_GROUPS, REGISTER_GROUP_NAMES, RegisterGroupSchemas, groupOf, type RegisterGroup, type RegisterPayloads } from "./design-registers";
+import { consolidateDesign } from "./design-consolidate";
+import { LATE_GROUPS, REGISTER_GROUPS, inferRicefwTypes, mergeDuplicateRoles, normaliseKpiRows, personNamesIn, registerInputQuestions, removePersonNames, renameRoleRefs, rewriteQuestionIds, REGISTER_GROUP_NAMES, RegisterGroupSchemas, groupOf, type RegisterGroup, type RegisterPayloads } from "./design-registers";
 import type { ValidationIssue } from "./problem-analysis";
 import { repairOutlineLinks, repairOutlineShape, restoreFromPrevious } from "./outline-repair";
 import { allowedKinds, applyOutlinePatch, isPatchable, locate, type OutlinePatch } from "./outline-patch";
 import { noCatalogNote } from "../sap-releases";
 import { normalizeToolInput } from "./tool-input-normalizer";
-import { repairIdVariants } from "./id-variant-repair";
+import { repairIdTypos, repairIdVariants } from "./id-variant-repair";
+import { shortenInputIds } from "./input-id-labels";
 import { repairRegisterGroup, repairStepBody } from "./part-repair";
+import { inputQuestionLabel } from "../to-be-derived";
 import { LEAK_DETAIL, TOOL_MARKUP_LEAKED, findToolMarkup, hasToolMarkup } from "./tool-markup";
 import { toBeContext, validateToBeOutput, type ToBeInput, type ToBeOutput } from "./to-be";
 import { extractSapCodes, textFields, designIds } from "./design-text-lint";
@@ -26,15 +29,23 @@ import { collectTargets, explainBlocker, findingLine, fixNote, newQuestionNote, 
 
 export type Substage = "to_be_outline" | "to_be_step" | "to_be_registers" | "to_be_review" | "to_be_fix";
 
+/** Outline-only length limits: the outline is one call that must hold every step, coverage row and question, so its free text stays to a sentence or two
+ * (live outlines in fixtures/ai/to-be peak at purpose 254, rationale 517, reason 560 chars, so these are guard rails above real answers, not a size lever). The final design keeps the wider `text` limit. */
+export const OUTLINE_PURPOSE_MAX_CHARS = 300;
+export const OUTLINE_RATIONALE_MAX_CHARS = 600;
+export const OUTLINE_REASON_MAX_CHARS = 700;
+const DESIGN_COVERAGE_ROW = DetailedDesignSchema.shape.coverage.element;
+const DESIGN_ELIMINATED_ROW = DetailedDesignSchema.shape.eliminatedAsIsSteps.element;
+
 export const OutlineSchema = z.strictObject({
   schemaVersion: z.literal(1), processName: text,
   steps: list(z.strictObject({
-    id, sequence: z.number().int().positive(), title: text, purpose: text,
+    id, sequence: z.number().int().positive(), title: text, purpose: text.max(OUTLINE_PURPOSE_MAX_CHARS),
     asIsStepIds: ids, requirementIds: ids, enablesStepIds: DetailedDesignSchema.shape.steps.element.shape.enablesStepIds,
     implementation: z.strictObject({ kind: z.enum(IMPLEMENTATION_KINDS), referenceIds: ids }),
   })).min(1),
-  eliminatedAsIsSteps: DetailedDesignSchema.shape.eliminatedAsIsSteps,
-  coverage: DetailedDesignSchema.shape.coverage,
+  eliminatedAsIsSteps: list(DESIGN_ELIMINATED_ROW.extend({ reason: text.max(OUTLINE_REASON_MAX_CHARS) })),
+  coverage: list(DESIGN_COVERAGE_ROW.extend({ rationale: text.max(OUTLINE_RATIONALE_MAX_CHARS) })),
   conflictDecisions: DetailedDesignSchema.shape.conflictDecisions,
   openQuestions: DetailedDesignSchema.shape.openQuestions,
 });
@@ -202,19 +213,22 @@ export function validateOutline(input: ToBeInput, references: DesignContext["ref
   if (marked) return { success: false, errors: [{ path: marked, code: TOOL_MARKUP_LEAKED, detail: LEAK_DETAIL }] };
   const normalized = normalizeToolInput(OutlineSchema, raw, "outline");
   const restored = previous ? restoreFromPrevious(previous, normalized.value) : { value: normalized.value, warnings: [] };
-  const repaired = repairOutlineShape(input.discovery, new Set(references.map(reference => reference.id)), restored.value,
+  // A mis-copied long id is settled before the shape repair, which would drop it as unknown.
+  const d = input.discovery, typoIds = [d.requirements, d.asIsSteps, d.sources, d.conflicts, input.decisionRegister].flatMap(items => (items ?? []).map(item => item.id));
+  const typos = repairIdTypos(restored.value, typoIds, "outline");
+  const repaired = repairOutlineShape(input.discovery, new Set(references.map(reference => reference.id)), typos.value,
     new Set((input.decisionRegister ?? []).map(decision => decision.id)));
   const linked = repairOutlineLinks({ product: input.targetProduct, release: input.discovery.targetRelease ?? "UNKNOWN" }, references, repaired.value);
   const shapedOk = OutlineSchema.safeParse(linked.value);
   if (!shapedOk.success) return { success: false, errors: rePath(draftIssues(shapedOk.error.issues), "draft", "outline"), shaped: linked.value };
-  // Only an outline that already parses is respelled: the variant repair changes free text, never what the schema checks.
   const context = toBeContext(input, references);
+  // Only an outline that already parses is respelled: the variant repair changes free text, never what the schema checks.
   const respelled = repairIdVariants(linked.value, [...inputIds(context), ...designIds(linked.value), ...(context.decisionRegister ?? []).map(item => item.id)], "outline");
   const parsed = OutlineSchema.safeParse(respelled.value);
   if (!parsed.success) return { success: false, errors: rePath(draftIssues(parsed.error.issues), "draft", "outline"), shaped: respelled.value };
   const evaluation = evaluateDesign(context, skeleton(parsed.data));
   if (!evaluation.structurallyValid) return { success: false, errors: rePath(evaluation.errors, "draft", "outline").slice(0, MAX_ERRORS), shaped: respelled.value };
-  return { success: true, outline: parsed.data, warnings: [...normalized.warnings, ...restored.warnings, ...repaired.warnings, ...linked.warnings, ...respelled.warnings], shaped: respelled.value };
+  return { success: true, outline: parsed.data, warnings: [...normalized.warnings, ...restored.warnings, ...typos.warnings, ...repaired.warnings, ...linked.warnings, ...respelled.warnings], shaped: respelled.value };
 }
 
 /** Join the outline and the step bodies into a DetailedDesign. Parallel step calls cannot coordinate ids, so a business-rule or
@@ -392,6 +406,8 @@ export type DesignDeps = {
   record: (issues: ValidationIssue[]) => void;
   /** Record the deterministic repairs the server applied to an accepted call (warnings, not errors). */
   warn?: (issues: ValidationIssue[]) => void;
+  /** Eval only: the assembled design of the latest round whose validation failed, with that round's errors. Whatever ends the stage, the last call is the draft that was never accepted. */
+  lastDraft?: (design: unknown, errors: ValidationIssue[]) => void;
   /** Eval only: the raw payload of a call that failed validation, with the call it answered. */
   rawFailure?: (substage: Substage, key: string, payload: unknown) => void;
   parallelism: number;
@@ -405,6 +421,8 @@ export type DesignDeps = {
   review?: boolean;
   /** Most parts the fix pass may send back (AI_TO_BE_FIX_MAX_PARTS). Default 0 here (off); the stage runner passes the operator's value, default 8. */
   maxFixParts?: number;
+  /** Review rounds (AI_TO_BE_REVIEW_ROUNDS, 1-3). Default 1 here (the single review and fix pass); the stage runner passes the operator's value, default 2. */
+  reviewRounds?: number;
 };
 
 /** The first outline repair is always allowed; each further one only while more than this share of the stage budget remains. */
@@ -418,10 +436,27 @@ export const MAX_REVIEW_REPAIRS = 6;
 /** The fix pass only starts while more than this share of the stage budget remains; adding a step through an outline patch needs more. */
 export const FIX_MIN_REMAINING = 0.25;
 export const FIX_PATCH_MIN_REMAINING = 0.4;
+/** The same finding, worded alike by the reviewer in a later round: kind, elements and explanation, ignoring case and spacing. */
+const findingKey = (finding: Pick<ReviewOutcome, "kind" | "paths" | "explanation">) =>
+  `${finding.kind}|${[...finding.paths].sort().join(",")}|${finding.explanation.toLowerCase().replace(/\s+/g, " ").trim()}`;
+const percent = (fraction: number) => `${Math.round(fraction * 100)}%`;
 export const outlineRepairAllowed = (done: number, max: number, remaining: number) =>
   done < max && (done === 0 || remaining > EXTRA_OUTLINE_REPAIR_MIN_REMAINING);
 
-export async function runDesign(input: ToBeInput, references: DesignContext["references"], deps: DesignDeps): Promise<ToBeOutput> {
+/** The model, the checks and the design text see input open questions as IQ-1..IQ-n (input order): production ids such as q_st_<uuid>_7 cannot be read or looked up by a consultant.
+ * The result keeps each question's original id and adds its label, so "Pending IQ-7" resolves in the report. */
+export async function runDesign(rawInput: ToBeInput, references: DesignContext["references"], rawDeps: DesignDeps): Promise<ToBeOutput> {
+  const labels = new Map(rawInput.discovery.openQuestions.map((question, i) => [question.id, inputQuestionLabel(i)] as const));
+  // Requirement and As-Is step ids read RQ-n / AS-n for the model and the checks when the input's are long (input-id-labels.ts); everything leaving this function carries the originals.
+  const { input: shortened, restore } = shortenInputIds(rawInput);
+  const deps: DesignDeps = { ...rawDeps, record: issues => rawDeps.record(restore(issues)), warn: rawDeps.warn && (issues => rawDeps.warn!(restore(issues))),
+    lastDraft: rawDeps.lastDraft && ((design, errors) => rawDeps.lastDraft!(restore(design), restore(errors))), rawFailure: rawDeps.rawFailure && ((substage, key, payload) => rawDeps.rawFailure!(substage, key, restore(payload))) };
+  const input: ToBeInput = { ...shortened, discovery: { ...shortened.discovery, openQuestions: shortened.discovery.openQuestions.map((question, i) => ({ ...question, id: inputQuestionLabel(i) })) } };
+  const result = restore(await runLabelledDesign(input, references, deps, labels));
+  return { ...result, unresolvedInputQuestions: rawInput.discovery.openQuestions.map((question, i) => ({ ...question, label: inputQuestionLabel(i) })) };
+}
+
+async function runLabelledDesign(input: ToBeInput, references: DesignContext["references"], deps: DesignDeps, labels: ReadonlyMap<string, string>): Promise<ToBeOutput> {
   let outlineRepairs = 0;
   const canRepairOutline = () => outlineRepairAllowed(outlineRepairs, deps.maxOutlineRepairs ?? 2, deps.remainingBudget?.() ?? 1);
   let lastShaped: unknown;
@@ -490,6 +525,22 @@ export async function runDesign(input: ToBeInput, references: DesignContext["ref
 
   const details = new Map<string, StepDetail>(), registers = new Map<RegisterGroup, unknown>(), retries = new Map<string, number>();
   const registerKey = (group: RegisterGroup) => `register:${group}`;
+  /** Role-name variants the governance merge dropped, by kept name: wherever an assembled design names a role by actor or owner, the variant is written as the kept name. */
+  const roleRenames = new Map<string, string>();
+  /** Deterministic text rewrites run on every assembled design, so the checks see the text that ships; each is reported once per path. */
+  const reported = new Set<string>();
+  /** Names the discovery text gives after an honorific: removed from the design even where it writes them without one. */
+  const personNames = personNamesIn([...input.discovery.sources.map(source => source.text), ...(input.discovery.companyContext ?? []).map(item => item.value)]);
+  const assembled = (current: Outline, from: ReadonlyMap<string, StepDetail>, groups?: ReadonlyMap<RegisterGroup, unknown>) => {
+    const renamed = renameRoleRefs(assemble(current, from, groups), roleRenames);
+    const ids = rewriteQuestionIds(renamed, labels), named = removePersonNames(ids.design, personNames);
+    const registered = registerInputQuestions(named.design, input.discovery.openQuestions);
+    const consolidated = consolidateDesign(registered.design);
+    const fresh = [...ids.warnings, ...named.warnings, ...registered.warnings, ...consolidated.warnings].filter(warning => !reported.has(`${warning.code}@${warning.path}`));
+    for (const warning of fresh) reported.add(`${warning.code}@${warning.path}`);
+    if (fresh.length) deps.warn?.(fresh);
+    return consolidated.design;
+  };
   const warnAll = (...lists: ValidationIssue[][]) => { const all = lists.flat(); if (all.length) deps.warn?.(all); };
   const decisionIds = new Set((input.decisionRegister ?? []).map(decision => decision.id));
   const requirementIds = new Set(input.discovery.requirements.map(requirement => requirement.id));
@@ -510,8 +561,11 @@ export async function runDesign(input: ToBeInput, references: DesignContext["ref
     const marked = raw !== TRUNCATED && findToolMarkup(raw, path);
     if (marked) return { ok: false as const, errors: [{ path: marked, code: TOOL_MARKUP_LEAKED, detail: LEAK_DETAIL }] };
     const normalized = normalizeToolInput(StepDetailSchema, raw, path);
-    const repaired = repairStepBody(normalized.value, decisionIds, path);
-    const respelled = repairIdVariants(repaired.value, citable(current, repaired.value), path);
+    // Typos first: the repairs after it drop ids they do not know.
+    const known = citable(current, normalized.value), typos = repairIdTypos(normalized.value, known, path);
+    const repaired = repairStepBody(typos.value, decisionIds, path);
+    const variants = repairIdVariants(repaired.value, known, path);
+    const respelled = { value: variants.value, warnings: [...typos.warnings, ...variants.warnings] };
     const parsed = StepDetailSchema.safeParse(respelled.value);
     if (parsed.success) return { ok: true as const, value: parsed.data, warnings: [normalized.warnings, repaired.warnings, respelled.warnings] };
     return { ok: false as const, errors: raw === TRUNCATED ? [{ path, code: OUTPUT_TRUNCATED }] : raw === null ? [leaked.has(stepId) ? { path, code: TOOL_MARKUP_LEAKED, detail: LEAK_DETAIL } : { path, code: NO_TOOL_PAYLOAD }] : rePath(draftIssues(parsed.error.issues), "draft", path) };
@@ -521,10 +575,22 @@ export async function runDesign(input: ToBeInput, references: DesignContext["ref
     const marked = raw !== TRUNCATED && findToolMarkup(raw, "draft");
     if (marked) return { ok: false as const, errors: [{ path: marked, code: TOOL_MARKUP_LEAKED, detail: LEAK_DETAIL }] };
     const normalized = normalizeToolInput(RegisterGroupSchemas[group], raw, "draft");
-    const repaired = repairRegisterGroup(normalized.value, { requirementIds, stepIds: new Set(current.steps.map(step => step.id)), decisionIds });
-    const respelled = repairIdVariants(repaired.value, citable(current, repaired.value), "draft");
+    const known = citable(current, normalized.value), typos = repairIdTypos(normalized.value, known, "draft");
+    const repaired = repairRegisterGroup(typos.value, { requirementIds, stepIds: new Set(current.steps.map(step => step.id)), decisionIds });
+    const variants = repairIdVariants(repaired.value, known, "draft");
+    const respelled = { value: variants.value, warnings: [...typos.warnings, ...variants.warnings] };
     const parsed = RegisterGroupSchemas[group].safeParse(respelled.value);
-    if (parsed.success) return { ok: true as const, value: parsed.data satisfies RegisterPayloads[RegisterGroup], warnings: [normalized.warnings, repaired.warnings, respelled.warnings] };
+    if (parsed.success) {
+      // Every register answer (first call, repair, consistency and fix passes) comes through here: what the server can settle deterministically is settled before anything validates it
+      // (KPI values from the answers, duplicate roles merged, a missing RICEFW type read from the justification), each as a warning.
+      const data = parsed.data as RegisterPayloads[RegisterGroup];
+      const kpis = group === "integration" ? normaliseKpiRows((data as RegisterPayloads["integration"]).kpis, input.discovery.companyContext ?? [], "draft.kpis") : undefined;
+      const types = group === "fitgap" ? inferRicefwTypes((data as RegisterPayloads["fitgap"]).fitGap, "draft.fitGap") : undefined;
+      const roles = group === "governance" ? mergeDuplicateRoles(data as RegisterPayloads["governance"], "draft") : undefined;
+      roles?.renames.forEach((kept, dropped) => roleRenames.set(dropped, kept));
+      const value = kpis ? { ...data, kpis: kpis.rows } : types ? { ...data, fitGap: types.rows } : roles ? roles.value : data;
+      return { ok: true as const, value: value satisfies RegisterPayloads[RegisterGroup], warnings: [normalized.warnings, repaired.warnings, respelled.warnings, kpis?.warnings ?? [], types?.warnings ?? [], roles?.warnings ?? []] };
+    }
     return { ok: false as const, errors: raw === TRUNCATED ? [{ path: "draft", code: OUTPUT_TRUNCATED }] : raw === null ? [leaked.has(registerKey(group)) ? { path: "draft", code: TOOL_MARKUP_LEAKED, detail: LEAK_DETAIL } : { path: "draft", code: NO_TOOL_PAYLOAD }] : draftIssues(parsed.error.issues) };
   };
 
@@ -561,7 +627,7 @@ export async function runDesign(input: ToBeInput, references: DesignContext["ref
       let validationErrors = errors.get(registerKey(group)) ?? [];
       let previous = validationErrors.length ? resendable(registers.get(group)) : undefined;
       // A late group reads the finished steps; by the time it runs every step of `current` is in `details`.
-      const steps = isLate(group) ? assemble(current, details).steps : undefined;
+      const steps = isLate(group) ? assembled(current, details).steps : undefined;
       for (;;) {
         const raw = await ask(registerKey(group), "to_be_registers", registerRequest(input, references, current, group, validationErrors, steps, previous && { current: previous }), group);
         const result = readGroup(current, group, raw);
@@ -591,7 +657,7 @@ export async function runDesign(input: ToBeInput, references: DesignContext["ref
         if (result.ok) { warnAll(...result.warnings); return { part, step: result.value }; }
         if (raw !== TRUNCATED && raw !== null) deps.rawFailure?.(fix ? "to_be_fix" : "to_be_step", `${part.stepId}-${tag}`, raw);
       } else {
-        const steps = isLate(part.group) ? assemble(current, details).steps : undefined;
+        const steps = isLate(part.group) ? assembled(current, details).steps : undefined;
         const raw = await deps.ask(fix ? "to_be_fix" : "to_be_registers", registerRequest(input, references, current, part.group, [], steps, { note, current: registers.get(part.group) }), part.group);
         const result = readGroup(current, part.group, raw);
         if (result.ok) { warnAll(...result.warnings); return { part, group: result.value }; }
@@ -606,7 +672,7 @@ export async function runDesign(input: ToBeInput, references: DesignContext["ref
   /** The consistency pass. A valid design is read once as a whole; each finding that names a step or register group sends that part back once with the finding as its
    * repair note, and a repair is kept only if the whole design is still valid with it. Findings that name no part, parts the repair could not fix and findings beyond the
    * repair limit stay as review findings. The pass never fails the stage: a design that was valid before it is valid after it. */
-  const reviewed = async (data: ToBeOutput, design: DetailedDesign): Promise<ToBeOutput> => {
+  const reviewed = async (data: ToBeOutput, design: DetailedDesign, round = 1): Promise<ToBeOutput> => {
     const skip = (code: string) => { deps.warn?.([{ code, path: "to_be_review" }]); return data; };
     if (!deps.review) return data;
     if ((deps.remainingBudget?.() ?? 1) <= REVIEW_MIN_REMAINING) return skip("REVIEW_SKIPPED_BUDGET");
@@ -620,6 +686,12 @@ export async function runDesign(input: ToBeInput, references: DesignContext["ref
       if (!parsed.success) return skip("REVIEW_INVALID_OUTPUT");
       found = parsed.data.findings;
     } catch { return skip("REVIEW_FAILED"); }
+    // A later round answers only for what the earlier rounds did not already say: findings identical to one of theirs (repaired or still open) are not routed or listed again.
+    const earlier = round > 1 ? data.reviewFindings ?? [] : [], earlierKeys = new Set(earlier.map(findingKey));
+    const reported = found.length;
+    found = found.filter(finding => !earlierKeys.has(findingKey(finding)));
+    const roundNote = (detail: string) => { if ((deps.reviewRounds ?? 1) > 1) deps.warn?.([{ code: "REVIEW_ROUND", path: "to_be_review", detail: `round ${round}: ${detail}` }]); };
+    if (round > 1 && !found.length) { roundNote(`${reported} findings, none new`); return data; }
     const findings: RoutedFinding[] = routeFindings(design, found);
     const byPart = new Map<string, { part: Part; findings: RoutedFinding[] }>();
     for (const finding of findings) for (const part of finding.parts) {
@@ -646,7 +718,7 @@ export async function runDesign(input: ToBeInput, references: DesignContext["ref
       const priorStep = part.type === "step" ? details.get(part.stepId) : undefined, priorGroup = part.type === "group" ? registers.get(part.group) : undefined;
       if (proposal.step && part.type === "step") details.set(part.stepId, proposal.step);
       if (proposal.group && part.type === "group") registers.set(part.group, proposal.group);
-      const trial = assemble(current, details, registers), validated = validateToBeOutput(input, trial, references);
+      const trial = assembled(current, details, registers), validated = validateToBeOutput(input, trial, references);
       if (validated.success) {
         result = validated.data; finalDesign = trial; adopted.add(partKey(part));
         deps.warn?.([{ code: "REVIEW_REPAIRED", path: part.type === "step" ? `draft.steps.${current.steps.findIndex(step => step.id === part.stepId)}` : `draft.${part.group}` }]);
@@ -659,10 +731,12 @@ export async function runDesign(input: ToBeInput, references: DesignContext["ref
     // A finding is resolved only when every part it names was repaired and kept. The blockers point into the final design.
     const open = routeFindings(finalDesign, found).map((routed, i) => ({ ...routed,
       outcome: findings[i]!.parts.length > 0 && findings[i]!.parts.every(part => adopted.has(partKey(part))) ? "REPAIRED" as const : "UNRESOLVED" as const }));
-    const extra = reviewBlockers(open);
+    const everything: ReviewOutcome[] = [...earlier, ...open.map(({ kind, paths, explanation, outcome, blockerPath }) => ({ kind, paths, explanation, outcome, blockerPath }))];
+    const extra = reviewBlockers(everything);
     const final = extra.length ? validateToBeOutput(input, finalDesign, references, extra) : undefined;
     deps.warn?.(open.map(finding => ({ code: `REVIEW_${finding.outcome}_${finding.kind}`, path: finding.blockerPath })));
-    return { ...(final?.success ? final.data : result), reviewFindings: open.map(({ kind, paths, explanation, outcome, blockerPath }) => ({ kind, paths, explanation, outcome, blockerPath })) };
+    roundNote(`${reported} findings, ${found.length} new, ${adopted.size} of ${parts.length} parts repaired, ${open.filter(finding => finding.outcome === "UNRESOLVED").length} open`);
+    return { ...(final?.success ? final.data : result), reviewFindings: everything };
   };
 
   /** The fix pass, part by part: every fixable heuristic blocker and every unresolved review finding that names a part goes back to that part in ONE call (all findings
@@ -690,7 +764,7 @@ export async function runDesign(input: ToBeInput, references: DesignContext["ref
       const withPart = new Set([...adopted, partKey(part)]);
       const trialFindings = findings?.map((finding, i): ReviewOutcome => finding.outcome === "UNRESOLVED" && routed[i]!.parts.length > 0 && routed[i]!.parts.every(item => withPart.has(partKey(item)))
         ? { ...finding, outcome: "REPAIRED" } : finding);
-      const validated = validateToBeOutput(input, assemble(outline, details, registers), references, reviewBlockers(trialFindings));
+      const validated = validateToBeOutput(input, assembled(outline, details, registers), references, reviewBlockers(trialFindings));
       const stillOpen = (blocker: { code: string; path: string }) => validated.success && validated.data.evaluation.blockers.some(item => item.code === blocker.code && item.path === blocker.path);
       const cleared = target.blockers.filter(blocker => !stillOpen(blocker)).length
         + (trialFindings ?? []).filter((finding, i) => finding.outcome === "REPAIRED" && findings![i]!.outcome === "UNRESOLVED").length;
@@ -730,7 +804,7 @@ export async function runDesign(input: ToBeInput, references: DesignContext["ref
     for (const [stepId, detail] of expanded) details.set(stepId, detail);
     outline = patched.outline; lastShaped = patched.shaped;
     const findings = data.reviewFindings?.map((finding, i): ReviewOutcome => indexes.includes(i) ? { ...finding, outcome: "REPAIRED" } : finding);
-    const validated = validateToBeOutput(input, assemble(outline, details, registers), references, reviewBlockers(findings));
+    const validated = validateToBeOutput(input, assembled(outline, details, registers), references, reviewBlockers(findings));
     return validated.success ? { ...validated.data, ...(findings && { reviewFindings: findings }) } : undefined;
   };
 
@@ -762,12 +836,31 @@ export async function runDesign(input: ToBeInput, references: DesignContext["ref
     return afterParts;
   };
 
+  /** Round 1 is the review and the fix pass. Each further round (AI_TO_BE_REVIEW_ROUNDS) reads the repaired design again and sends its new findings back for one more repair, only while the
+   * budget left exceeds what the most expensive round so far took (measured as a share of the stage budget); otherwise REVIEW_ROUND_SKIPPED_BUDGET and the findings stay as reported. */
+  const reviewRounds = async (data: ToBeOutput, design: DetailedDesign): Promise<ToBeOutput> => {
+    const remaining = () => deps.remainingBudget?.() ?? 1, rounds = Math.min(3, Math.max(1, deps.reviewRounds ?? 1));
+    const first = remaining();
+    let out = await fixed(await reviewed(data, design)), spent = first - remaining();
+    for (let round = 2; round <= rounds && deps.review && out.reviewFindings?.length; round++) {
+      const left = remaining();
+      if (left <= Math.max(REVIEW_MIN_REMAINING, spent)) {
+        deps.warn?.([{ code: "REVIEW_ROUND_SKIPPED_BUDGET", path: "to_be_review", detail: `round ${round}: ${percent(left)} of the budget left, the longest round so far took ${percent(spent)}` }]);
+        break;
+      }
+      out = await reviewed(out, out.design, round);
+      spent = Math.max(spent, left - remaining());
+    }
+    return out;
+  };
+
   await expand(outline.steps.map(step => step.id), REGISTER_GROUP_NAMES, new Map());
   for (let round = 0; ; round++) {
-    const design = assemble(outline, details, registers);
+    const design = assembled(outline, details, registers);
     const result = validateToBeOutput(input, design, references);
-    if (result.success) return fixed(await reviewed(result.data, design));
+    if (result.success) return reviewRounds(result.data, design);
     deps.record(result.errors);
+    deps.lastDraft?.(design, result.errors);
     if (round >= MAX_REEXPANSION_ROUNDS) throw deps.invalid();
     const { byStep, byGroup, global } = attributeErrors(result.errors, design);
     const redo = new Set(byStep.keys()), redoGroups = new Set(byGroup.keys());

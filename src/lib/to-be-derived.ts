@@ -17,8 +17,16 @@ export type DeriveMeta = {
   targetProduct: string; targetRelease: string | null;
   sources: readonly { id: string; title: string; revision: string; digest?: string }[];
 };
+/** Input open questions read as IQ-1..IQ-n in the design text; `label` is the readable id, `id` the original one. */
+export const inputQuestionLabel = (index: number) => `IQ-${index + 1}`;
+export type InputQuestionRow = { label: string; id: string; question: string; owner: string };
+export const inputQuestionRows = (questions: readonly { id: string; question: string; owner: string; label?: string }[]): InputQuestionRow[] =>
+  questions.map((item, i) => ({ label: item.label ?? inputQuestionLabel(i), id: item.id, question: item.question, owner: item.owner }));
+
 export type DeriveInput = {
   design: DetailedDesign;
+  /** The input open questions the result still carries, in input order. */
+  inputQuestions?: readonly { id: string; question: string; owner: string; label?: string }[];
   asIsSteps: readonly Pick<DiscoveryInput["asIsSteps"][number], "id" | "sequence" | "name" | "actor" | "system" | "trigger" | "description" | "inputs" | "outputs" | "controls" | "exceptions">[];
   meta: DeriveMeta;
 };
@@ -39,7 +47,7 @@ export type RicefwItem = { id: string; source: RicefwSource; type: string; class
   rationale: string; referenceIds: string[]; needsValidation: boolean; validationReason: string | null; owner: string | null; status: string | null };
 export type ActorRoleRow = { stepId: string; actor: string; roleIds: string[] };
 export type DerivedSections = {
-  documentControl: DocumentControl; asIsNarratives: AsIsNarrative[]; eliminatedAsIs: EliminatedAsIs[]; ricefwList: RicefwItem[]; actorRoles: ActorRoleRow[];
+  documentControl: DocumentControl; asIsNarratives: AsIsNarrative[]; eliminatedAsIs: EliminatedAsIs[]; ricefwList: RicefwItem[]; actorRoles: ActorRoleRow[]; inputQuestions: InputQuestionRow[];
 };
 
 const NOT_RECORDED = "Not recorded";
@@ -132,7 +140,34 @@ export function ricefwList({ design }: Pick<DeriveInput, "design">): RicefwItem[
     items.push({ source: "ANALYTICS", type: "REPORT", classification: "CUSTOM_ANALYTICS", requirementId: row.requirementIds[0] ?? null, linkedSteps: titleOf(new Set(row.linked)),
       rationale: row.text.slice(0, RATIONALE_CHARS), referenceIds: row.referenceIds, needsValidation: row.needsValidation, validationReason: row.validationReason, owner: null, status: null });
   }
-  return items.map((item, i) => ({ id: `RICEFW-${i + 1}`, ...item }));
+  return mergeDuplicateRicefw(items).map((item, i) => ({ id: `RICEFW-${i + 1}`, ...item }));
+}
+
+const RICEFW_TOKEN_OVERLAP = 0.6, RICEFW_MIN_TOKENS = 4;
+const ricefwTokens = (text: string) => new Set((text.toLowerCase().match(/[\p{L}\p{N}]{3,}/gu) ?? []));
+/** Of two items of one type, true when they are the same thing listed twice: the same requirement, a shared step (two fit-gap rows for different requirements are never merged), or
+ * rationales that share 60% of the words of the shorter one. */
+function sameRicefwItem(a: Omit<RicefwItem, "id">, b: Omit<RicefwItem, "id">): boolean {
+  if (a.type !== b.type) return false;
+  if (a.source === "FIT_GAP" && b.source === "FIT_GAP" && a.requirementId !== b.requirementId) return false;
+  const tokensA = ricefwTokens(a.rationale), tokensB = ricefwTokens(b.rationale);
+  const shared = [...tokensA].filter(token => tokensB.has(token)).length, smaller = Math.min(tokensA.size, tokensB.size);
+  if (smaller >= RICEFW_MIN_TOKENS && shared / smaller >= RICEFW_TOKEN_OVERLAP) return true;
+  if (a.requirementId !== null && a.requirementId === b.requirementId) return true;
+  return a.linkedSteps.some(step => b.linkedSteps.some(other => other.id === step.id));
+}
+/** Items listed twice (a fit-gap row and a step, or two steps, naming the same enhancement) become one: the first item stays, with the union of steps and references. */
+function mergeDuplicateRicefw(items: Omit<RicefwItem, "id">[]): Omit<RicefwItem, "id">[] {
+  const kept: Omit<RicefwItem, "id">[] = [];
+  for (const item of items) {
+    const i = kept.findIndex(other => sameRicefwItem(other, item));
+    if (i < 0) { kept.push(item); continue; }
+    const first = kept[i]!;
+    kept[i] = { ...first, requirementId: first.requirementId ?? item.requirementId, needsValidation: first.needsValidation || item.needsValidation,
+      validationReason: first.validationReason ?? item.validationReason, owner: first.owner ?? item.owner, status: first.status ?? item.status,
+      linkedSteps: [...new Map([...first.linkedSteps, ...item.linkedSteps].map(step => [step.id, step])).values()], referenceIds: [...new Set([...first.referenceIds, ...item.referenceIds])] };
+  }
+  return kept;
 }
 
 /** Which role-catalogue rows cover each step, next to the step's actor as written. */
@@ -141,5 +176,5 @@ export const actorRoles = ({ design }: Pick<DeriveInput, "design">): ActorRoleRo
 
 export function deriveSections(input: DeriveInput): DerivedSections {
   const { narratives, eliminated } = asIsNarratives(input);
-  return { documentControl: documentControl(input), asIsNarratives: narratives, eliminatedAsIs: eliminated, ricefwList: ricefwList(input), actorRoles: actorRoles(input) };
+  return { documentControl: documentControl(input), asIsNarratives: narratives, eliminatedAsIs: eliminated, ricefwList: ricefwList(input), actorRoles: actorRoles(input), inputQuestions: inputQuestionRows(input.inputQuestions ?? []) };
 }

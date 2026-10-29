@@ -54,6 +54,31 @@ describe("As-Is narrative per step (checklist 5)", () => {
   });
 });
 
+describe("consolidated RICEFW list: the same enhancement is listed once", () => {
+  const TEXT = "Key-user extension adds a deposit approval field to the rental order and blocks release until it is filled.";
+  const withSteps = (kinds: number[], fitGap: DetailedDesign["fitGap"]): DetailedDesign => {
+    const draft = structuredClone(rentalDraftV3) as DetailedDesign;
+    for (const i of kinds) draft.steps[i]!.implementation = { ...draft.steps[i]!.implementation, kind: "EXTENSION", detail: TEXT, referenceIds: [] };
+    return { ...draft, fitGap };
+  };
+  const row = (requirementId: string, stepIds: string[], justification: string) => ({ ...rentalDraftV3.fitGap![0]!, requirementId, stepIds, classification: "KEY_USER_EXTENSION" as const, ricefwType: "ENHANCEMENT" as const, justification });
+  it("merges two step-derived items that name the same enhancement into one with both steps", () => {
+    const list = ricefwList({ design: withSteps([0, 1], []) });
+    expect(list).toHaveLength(1);
+    expect(list[0]!.linkedSteps.map(step => step.id)).toEqual(["TB-1", "TB-2"]);
+  });
+  it("merges a step-derived item into the fit-gap item whose rationale it repeats, keeping the union of steps", () => {
+    const list = ricefwList({ design: withSteps([1], [row("R-1", ["TB-1"], TEXT)]) });
+    expect(list).toHaveLength(1);
+    expect(list[0]).toMatchObject({ source: "FIT_GAP", requirementId: "R-1" });
+    expect(list[0]!.linkedSteps.map(step => step.id)).toEqual(["TB-1", "TB-2"]);
+  });
+  it("keeps apart items of different types and fit-gap rows for different requirements", () => {
+    const rows = [row("R-1", ["TB-1"], TEXT), row("R-2", ["TB-2"], TEXT), { ...row("R-3", ["TB-3"], TEXT), ricefwType: "REPORT" as const }];
+    expect(ricefwList({ design: withSteps([], rows) }).map(item => item.requirementId)).toEqual(["R-1", "R-2", "R-3"]);
+  });
+});
+
 describe("consolidated RICEFW list (checklist 19)", () => {
   it("has one entry per fit-gap row that needs something built, typed, with its linked steps and rationale", () => {
     const list = ricefwList({ design: rentalDraftV3 });

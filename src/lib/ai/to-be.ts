@@ -23,7 +23,8 @@ const InputSchema = z.strictObject({
 export type ToBeInput = z.infer<typeof InputSchema>;
 export type ToBeOutput = {
   design: DetailedDesign; evaluation: DesignEvaluation;
-  unresolvedInputQuestions: ToBeInput["discovery"]["openQuestions"];
+  /** The input's open questions as given (original id kept), each with the readable IQ-n label the design text uses. */
+  unresolvedInputQuestions: (ToBeInput["discovery"]["openQuestions"][number] & { label?: string })[];
   /** What the consistency pass found (kind, the elements it named, its sentence, and whether a repair resolved it). Absent when the pass did not run. Its unresolved findings are already in evaluation.blockers. */
   reviewFindings?: ReviewOutcome[];
 };

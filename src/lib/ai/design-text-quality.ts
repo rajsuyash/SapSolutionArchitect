@@ -23,14 +23,17 @@ function collect(design: unknown, check: (value: string, field: string) => strin
 // --- placeholder text --------------------------------------------------------------------------------------------------------------
 
 /** A value made only of these words says nothing ("Ignore", "placeholder", "TBD", "n/a", "?"). "None: <reason>" is a real statement and is not one. */
-const JUNK_WORD = /^(?:placeholders?|tbd|tba|tbc|todo|to-do|ignored?|n\/a|na|x{3,}|lorem|ipsum|dolor|sit|amet|text|value|here)$/i;
+const JUNK_WORD = /^(?:placeholders?|tbd|tba|tbc|todo|to-do|ignored?|n\/a|na|x{3,}|lorem|ipsum|dolor|sit|amet|here)$/i;
+/** Items of a `fields` list are SAP screen/document field names, so ordinary words ("Value", "Text", "Here") are real there; only unambiguous placeholders count. */
+const UNAMBIGUOUS_JUNK = /^(?:placeholders?|tbd|tba|tbc|todo|to-do|n\/a|x{3,}|lorem|ipsum)$/i;
 const TOKEN_EDGES = /^[\s"'`([{<*_.,:;!?-]+|[\s"'`)\]}>*_.,:;!?-]+$/g;
 /** An id with a question mark where its number goes ("ETO-OQ-?"), a lorem-ipsum run, or a bracketed gap marker ("[TBD]", "<insert owner>"). */
 const JUNK_INSIDE = /(?<![A-Za-z0-9])[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)*-\?(?![A-Za-z0-9])|\blorem ipsum\b|[[<](?:placeholder|tbd|todo|insert\b[^\]>]*)[\]>]/i;
 
-export const junkHits = (design: unknown): TextQualityHit[] => collect(design, value => {
+export const junkHits = (design: unknown): TextQualityHit[] => collect(design, (value, field) => {
   const words = value.split(/\s+/).map(word => word.replace(TOKEN_EDGES, "")).filter(Boolean);
-  if (!words.length || words.every(word => JUNK_WORD.test(word))) return ["placeholder text"];
+  const junkWord = field === "fields" ? UNAMBIGUOUS_JUNK : JUNK_WORD;
+  if (!words.length || words.every(word => junkWord.test(word))) return ["placeholder text"];
   return JUNK_INSIDE.test(value) ? ["placeholder in text"] : [];
 });
 

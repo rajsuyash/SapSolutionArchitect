@@ -32,6 +32,16 @@ Report only real problems between parts of this design that a reader would trip 
   receipt at once while another rule of the same step holds it pending question Q-2; a role register names who approves variances while Q-4 asks who may. Put the
   offending element ids and the question id in paths, and name the question id in the explanation. Say it must be made conditional on that question, never what
   the answer is; the question itself stays open.
+- Check these explicitly, each under the kind named. Coverage, key design decision and fit-gap of one requirement that disagree with each other or with a step's
+  hold (a requirement implemented or a decision taken while its step holds the behaviour pending a question): CONTRADICTION, or OPEN_QUESTION_DECIDED when a
+  still-open question is the cause. A report or output no step produces data for, and that no scope statement excludes: COVERAGE_GAP. A rule that rejects or
+  scraps goods with no posting and no step that posts it: MISSING_LINK. A lifecycle document without a status model or a stated standard status, or a model
+  whose document type has no configuration entry: MISSING_LINK. An interface row without failure handling (how a failed message is seen, who is alerted, how it is
+  safely rerun, what prevents a double post), or an approval without level(s), approver role or threshold (or the question that sets them): MISSING_LINK. A step that
+  posts, scraps or removes stock with an empty accounting entry, or a step that is not live in Phase 1 or at some site with no interim process: MISSING_LINK. A status
+  model transition that a step rule forbids: CONTRADICTION. A reason code, number range or pricing element named in a step without a configuration row: UNRESOLVED_CODE.
+  An owner or approver in any register or step that is not a role in the role catalogue: MISSING_LINK. A storage location, vendor location, plant or other organisation code a step uses that the
+  organisation structure neither defines nor lists as to be provided: UNRESOLVED_CODE.
 - INTERNAL_TERM: text meant for the client uses a working term of the tool that produced the design ("outline", "register call", "step call", "frozen").
 
 ## How to report
