@@ -2,7 +2,7 @@ import { z } from "zod";
 import type { CompanyContext } from "./company-context";
 import { MAX_OPEN_QUESTIONS, validateDiscovery, type DiscoveryInput } from "./discovery";
 import { describeField, REASK_AFTER_USER_TURNS, REASK_SUFFIX, STEP_GAP_PREFIX, STEP_KEYS as stepKeys, STEP_LABELS, STEP_QUESTIONS as stepQuestions,
-  describeBlocker, stepLabel, TO_CONFIRM, WORKSPACE_FIELDS } from "./workspace-fields";
+  carriedGaps, describeBlocker, stepLabel, TO_CONFIRM, WORKSPACE_FIELDS } from "./workspace-fields";
 import { parseInterviewInput, revalidateStoredTurn, type InterviewInput, type InterviewTurn, type Scope } from "./ai/discovery-interview";
 
 // Re-exported for server callers; the client imports ./workspace-fields directly.
@@ -413,10 +413,8 @@ function toBeNote(state: WorkspaceState): string {
   const { ready, draftReady, blockers } = getWorkspaceReadiness(state);
   if (ready) return "The As-Is is complete. A project lead or consultant can confirm it on the Summary tab and then generate the To-Be design.";
   if (draftReady) {
-    const steps = blockers.filter(b => b.code === "AS_IS_STEP_INCOMPLETE").length;
-    const points = state.observations.filter(o => o.status === "PENDING").length;
-    const parts = [steps && `${steps} unfinished step${steps === 1 ? "" : "s"}`, points && `${points} point${points === 1 ? "" : "s"} to check`].filter(Boolean).join(" and ");
-    return `A draft To-Be can be generated now: on the Summary tab, a project lead or consultant can use "Confirm as draft with gaps". ${parts} will be carried into the To-Be as ${steps + points === 1 ? "an open question" : "open questions"} to confirm.`;
+    const { total, parts } = carriedGaps(state, blockers);
+    return `A draft To-Be can be generated now: on the Summary tab, a project lead or consultant can use "Confirm as draft with gaps". ${parts} will be carried into the To-Be as ${total === 1 ? "an open question" : "open questions"} to confirm.`;
   }
   const hard = blockers.filter(b => !b.soft);
   const softCount = blockers.length - hard.length;

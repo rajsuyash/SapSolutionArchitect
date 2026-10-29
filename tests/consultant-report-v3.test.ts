@@ -66,7 +66,7 @@ describe("version 3 report: model-generated sections", () => {
     for (const heading of ["Fit-gap (clean core)", "Reports", "Document status models", "Configuration catalogue", "Role catalogue", "Actors and roles", "Segregation of duties",
       "Control mappings", "End-to-end scenarios", "Organisation structure", "Master-data prerequisites", "Interfaces", "KPIs"]) expect(registers, heading).toContain(`### ${heading}`);
     for (const expected of ["Open hire items by return date", "Hire order", "Partly returned", "Business to provide", "Rental coordinator", "Assessed: no conflict",
-      "Hire from order to billing", "Key-user extension", "Solution architect", "Created by the master-data steward", "ROLE-3"]) expect(registers, expected).toContain(expected);
+      "Hire from order to billing", "Key-user extension", "Rental coordinator", "Created by the master-data steward", "ROLE-3"]) expect(registers, expected).toContain(expected);
     const objectives = section("Objectives and scope");
     expect(objectives).toContain("Track every hire unit as its own item");
     expect(objectives).toContain("Out of scope");
@@ -137,7 +137,7 @@ describe("report: sections added with the consistency work", () => {
     expect(section("Solution design registers", text)).toContain("System of record");
     expect(text).toContain("SAP for the posting, the portal for the plan");
     expect(text).toMatch(/\| ORG-1 \| Company code \| 4100 \| Finance controller \|/);
-    expect(markdown).toMatch(/\| ORG-1 \| Company code \| Business to provide \| Finance controller \|/);
+    expect(markdown).toMatch(/\| ORG-1 \| Company code \| Business to provide \| Billing clerk \|/);
     expect(section("Solution design registers", text)).toContain("### Period-end activities");
     expect(text).toContain(rentalDraftV3.periodEndActivities![0]!.activity);
   });

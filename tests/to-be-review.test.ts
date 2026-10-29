@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { rentalDraft } from "../fixtures/ai/to-be/rental-benchmark";
 import { rentalDraftV3, rentalRegisterGroups } from "../fixtures/ai/to-be/rental-registers";
-import { runDesign, type DesignDeps, type Substage } from "../src/lib/ai/to-be-pipeline";
-import { compactDesign, repairNote, reviewBlockers, routeFindings } from "../src/lib/ai/to-be-review";
+import { reviewRequest, runDesign, type DesignDeps, type Substage } from "../src/lib/ai/to-be-pipeline";
+import { ReviewFindingSchema, compactDesign, repairNote, reviewBlockers, routeFindings } from "../src/lib/ai/to-be-review";
 import { fixture } from "./support/to-be-input";
 import { splitDesign } from "./support/to-be-split";
 import type { RegisterGroup } from "../src/lib/ai/design-registers";
@@ -181,5 +181,31 @@ describe("review pass building blocks", () => {
     const compact = JSON.stringify(compactDesign(rentalDraftV3));
     for (const kept of [rentalDraftV3.steps[0]!.trigger, rentalDraftV3.documentStatusModels![0]!.documentType, `${rentalDraftV3.steps[0]!.acceptanceTests[0]!.id} (NORMAL)`]) expect(compact).toContain(kept);
     for (const dropped of ["contextFieldIds", "referenceIds", "needsValidation", rentalDraftV3.steps[0]!.acceptanceTests[0]!.when]) expect(compact).not.toContain(dropped);
+  });
+  it("accepts the OPEN_QUESTION_DECIDED kind", () => {
+    expect(ReviewFindingSchema.safeParse({ kind: "OPEN_QUESTION_DECIDED", paths: ["TB-1-BR-1", "Q-1"], explanation: "The rule settles Q-1." }).success).toBe(true);
+    expect(ReviewFindingSchema.safeParse({ kind: "MADE_UP", paths: ["TB-1"], explanation: "x" }).success).toBe(false);
+  });
+  it("routes an OPEN_QUESTION_DECIDED finding that names a business rule to its step, and a register row to its group; the question id is design-wide", () => {
+    const rule = rentalDraftV3.steps[0]!.businessRules[0]!.id;
+    const routed = routeFindings(rentalDraftV3, [{ kind: "OPEN_QUESTION_DECIDED", paths: [rule, "Q-1"], explanation: "Rule settles Q-1." },
+      { kind: "OPEN_QUESTION_DECIDED", paths: ["DSM-1", "Q-1"], explanation: "Row settles Q-1." }]);
+    expect(routed[0]!.parts).toEqual([{ type: "step", stepId: "TB-1" }]);
+    expect(routed[1]!.parts).toEqual([{ type: "group", group: "documents" }]);
+  });
+  it("the repair note for OPEN_QUESTION_DECIDED names the open question id and says defer, not decide, and never delete the question", () => {
+    const finding = { kind: "OPEN_QUESTION_DECIDED" as const, paths: ["TB-2-BR-1", "Q-1"], explanation: "The rule fixes the proration convention." };
+    const note = repairNote({ type: "step", stepId: "TB-2" }, [finding], new Set(["Q-1", "IQ-1"]));
+    expect(note).toContain("Q-1");
+    expect(note).toMatch(/pending Q-1/i);
+    expect(note).toMatch(/do not choose an answer/i);
+    expect(note).toMatch(/never delete the open question/i);
+    expect(repairNote({ type: "step", stepId: "TB-2" }, [{ ...finding, kind: "CONTRADICTION" }], new Set(["Q-1"]))).not.toMatch(/pending Q-1/i);
+  });
+  it("the review request shows the reviewer both the input open questions (id, text) and the design's own", () => {
+    const input = fixture();
+    const request = reviewRequest(input, rentalDraftV3);
+    expect(request.inputOpenQuestions).toEqual([{ id: "IQ-1", question: input.discovery.openQuestions[0]!.question }]);
+    expect(request.design.openQuestions).toEqual(expect.arrayContaining([expect.objectContaining({ id: rentalDraftV3.openQuestions[0]!.id })]));
   });
 });

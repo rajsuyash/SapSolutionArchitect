@@ -16,7 +16,8 @@ export const FIXABLE_BLOCKERS: ReadonlySet<string> = new Set([
   "OBJECTIVE_STEP_UNMAPPED", "OBJECTIVE_CONTEXT_UNCOVERED", "STATUS_TRANSITION_MISSING", "CONFIG_DOCUMENT_TYPE_MISSING", "CONFIG_CONFIRMATION_UNSUPPORTED",
   "CONTROL_UNMAPPED", "UNRESOLVED_CODE", "REPORT_PAIN_POINT_UNCOVERED", "E2E_STEP_UNCOVERED", "INTERFACE_STEP_UNCOVERED", "ROLE_STEP_UNCOVERED",
   "ROLE_ACTOR_UNMATCHED", "SOD_CONFLICT_STEPS", "PERIOD_END_MISSING", "ORG_CODE_NOT_IN_CONTEXT", "KPI_VALUE_IGNORED", "INTERNAL_TERM", "DANGLING_ID_REFERENCE",
-  "TRUNCATED_TEXT", "LANGUAGE_FRAGMENT",
+  "TRUNCATED_TEXT", "LANGUAGE_FRAGMENT", "STATUS_MODEL_UNCOVERED", "STATUS_TRANSITION_STEP_MISMATCH", "ROLE_OWNER_UNCATALOGUED", "CUTOVER_INTERFACE_UNCOVERED",
+  "REQUIRED_OUTPUT_UNCOVERED", "RULE_RESTATED", "BUILD_REALIZATION_UNLISTED",
 ]);
 /** Some blockers point at a step but are cleared in a register: the interface, role or report row has to be added there. */
 const GROUP_OF_CODE: Readonly<Record<string, RegisterGroup>> = { INTERFACE_STEP_UNCOVERED: "integration", ROLE_STEP_UNCOVERED: "governance", ROLE_ACTOR_UNMATCHED: "governance" };
@@ -123,6 +124,13 @@ export function explainBlocker(blocker: Blocker, design: DetailedDesign, input: 
     case "PERIOD_END_MISSING": return "No period-end activity is listed: add the activities the scope touches, in the order they run.";
     case "ORG_CODE_NOT_IN_CONTEXT": return `Organisation unit ${design.orgStructure?.[at]?.id ?? "?"} is marked CODE_CONFIRMED but its code is in no company-context answer: set BUSINESS_TO_PROVIDE with a null code and an owner.`;
     case "KPI_VALUE_IGNORED": return `KPI ${design.kpis?.[at]?.id ?? "?"} says "not provided" for a baseline or target, but the company-context answers (kpi_baselines, kpi_targets) hold a value for this measure: copy it verbatim.`;
+    case "STATUS_MODEL_UNCOVERED": return `Steps output documents with a lifecycle that have no status model (${blocker.detail ?? "see the steps"}): add one model per document type, with a transition at the step that changes its status.`;
+    case "STATUS_TRANSITION_STEP_MISMATCH": return `Status model "${design.documentStatusModels?.[at]?.documentType ?? "?"}" attributes a transition to step ${blocker.detail ?? "?"}, which neither outputs nor handles that document: attribute each status change to the step whose action sets it.`;
+    case "ROLE_OWNER_UNCATALOGUED": return `Owners that are not in the role catalogue (${blocker.detail ?? "see the part"}): name each owner exactly like a catalogue role (${ids((design.roles ?? []).map(role => role.name))}), or use that role's id.`;
+    case "CUTOVER_INTERFACE_UNCOVERED": return `Interfaces to ${blocker.detail ?? "a counterpart system"} have no cutover item: add one per interface for its initial load or connection set-up (open documents, master or condition data, credentials, certificates), or say none is needed and why.`;
+    case "REQUIRED_OUTPUT_UNCOVERED": return `Required outputs with no report or KPI (${blocker.detail ?? "see the company context"}): add a report or KPI for each, or add an out-of-scope statement that names it.`;
+    case "RULE_RESTATED": return `Step ${design.steps[at]?.id ?? "?"} restates a rule of an earlier step (${blocker.detail ?? "?"}): refer to it as "as <rule id>" and write only what differs.`;
+    case "BUILD_REALIZATION_UNLISTED": return `Step ${design.steps[at]?.id ?? "?"} names something to build (extension, custom field or logic, report, form, workflow) but is not realised as an extension or integration and no built fit-gap row lists it: set its implementation kind to EXTENSION or INTEGRATION, or reword it as standard.`;
     case "INTERNAL_TERM": return `Client text uses the generation process's working term "${blocker.detail ?? "?"}": reword it in business language.`;
     case "TRUNCATED_TEXT": return `Text that ${blocker.detail ?? "stops early"}: the sentence is not finished, so write it out in full.`;
     case "LANGUAGE_FRAGMENT": return `Text with a fragment that is not English (${blocker.detail ?? "see the part"}): rewrite it in English; SAP terms may stay.`;

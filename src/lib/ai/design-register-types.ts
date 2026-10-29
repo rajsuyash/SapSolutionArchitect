@@ -2,7 +2,13 @@
 export type Row = { id?: string; requirementIds?: string[]; contextFieldIds?: string[]; stepIds?: string[]; referenceIds?: string[];
   needsValidation?: boolean; validationReason?: string | null };
 export type StepFacts = { id: string; actor: string; /** Every text field of the step (ids skipped), for the checks that read what a step says. */ texts?: readonly string[]; outputDocuments: readonly string[]; businessRuleIds: readonly string[];
-  stepType?: string; phase?: string; interimProcess?: string | null };
+  stepType?: string; phase?: string; interimProcess?: string | null;
+  /** Owners named inside the step (exception and master-data owners), for the check that every owner is a catalogued role. */
+  owners?: readonly string[];
+  /** Each business rule as one text (condition and response), for the check that a variant references a shared rule instead of restating it. */
+  ruleTexts?: readonly { id: string; text: string }[];
+  /** How the step is realised, for the check that a named build reaches the RICEFW list. */
+  implementation?: { kind: string; detail: string } };
 export type RegisterContext = {
   requirements: ReadonlyMap<string, { critical: boolean; kind?: string }>; stepIds: ReadonlySet<string>;
   referenceIds: ReadonlySet<string>; companyContext: readonly { fieldId: string; value: string }[]; takenIds: ReadonlySet<string>;

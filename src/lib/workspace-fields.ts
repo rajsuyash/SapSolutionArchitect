@@ -103,6 +103,15 @@ export function describeProposal(state: View & { proposals: (ProposalView & { id
   return `${REQUIREMENT_KIND_LABELS[proposal.kind ?? "PAIN_POINT"]} for ${target}`;
 }
 
+/** What a draft confirmation carries into the To-Be as open questions: one per unfinished step and one per pending observation
+ * (the readiness list has a single OBSERVATIONS_PENDING entry for all of them, so its length is not the count). */
+export function carriedGaps(state: { observations: readonly { status: string }[] }, blockers: readonly Pick<Blocker, "code">[]) {
+  const steps = blockers.filter(blocker => blocker.code === "AS_IS_STEP_INCOMPLETE").length;
+  const points = state.observations.filter(observation => observation.status === "PENDING").length;
+  const parts = [steps && `${steps} unfinished step${steps === 1 ? "" : "s"}`, points && `${points} point${points === 1 ? "" : "s"} to check`].filter(Boolean).join(" and ");
+  return { steps, points, total: steps + points, parts };
+}
+
 /** Readiness copy for people: blockers carry internal ids in `detail`. */
 export function describeBlocker(state: View, blocker: Blocker): string {
   const id = /(?:step|requirement) (\S+)$/.exec(blocker.detail)?.[1] ?? "";

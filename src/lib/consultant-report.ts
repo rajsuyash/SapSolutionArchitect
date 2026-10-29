@@ -57,6 +57,7 @@ export const REVIEW_PASS_FINDINGS: Record<string, string> = {
   REVIEW_UNRESOLVED_CODE: "A reviewer pass found a code used in a step that no register defines. See the note.",
   REVIEW_COVERAGE_GAP: "A reviewer pass found something the design should cover and does not. See the note.",
   REVIEW_INTERNAL_TERM: "A reviewer pass found a working term of the generation process in client text. See the note.",
+  REVIEW_OPEN_QUESTION_DECIDED: "A reviewer pass found a statement in the design that assumes an answer to a question still open. See the note.",
 };
 /** Category of the findings that come from completeness and consistency checks. The design is valid and delivered; a person confirms or fixes each one. */
 export const REVIEW_FINDINGS_CATEGORY = "Review findings";
@@ -81,6 +82,13 @@ export const REVIEW_FINDINGS: Record<string, string> = {
   INTERNAL_TERM: "Text meant for the client uses a working term of the generation process (for example \"outline\" or \"register call\"). Reword it in business language.",
   TRUNCATED_TEXT: "A text field stops before its sentence is finished (it ends mid-sentence or with an ellipsis). Write it out in full.",
   LANGUAGE_FRAGMENT: "A text field contains a fragment that is not English. Rewrite it in English.",
+  STATUS_MODEL_UNCOVERED: "A step outputs a document with a lifecycle (for example a delivery, advance shipping notice or billing request) that has no document status model.",
+  STATUS_TRANSITION_STEP_MISMATCH: "A document status model attributes a status change to a step that neither outputs nor handles that document.",
+  ROLE_OWNER_UNCATALOGUED: "An owner named in a register or step is not an entry of the role catalogue (or is spelled differently from it).",
+  CUTOVER_INTERFACE_UNCOVERED: "An interface has no cutover item for its initial load or connection set-up.",
+  REQUIRED_OUTPUT_UNCOVERED: "A required output from the company context has no report or KPI and is not declared out of scope.",
+  RULE_RESTATED: "A step repeats a business rule of an earlier step instead of referring to it; only the differences should be written out.",
+  BUILD_REALIZATION_UNLISTED: "A step's realization names something to build, but it is neither an extension or integration step nor listed by a built fit-gap row, so the RICEFW list would miss it.",
   DANGLING_ID_REFERENCE: "Text cites an id in this design's own pattern (a step, rule, test, question or register row) that does not exist. Correct the id or remove the reference.",
   ...REVIEW_PASS_FINDINGS,
 };

@@ -3,6 +3,7 @@
 // descriptions of the steps it replaces) and the consolidated RICEFW list (derived from the fit-gap register and the steps that cite it).
 // The report renders them and the eval judge receives them next to the design, so a reader sees the same document the consultant gets.
 import type { DetailedDesign } from "./ai/design-quality";
+import { BUILT_CLASSES, buildTypeOf } from "./ai/design-registers-v3";
 import type { DiscoveryInput } from "./discovery";
 
 export const PLACEHOLDER = "to be assigned";
@@ -32,8 +33,8 @@ export type DocumentControl = {
 export type AsIsNarrative = { toBeStepId: string; toBeTitle: string;
   asIs: { asIsStepId: string; name: string; actor: string; system: string; trigger: string; description: string; inputs: string[]; outputs: string[]; controls: string[]; exceptions: string[] }[] };
 export type EliminatedAsIs = { asIsStepId: string; name: string; description: string; reason: string };
-/** Where a RICEFW item comes from: a fit-gap row, a step realised as an extension or integration, or a report or KPI built with custom analytics. */
-export type RicefwSource = "FIT_GAP" | "STEP" | "ANALYTICS";
+/** Where a RICEFW item comes from: a fit-gap row, a step realised as (or described as) a build, a report or KPI built with custom analytics, an interface, or a load program. */
+export type RicefwSource = "FIT_GAP" | "STEP" | "ANALYTICS" | "INTERFACE" | "MIGRATION";
 export type RicefwItem = { id: string; source: RicefwSource; type: string; classification: string; requirementId: string | null; linkedSteps: { id: string; title: string }[];
   rationale: string; referenceIds: string[]; needsValidation: boolean; validationReason: string | null; owner: string | null; status: string | null };
 export type ActorRoleRow = { stepId: string; actor: string; roleIds: string[] };
@@ -83,7 +84,7 @@ export function ricefwList({ design }: Pick<DeriveInput, "design">): RicefwItem[
   const titleOf = (stepIds: ReadonlySet<string>) => design.steps.filter(step => stepIds.has(step.id)).map(step => ({ id: step.id, title: step.title }));
   const items: Omit<RicefwItem, "id">[] = (design.fitGap ?? []).filter(row => classes.includes(row.classification)).map(row => {
     const linked = new Set([...row.stepIds, ...design.steps.filter(step => step.requirementIds.includes(row.requirementId)).map(step => step.id)]);
-    return { source: "FIT_GAP" as const, type: row.ricefwType ?? row.classification, classification: row.classification, requirementId: row.requirementId,
+    return { source: "FIT_GAP" as const, type: row.ricefwType ?? (BUILT_CLASSES.includes(row.classification) ? buildTypeOf(row.justification)?.type : undefined) ?? row.classification, classification: row.classification, requirementId: row.requirementId,
       linkedSteps: titleOf(linked), rationale: row.justification, referenceIds: row.referenceIds, needsValidation: row.needsValidation, validationReason: row.validationReason,
       owner: row.owner ?? null, status: row.status ?? null };
   });
@@ -96,6 +97,31 @@ export function ricefwList({ design }: Pick<DeriveInput, "design">): RicefwItem[
     items.push({ source: "STEP", ...STEP_KIND_ITEM[kind], requirementId: step.requirementIds[0] ?? null, linkedSteps: titleOf(new Set([step.id])),
       rationale: step.implementation.detail.slice(0, RATIONALE_CHARS), referenceIds: step.implementation.referenceIds, needsValidation: !referenced,
       validationReason: referenced ? null : "The step is an extension or integration but cites no catalog reference.", owner: null, status: null });
+  }
+  // A step whose realization text names a build (a key-user extension, custom field or logic, form, workflow) but whose kind is not extension or integration.
+  for (const step of design.steps) {
+    const built = buildTypeOf(step.implementation.detail);
+    if (!built || covered.has(step.id) || step.implementation.kind === "EXTENSION" || step.implementation.kind === "INTEGRATION") continue;
+    covered.add(step.id);
+    const referenced = step.implementation.referenceIds.length > 0;
+    items.push({ source: "STEP", type: built.type, classification: "STEP_BUILD", requirementId: step.requirementIds[0] ?? null, linkedSteps: titleOf(new Set([step.id])),
+      rationale: step.implementation.detail.slice(0, RATIONALE_CHARS), referenceIds: step.implementation.referenceIds, needsValidation: !referenced,
+      validationReason: referenced ? null : "The step names something to build but cites no catalog reference.", owner: null, status: null });
+  }
+  // Every interface in scope is something to build or connect, unless a fit-gap item or step already lists its steps.
+  for (const row of design.interfaces ?? []) {
+    if (row.outOfScopeReason || row.stepIds.some(stepId => covered.has(stepId))) continue;
+    row.stepIds.forEach(stepId => covered.add(stepId));
+    items.push({ source: "INTERFACE", type: "INTERFACE", classification: "INTERFACE_REGISTER", requirementId: row.requirementIds[0] ?? null, linkedSteps: titleOf(new Set(row.stepIds)),
+      rationale: `${row.counterpartSystem} (${row.direction.toLowerCase()}): ${row.payload}`.slice(0, RATIONALE_CHARS), referenceIds: row.referenceIds, needsValidation: row.needsValidation,
+      validationReason: row.validationReason, owner: row.errorOwner, status: null });
+  }
+  // A migration object loaded by a custom program or script is a conversion item.
+  for (const row of design.dataMigration ?? []) {
+    if (buildTypeOf(`${row.approach}`)?.type !== "CONVERSION") continue;
+    items.push({ source: "MIGRATION", type: "CONVERSION", classification: "MIGRATION_PROGRAM", requirementId: row.requirementIds[0] ?? null, linkedSteps: titleOf(new Set(row.stepIds)),
+      rationale: `${row.object}: ${row.approach}`.slice(0, RATIONALE_CHARS), referenceIds: [], needsValidation: true,
+      validationReason: "The load program is proposed from the approach text; a consultant must confirm it is needed instead of the standard migration tools.", owner: null, status: null });
   }
   const analytics = [
     ...(design.reports ?? []).map(row => ({ ...row, text: `${row.name}: ${row.realization}`, linked: row.stepIds })),

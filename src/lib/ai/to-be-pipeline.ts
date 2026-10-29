@@ -364,6 +364,7 @@ export function reviewRequest(input: ToBeInput, design: DetailedDesign) {
     targetProduct: input.targetProduct, targetRelease: discovery.targetRelease, variantName: discovery.variantName,
     companyContext: (discovery.companyContext ?? []).map(({ fieldId, value }) => ({ fieldId, value })),
     requirements: discovery.requirements.map(r => ({ id: r.id, kind: r.kind, critical: r.critical, statement: r.statement })),
+    inputOpenQuestions: discovery.openQuestions.map(({ id, question }) => ({ id, question })),
     design: compactDesign(design),
   };
 }
@@ -626,12 +627,13 @@ export async function runDesign(input: ToBeInput, references: DesignContext["ref
       entry.findings.push(finding); byPart.set(partKey(part), entry);
     }
     const parts = [...byPart.values()].slice(0, MAX_REVIEW_REPAIRS);
+    const openQuestionIds = new Set([...input.discovery.openQuestions, ...design.openQuestions].map(question => question.id));
     const current = outline;
     const proposals = new Map<string, Proposal>();
     if ((deps.remainingBudget?.() ?? 1) > REVIEW_MIN_REMAINING) {
       for (const { part } of parts) reviewTried.add(partKey(part));
       await runPool(parts, deps.parallelism, async ({ part, findings: concerned }) => {
-        const proposal = await propose(part, repairNote(part, concerned), false);
+        const proposal = await propose(part, repairNote(part, concerned, openQuestionIds), false);
         if (proposal) proposals.set(partKey(part), proposal);
       });
     }

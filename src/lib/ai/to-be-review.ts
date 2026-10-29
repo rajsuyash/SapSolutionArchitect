@@ -7,7 +7,7 @@ import { REGISTER_GROUPS, REGISTER_KEYS, groupOf, type RegisterGroup, type Regis
  * by id, so the server can send the step or register group it concerns back once; what cannot be fixed that way becomes a review finding in the report.
  * The pass is advisory: it never makes a valid design invalid. */
 
-export const REVIEW_KINDS = ["CONTRADICTION", "MISSING_LINK", "UNRESOLVED_CODE", "COVERAGE_GAP", "INTERNAL_TERM"] as const;
+export const REVIEW_KINDS = ["CONTRADICTION", "MISSING_LINK", "UNRESOLVED_CODE", "COVERAGE_GAP", "INTERNAL_TERM", "OPEN_QUESTION_DECIDED"] as const;
 export type ReviewKind = (typeof REVIEW_KINDS)[number];
 export const MAX_REVIEW_FINDINGS = 20;
 const EXPLANATION_MAX_CHARS = 400;
@@ -106,9 +106,14 @@ export const reviewBlockers = (findings: readonly Pick<RoutedFinding, "kind" | "
   (findings ?? []).filter(finding => finding.outcome === "UNRESOLVED").map(finding =>
     ({ code: `REVIEW_${finding.kind}`, path: finding.blockerPath, detail: finding.explanation.slice(0, EXPLANATION_MAX_CHARS) }));
 
-/** The repair note for one part: the findings that concern it, in the reviewer's words (it is the model's own text about the model's own design, never client input). */
-export function repairNote(part: Part, findings: readonly ReviewFinding[]): string {
+/** The repair note for one part: the findings that concern it, in the reviewer's words (it is the model's own text about the model's own design, never client input).
+ * `openQuestionIds` (input and design questions) lets an OPEN_QUESTION_DECIDED finding name the question it must defer to. */
+export function repairNote(part: Part, findings: readonly ReviewFinding[], openQuestionIds: ReadonlySet<string> = new Set()): string {
   const lines = findings.slice(0, 6).map(finding => `[${finding.kind}] ${finding.explanation} (elements: ${finding.paths.join(", ")})`);
   const what = part.type === "step" ? `step ${part.stepId}` : `register group ${part.group} (${(REGISTER_GROUPS[part.group] as readonly RegisterKey[]).join(", ")})`;
-  return `A reviewer read the whole finished design and reported the following about ${what}: ${lines.join(" ")} Rewrite the complete answer so that each finding no longer holds, changing only what that needs and keeping every other field exactly as in "currentAnswer". If a finding is about another part, make this part consistent with it without inventing facts.`;
+  const questions = [...new Set(findings.filter(finding => finding.kind === "OPEN_QUESTION_DECIDED").flatMap(finding => finding.paths.map(path => path.split(".")[0]!)).filter(id => openQuestionIds.has(id)))];
+  const defer = findings.some(finding => finding.kind === "OPEN_QUESTION_DECIDED")
+    ? ` For each OPEN_QUESTION_DECIDED finding, do not choose an answer: make the flagged element conditional on the open question${questions.length ? ` (${questions.join(", ")})` : ""}, for example "pending ${questions[0] ?? "<question id>"}: ...", or hold it as an open question or a business-to-provide item. Never delete the open question.`
+    : "";
+  return `A reviewer read the whole finished design and reported the following about ${what}: ${lines.join(" ")} Rewrite the complete answer so that each finding no longer holds, changing only what that needs and keeping every other field exactly as in "currentAnswer".${defer} If a finding is about another part, make this part consistent with it without inventing facts.`;
 }

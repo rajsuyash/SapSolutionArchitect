@@ -964,7 +964,7 @@ describe("consistency review through the stage runner", () => {
     const newStep = { id: "TB-4", sequence: 4, title: "Receive returned goods", purpose: "Book the receipt of returned items.", asIsStepIds: [], requirementIds: [], enablesStepIds: ["TB-2"],
       implementation: { kind: "MANUAL", referenceIds: [] } };
     const base = split.details["TB-3"]!;
-    const tb4 = { ...base, businessRules: base.businessRules.map(rule => ({ ...rule, id: `${rule.id}-RECEIPT` })), outputDocuments: ["Goods receipt note"], inputDocuments: ["Return note"],
+    const tb4 = { ...base, businessRules: base.businessRules.map(rule => ({ ...rule, id: `${rule.id}-RECEIPT`, condition: "Returned goods arrive at the receiving store without a return note.", response: "Hold the receipt until the note is matched to the open return." })), outputDocuments: ["Goods receipt note"], inputDocuments: ["Return note"],
       acceptanceTests: base.acceptanceTests.map(test => ({ ...test, id: `${test.id}-RECEIPT`, requirementIds: [] })) };
     const g = rentalRegisterGroups;
     const covered: Partial<Record<RegisterGroup, unknown>> = {

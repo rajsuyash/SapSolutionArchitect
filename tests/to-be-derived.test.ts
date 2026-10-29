@@ -59,9 +59,9 @@ describe("consolidated RICEFW list (checklist 19)", () => {
     const list = ricefwList({ design: rentalDraftV3 });
     expect(list.map(item => item.requirementId)).toEqual(["R-1", "R-2", "R-3", "R-5"]);
     expect(list.map(item => item.id)).toEqual(["RICEFW-1", "RICEFW-2", "RICEFW-3", "RICEFW-4"]);
-    expect(list[3]).toMatchObject({ type: "ENHANCEMENT", classification: "CLASSIC_RICEFW", owner: "Solution architect", status: "OPEN",
+    expect(list[3]).toMatchObject({ type: "ENHANCEMENT", classification: "CLASSIC_RICEFW", owner: "Rental coordinator", status: "OPEN",
       linkedSteps: [{ id: "TB-3", title: rentalDraftV3.steps[2]!.title }], needsValidation: true });
-    expect(list[0]).toMatchObject({ type: "KEY_USER_EXTENSION" });
+    expect(list[0]).toMatchObject({ type: "ENHANCEMENT", classification: "KEY_USER_EXTENSION" });
     expect(list.every(item => item.rationale.length > 0)).toBe(true);
   });
   it("omits standard, configuration and manual rows, and links the steps that cite the requirement even when the row does not", () => {

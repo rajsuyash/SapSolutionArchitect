@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { FIRST_PHASE, basis, id, ids, text, trace } from "./design-primitives";
-import { mentionsSubject, norm, overlaps, type RegisterContext, type Report, type Row } from "./design-register-types";
+import { mentionsSubject, norm, overlaps, stems, type RegisterContext, type Report, type Row } from "./design-register-types";
 import { extractSapCodes, mentionsCode, textFields } from "./design-text-lint";
 
 /** The registers and row fields a schemaVersion 3 design adds to version 2: scope and objectives, document status models and a
@@ -14,6 +14,35 @@ export const MITIGATIONS_BY_CLASS: Record<string, readonly (typeof MITIGATION_TY
   KEY_USER_EXTENSION: ["EXTEND_KEY_USER"], SIDE_BY_SIDE_BTP: ["BUILD_SIDE_BY_SIDE"], CLASSIC_RICEFW: ["DEVELOP_CUSTOM"],
   MANUAL_WORKAROUND: ["MANUAL_WORKAROUND", "PROCESS_CHANGE"],
 };
+/** Fit-gap classes that build something and so carry a RICEFW type (it feeds the consolidated RICEFW list). */
+export const BUILT_CLASSES: readonly string[] = ["KEY_USER_EXTENSION", "SIDE_BY_SIDE_BTP", "CLASSIC_RICEFW"];
+const BUILD_PATTERNS: readonly (readonly [type: string, pattern: RegExp])[] = [
+  ["REPORT", /\bcustom(?:ised|ized)?\s+(?:analytic\w*|cds|report|quer\w+|dashboard|app)\b|\bcds views?\b|\banalytical quer/gi],
+  ["FORM", /\b(?:custom(?:ised|ized)?\s+(?:form|output)|adobe forms?)\b/gi],
+  ["WORKFLOW", /\bcustom(?:ised|ized)?\s+workflow\b|\bworkflow (?:build|template)\b/gi],
+  ["INTERFACE", /\bcustom(?:ised|ized)?\s+(?:interface|api|integration)\b/gi],
+  ["CONVERSION", /\b(?:conversion|migration|load|upload) (?:program|script|report)\b/gi],
+  ["ENHANCEMENT", /\bkey[- ]user (?:extension|field|logic|enhancement)s?\b|\bcustom(?:ised|ized)?\s+(?:fields?|logic|code|business objects?|validation|determination)\b|\bbespoke\b|\bbadi\b|\babap\b|\benhancement (?:implementation|spot)\b/gi],
+];
+const NEGATED = /\b(?:no|not|without|never|avoid|instead of|rather than)\b[^.;]{0,40}$/i;
+/** The RICEFW type of a build a text names (a key-user extension, a custom field or logic, a custom report or app, a form, a workflow, a custom interface, a load
+ * program), or null when it names none. A mention the sentence rules out ("no custom code") is not a build. */
+export function buildTypeOf(text: string): { type: string } | null {
+  for (const [type, pattern] of BUILD_PATTERNS) {
+    for (const hit of text.matchAll(pattern)) if (!NEGATED.test(text.slice(Math.max(0, hit.index - 45), hit.index))) return { type };
+  }
+  return null;
+}
+const LIFECYCLE_DOCUMENT = /\b(?:order|delivery|shipment|asn|advance shipping notice|credit memo|debit memo|invoice|billing (?:document|request)|e-?way bill|scheduling agreement|contract|quotation|requisition|reservation|claim)s?\b/i;
+const OWNER_FIELDS: readonly (readonly [register: string, field: string])[] = [["keyDesignDecisions", "owner"], ["fitGap", "owner"], ["orgStructure", "owner"],
+  ["masterDataPrerequisites", "owner"], ["interfaces", "errorOwner"], ["kpis", "owner"], ["cutover", "owner"], ["periodEndActivities", "owner"], ["configurationCatalogue", "owner"]];
+/** An owner that says nobody is named yet is an open item, not a role. */
+const NO_OWNER_YET = /^(?:to be (?:confirmed|assigned|nominated|named)|tbd|not (?:provided|assigned|named)|the business|business (?:to|must))/i;
+/** A role name compared without case, punctuation or spacing, so "Plant Head Chakan" and "Plant head, Chakan" are one role. */
+const roleKey = (value: string) => value.toLowerCase().replace(/[^\p{L}\p{M}\p{N}]+/gu, "");
+const wordSet = (value: string) => new Set(norm(value).split(/[^\p{L}\p{M}\p{N}]+/u).filter(Boolean));
+const MIN_RULE_WORDS = 8, RULE_SIMILARITY = 0.85, MAX_LISTED = 5;
+const similar = (a: Set<string>, b: Set<string>) => { const shared = [...a].filter(word => b.has(word)).length; return shared / (a.size + b.size - shared) >= RULE_SIMILARITY; };
 export const CONFIG_CATEGORIES = ["DOCUMENT_TYPE", "REASON_CODE", "PRICING_ELEMENT", "NUMBER_RANGE", "OTHER"] as const;
 export const CONFIG_STATUSES = ["CONFIRMED_IN_CATALOG", "BUSINESS_TO_PROVIDE", "NEEDS_VALIDATION"] as const;
 export const CONTROL_MECHANISMS = ["BUSINESS_RULE", "WORKFLOW", "AUTHORIZATION", "REPORT"] as const;
@@ -169,6 +198,18 @@ export function checkVersion3(kit: V3Kit): void {
       block("STATUS_TRANSITION_MISSING", `draft.documentStatusModels.${i}`);
     }
   });
+  // A document with a lifecycle that a step outputs needs its own status model, and each transition belongs to a step that handles that document.
+  const lifecycle = [...new Map(steps.flatMap(step => step.outputDocuments).filter(output => LIFECYCLE_DOCUMENT.test(output)).map(output => [norm(output), output])).entries()]
+    .filter(([output]) => !models.some(model => overlaps(output, norm(model.documentType)) || (stems(output).size > 0 && [...stems(output)].every(stem => stems(model.documentType).has(stem)))));
+  if (lifecycle.length) block("STATUS_MODEL_UNCOVERED", "draft.documentStatusModels", lifecycle.slice(0, MAX_LISTED).map(([, output]) => output).join("; "));
+  models.forEach((model, i) => {
+    const type = norm(model.documentType);
+    const strayed = model.transitions.filter(transition => {
+      const step = steps.find(item => item.id === transition.stepId);
+      return type.length >= 5 && step && !mentionsSubject(model.documentType, [...step.outputDocuments, ...(step.texts ?? [])].join(" "), true);
+    });
+    if (strayed.length) block("STATUS_TRANSITION_STEP_MISMATCH", `draft.documentStatusModels.${i}`, [...new Set(strayed.map(transition => transition.stepId))].join(", "));
+  });
   const catalogue = rows("configurationCatalogue") as (Row & { category: string; name: string; status: string; note: string | null })[];
   if (!catalogue.length) error("CONFIG_CATALOGUE_MISSING", "draft.configurationCatalogue");
   catalogue.forEach((row, i) => {
@@ -189,7 +230,7 @@ export function checkVersion3(kit: V3Kit): void {
   // Roles, segregation of duties and control mappings (checklists 24 to 26).
   const roles = rows("roles") as (Row & { name: string })[];
   if (!roles.length) error("ROLE_MISSING", "draft.roles");
-  dup(roles.map(row => norm(row.name)), "draft.roles", "DUPLICATE_ROLE");
+  dup(roles.map(row => roleKey(row.name)), "draft.roles", "DUPLICATE_ROLE");
   roles.forEach((row, i) => traced("roles", row, i, [], false));
   // Paths point at the step, so the report shows the finding on the step it concerns.
   steps.forEach((step, i) => {
@@ -198,6 +239,16 @@ export function checkVersion3(kit: V3Kit): void {
     else if (!covering.some(role => sameType(role.name, step.actor))) block("ROLE_ACTOR_UNMATCHED", `draft.steps.${i}`);
   });
   const roleIds = new Set(roles.map(row => row.id as string));
+  // Every owner in a register, a step exception or a step's master data is a catalogued role (by id or exact name).
+  const catalogued = new Set([...roles.map(row => roleKey(row.name)), ...roles.map(row => roleKey(row.id as string))]);
+  const unknownOwners = (names: readonly (string | undefined)[]) => [...new Set(names.filter((name): name is string => !!name && !NO_OWNER_YET.test(name.trim()) && !catalogued.has(roleKey(name))))];
+  if (roles.length) {
+    for (const [register, field] of OWNER_FIELDS) {
+      const unknown = unknownOwners(rows(register).map(row => row[field] as string | undefined));
+      if (unknown.length) block("ROLE_OWNER_UNCATALOGUED", `draft.${register}`, unknown.slice(0, MAX_LISTED).join("; "));
+    }
+    steps.forEach((step, i) => { const unknown = unknownOwners(step.owners ?? []); if (unknown.length) block("ROLE_OWNER_UNCATALOGUED", `draft.steps.${i}`, unknown.slice(0, MAX_LISTED).join("; ")); });
+  }
   const sod = rows("sodAssessments");
   if (!sod.length) error("SOD_ASSESSMENT_MISSING", "draft.sodAssessments");
   sod.forEach((row, i) => {
@@ -227,6 +278,22 @@ export function checkVersion3(kit: V3Kit): void {
     if (unresolved.length) block("UNRESOLVED_CODE", `draft.steps.${i}`, unresolved.slice(0, 8).map(code => `${code.kind.toLowerCase().replace("_", " ")} ${code.token}`).join(", "));
   });
 
+  // A step realised with something built (a key-user extension, a custom field or logic, a custom report or app, a form, a workflow) reaches the RICEFW list
+  // through its fit-gap row or its extension or integration kind; a build named only in plain text would be missed (checklist 19).
+  const builtSteps = new Set(rows("fitGap").filter(row => BUILT_CLASSES.includes(row.classification as string)).flatMap(row => row.stepIds ?? []));
+  steps.forEach((step, i) => {
+    const built = step.implementation;
+    if (built && built.kind !== "EXTENSION" && built.kind !== "INTEGRATION" && !builtSteps.has(step.id) && buildTypeOf(built.detail)) block("BUILD_REALIZATION_UNLISTED", `draft.steps.${i}`);
+  });
+  // Variants of one flow share their rules by reference (checklist 36): a rule that repeats an earlier step's is a finding on the later step.
+  const seenRules: { id: string; words: Set<string> }[] = [];
+  steps.forEach((step, i) => {
+    const mine = (step.ruleTexts ?? []).map(rule => ({ id: rule.id, words: wordSet(rule.text) }));
+    const twin = mine.flatMap(rule => rule.words.size >= MIN_RULE_WORDS ? seenRules.filter(earlier => similar(rule.words, earlier.words)).map(earlier => `${rule.id} repeats ${earlier.id}`) : [])[0];
+    if (twin) block("RULE_RESTATED", `draft.steps.${i}`, twin);
+    seenRules.push(...mine);
+  });
+
   // Period-end activities (checklist 34).
   const periodEnd = rows("periodEndActivities");
   if (!periodEnd.length) block("PERIOD_END_MISSING", "draft.periodEndActivities");
@@ -236,8 +303,20 @@ export function checkVersion3(kit: V3Kit): void {
   const reports = rows("reports");
   if (!reports.length) error("REPORT_MISSING", "draft.reports");
   reports.forEach((row, i) => { traced("reports", row, i); based("reports", row, i); });
-  const cited = new Set([...reports, ...rows("kpis")].flatMap(row => row.requirementIds ?? []));
+  // A pain point is accounted for by a report or KPI that cites it, or by an out-of-scope statement that cites it.
+  const cited = new Set([...reports, ...rows("kpis"), ...scope.filter(row => row.kind === "OUT_OF_SCOPE")].flatMap(row => row.requirementIds ?? []));
   if ([...ctx.requirements].some(([requirementId, requirement]) => requirement.kind === "PAIN_POINT" && !cited.has(requirementId))) block("REPORT_PAIN_POINT_UNCOVERED", "draft.reports");
+  // Every output the business requires has a report or KPI that names it, or an out-of-scope statement that does.
+  const required = known.get("required_outputs");
+  if (required !== undefined) {
+    const have = [...reports.map(row => `${row.name} ${row.purpose}`), ...rows("kpis").map(row => `${row.name} ${row.measuredFrom}`),
+      ...scope.filter(row => row.kind === "OUT_OF_SCOPE").map(row => `${row.statement} ${row.reason}`)].map(stems);
+    const uncovered = required.split(/\r?\n|;|,/).map(item => item.trim()).filter(Boolean).filter(item => {
+      const wanted = [...stems(item)].filter(stem => stem !== "repor");
+      return wanted.length > 0 && !have.some(words => wanted.filter(stem => words.has(stem)).length >= Math.ceil(wanted.length / 2));
+    });
+    if (uncovered.length) block("REQUIRED_OUTPUT_UNCOVERED", "draft.reports", uncovered.slice(0, MAX_LISTED).join("; "));
+  }
   const tests = rows("endToEndTests");
   if (!tests.length) error("E2E_TEST_MISSING", "draft.endToEndTests");
   tests.forEach((row, i) => {

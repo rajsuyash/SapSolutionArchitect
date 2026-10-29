@@ -32,14 +32,15 @@ const credit = () => errorJson(402, "Insufficient credits");
 type Seen = { host: "primary" | "fallback"; model: string };
 /** Fake network: `primary` and `fallback` answer by host; every generating request is recorded with its host and model. */
 function network(primary: () => Response | Promise<Response>, fallback: () => Response | Promise<Response> = ok) {
-  const seen: Seen[] = [];
+  const seen: Seen[] = [], maxTokens: number[] = [];
   const fetch = vi.fn<typeof globalThis.fetch>(async (url, init) => {
     const host = String(url).includes("openrouter.ai") ? "fallback" : "primary";
     if (String(url).includes("count_tokens")) return new Response(JSON.stringify({ input_tokens: 10 }), { headers: { "content-type": "application/json" } });
-    seen.push({ host, model: (JSON.parse(String(init?.body)) as { model: string }).model });
+    const body = JSON.parse(String(init?.body)) as { model: string; max_tokens: number };
+    seen.push({ host, model: body.model }); maxTokens.push(body.max_tokens);
     return host === "primary" ? primary() : fallback();
   });
-  return { fetch, seen };
+  return { fetch, seen, maxTokens };
 }
 const lines = (spy: { mock: { calls: unknown[][] } }) => spy.mock.calls.map(call => JSON.parse(String(call[0])) as Record<string, unknown>);
 afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); });
@@ -118,6 +119,90 @@ describe("credit fallback", () => {
     expect(n.seen.map(call => call.host)).toEqual(["fallback"]);
     n.seen.length = 0; primaryOk = true; now += 1;
     expect((await run("problem_analysis", input)).metrics).toMatchObject({ provider: "deepinfra", model: FLASH });
+    expect(n.seen.map(call => call.host)).toEqual(["primary"]);
+  });
+});
+
+const hang = () => new Promise<Response>(() => {});
+const truncated = () => sseResponse(messageEvents({ content: [{ type: "text", text: "cut" }], stop_reason: "max_tokens", usage: { input_tokens: 30, output_tokens: 20 } }));
+const used = (log: { mock: { calls: unknown[][] } }) => lines(log).filter(line => line.event === "ai_fallback_used");
+
+describe("timeout and truncation fallback", () => {
+  it("sends a call whose primary timed out to the fallback at once, and logs why", async () => {
+    vi.useFakeTimers();
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    const env = settings(), n = network(hang);
+    const pending = createStageRunner(env, { fetch: n.fetch })("problem_analysis", input);
+    await vi.waitFor(() => expect(n.seen.length).toBe(1));
+    await vi.advanceTimersByTimeAsync(env.AI_CALL_TIMEOUT_SECONDS * 1000 + 10);
+    const result = await pending;
+    expect(n.seen).toEqual([{ host: "primary", model: FLASH }, { host: "fallback", model: "fb/chat" }]);
+    expect(result.metrics).toMatchObject({ provider: "openrouter", model: "fb/chat" });
+    expect(used(log)).toEqual([{ event: "ai_fallback_used", reason: "timeout", stage: "problem_analysis", from: "deepinfra", to: "openrouter", fromModel: FLASH, toModel: "fb/chat" }]);
+    expect(JSON.stringify(lines(log))).not.toMatch(/secret/);
+  });
+
+  it("caps the first primary call so the fallback keeps at least 40% of the stage budget", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    // call timeout = whole budget: without the cap the primary would use all of it
+    const env = settings({ AI_STAGE_BUDGET_SECONDS: "300", AI_CALL_TIMEOUT_SECONDS: "300" }), n = network(hang);
+    const pending = createStageRunner(env, { fetch: n.fetch })("problem_analysis", input);
+    await vi.waitFor(() => expect(n.seen.length).toBe(1));
+    await vi.advanceTimersByTimeAsync(180 * 1000 + 10);
+    await pending;
+    expect(n.seen.map(call => call.host)).toEqual(["primary", "fallback"]);
+  });
+
+  it("stays on the fallback for the later calls of the stage after a primary timeout", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const env = settings(), n = network(hang, noTool);
+    const pending = createStageRunner(env, { fetch: n.fetch })("to_be", toBeInput()).catch((error: unknown) => error);
+    await vi.waitFor(() => expect(n.seen.length).toBe(1));
+    await vi.advanceTimersByTimeAsync(Math.min(env.AI_DESIGN_CALL_TIMEOUT_SECONDS, env.AI_STAGE_BUDGET_SECONDS * 0.6) * 1000 + 10);
+    await pending;
+    expect(n.seen[0]!.host).toBe("primary");
+    expect(n.seen.length).toBeGreaterThan(1);
+    expect(new Set(n.seen.slice(1).map(call => call.host))).toEqual(new Set(["fallback"]));
+  });
+
+  it("re-asks a truncated design call on the primary with the raised ceiling until the cap, and only then moves it to the fallback", async () => {
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    const n = network(truncated, noTool);
+    await createStageRunner(settings({ AI_TO_BE_OUTLINE_MAX_TOKENS: "16000" }), { fetch: n.fetch })("to_be", toBeInput()).catch(() => {});
+    expect(n.seen.slice(0, 4)).toEqual([{ host: "primary", model: PRO }, { host: "primary", model: PRO }, { host: "primary", model: PRO }, { host: "fallback", model: "fb/design" }]);
+    expect(n.maxTokens.slice(0, 3)).toEqual([16000, 32000, 64000]);
+    expect(used(log)).toEqual([{ event: "ai_fallback_used", reason: "truncated", stage: "to_be", substage: "to_be_outline", from: "deepinfra", to: "openrouter", fromModel: PRO, toModel: "fb/design" }]);
+  });
+
+  it("moves a call to the fallback after its second max_tokens ending when the first already ran at the cap", async () => {
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    const n = network(truncated, noTool);
+    await createStageRunner(settings({ AI_TO_BE_OUTLINE_MAX_TOKENS: "64000" }), { fetch: n.fetch })("to_be", toBeInput()).catch(() => {});
+    expect(n.seen.slice(0, 3)).toEqual([{ host: "primary", model: PRO }, { host: "primary", model: PRO }, { host: "fallback", model: "fb/design" }]);
+    expect(n.maxTokens.slice(0, 2)).toEqual([64000, 64000]);
+    expect(used(log)).toHaveLength(1);
+  });
+
+  it("without a fallback a primary timeout is still AI_TIMEOUT and the primary is not re-tried", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const env = parseEnvironment(base), n = network(hang);
+    const pending = createStageRunner(env, { fetch: n.fetch })("problem_analysis", input).catch((error: unknown) => error);
+    await vi.waitFor(() => expect(n.seen.length).toBe(1));
+    await vi.advanceTimersByTimeAsync(env.AI_CALL_TIMEOUT_SECONDS * 1000 + 10);
+    expect(await pending).toMatchObject({ code: "AI_TIMEOUT" });
+    expect(n.seen.map(call => call.host)).toEqual(["primary"]);
+  });
+
+  it("does not switch when the stage is cancelled", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const n = network(hang), cancel = new AbortController();
+    const pending = createStageRunner(settings(), { fetch: n.fetch })("problem_analysis", input, cancel.signal).catch((error: unknown) => error);
+    await vi.waitFor(() => expect(n.seen.length).toBe(1));
+    cancel.abort();
+    expect(await pending).toMatchObject({ code: "AI_CANCELLED" });
     expect(n.seen.map(call => call.host)).toEqual(["primary"]);
   });
 });

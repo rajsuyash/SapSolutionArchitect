@@ -124,7 +124,7 @@ describe("prompts teach the independent judge's criticisms", () => {
     expect(registers).toContain("systemOfRecord");
     expect(registers).toContain("periodEndActivities");
     expect(registers).toContain("steps[].codes");
-    for (const kind of ["CONTRADICTION", "MISSING_LINK", "UNRESOLVED_CODE", "COVERAGE_GAP", "INTERNAL_TERM"]) expect(review).toContain(kind);
+    for (const kind of ["CONTRADICTION", "MISSING_LINK", "UNRESOLVED_CODE", "COVERAGE_GAP", "INTERNAL_TERM", "OPEN_QUESTION_DECIDED"]) expect(review).toContain(kind);
     expect(review).toContain("submit_to_be_review");
   });
 });

@@ -8,7 +8,7 @@ const validation = { referenceIds: [], needsValidation: true, validationReason: 
 const gap = (requirementId: string, classification: "KEY_USER_EXTENSION" | "CLASSIC_RICEFW" | "CONFIGURATION", stepIds: string[], ricefwType: "ENHANCEMENT" | null = null) =>
   ({ requirementId, classification, ricefwType, justification: `Proposed ${classification.toLowerCase().replace(/_/g, " ")} for ${requirementId}; the cleaner option above it is not evidenced.`, stepIds, ...validation });
 const mitigation = { KEY_USER_EXTENSION: "EXTEND_KEY_USER", CLASSIC_RICEFW: "DEVELOP_CUSTOM", CONFIGURATION: "CONFIGURE" } as const;
-const v3gap = (...args: Parameters<typeof gap>) => ({ ...gap(...args), mitigationType: mitigation[args[1]], owner: "Solution architect", status: "OPEN" as const });
+const v3gap = (...args: Parameters<typeof gap>) => ({ ...gap(...args), mitigationType: mitigation[args[1]], owner: "Rental coordinator", status: "OPEN" as const });
 
 /** The first eight registers as a schemaVersion 2 design carried them, before version 3 added owner, channel and failure-handling fields. */
 export const rentalLegacyRegisters = {
@@ -19,23 +19,23 @@ export const rentalLegacyRegisters = {
       { name: "Keep one item and track assets in a side list", pros: "Fewer rows.", cons: "Billing cannot stop per asset.", fitType: "MANUAL" as const },
     ],
     recommendation: "Split into quantity-one items at order creation", rationale: "Requirements R-1 and R-3 need per-asset dates and per-asset charge stops.",
-    impactedStepIds: ["TB-1", "TB-2"], requirementIds: ["R-1", "R-3"], contextFieldIds: [], owner: "Rental operations lead", status: "PROPOSED" as const }],
+    impactedStepIds: ["TB-1", "TB-2"], requirementIds: ["R-1", "R-3"], contextFieldIds: [], owner: "Rental coordinator", status: "PROPOSED" as const }],
   fitGap: [gap("R-1", "KEY_USER_EXTENSION", ["TB-1"]), gap("R-2", "KEY_USER_EXTENSION", ["TB-1"]), gap("R-3", "KEY_USER_EXTENSION", ["TB-2"]),
     gap("R-4", "CONFIGURATION", ["TB-2"]), gap("R-5", "CLASSIC_RICEFW", ["TB-3"], "ENHANCEMENT"), gap("R-6", "CONFIGURATION", ["TB-3"])],
   orgStructure: [{ id: "ORG-1", unitType: "Company code", proposal: "One company code for the hire business, to be confirmed.", openPoint: "Legal entities were not provided in discovery.",
     requirementIds: [], contextFieldIds: [], stepIds: ["TB-1"] }],
-  masterDataPrerequisites: [{ id: "MD-1", object: "Rental asset", owner: "Rental master-data steward", keyFields: ["unique asset identifier", "availability status"],
+  masterDataPrerequisites: [{ id: "MD-1", object: "Rental asset", owner: "Rental coordinator", keyFields: ["unique asset identifier", "availability status"],
     migrationSource: "To be confirmed by the business", requirementIds: [], contextFieldIds: [], stepIds: ["TB-1", "TB-2"] }],
   dataMigration: [{ id: "MIG-1", object: "Rental assets", source: "To be confirmed", approach: "Load, cleanse and reconcile before open orders.", sequence: 1, risk: "Duplicate asset identifiers.",
     requirementIds: [], contextFieldIds: [], stepIds: ["TB-1"] }],
-  cutover: [{ id: "CUT-1", activity: "Freeze new hire orders, load assets, reconcile, release.", sequence: 1, owner: "Project lead", risk: "Orders created during the freeze.",
+  cutover: [{ id: "CUT-1", activity: "Freeze new hire orders, load assets, reconcile, release.", sequence: 1, owner: "Rental coordinator", risk: "Orders created during the freeze.",
     requirementIds: [], contextFieldIds: [], stepIds: ["TB-1"] }],
   interfaces: [], kpis: [],
 };
 
 export const rentalRegisterGroups: RegisterPayloads = {
   decisions: { keyDesignDecisions: rentalLegacyRegisters.keyDesignDecisions },
-  fitgap: { fitGap: [v3gap("R-1", "KEY_USER_EXTENSION", ["TB-1"]), v3gap("R-2", "KEY_USER_EXTENSION", ["TB-1"]), v3gap("R-3", "KEY_USER_EXTENSION", ["TB-2"]),
+  fitgap: { fitGap: [v3gap("R-1", "KEY_USER_EXTENSION", ["TB-1"], "ENHANCEMENT"), v3gap("R-2", "KEY_USER_EXTENSION", ["TB-1"], "ENHANCEMENT"), v3gap("R-3", "KEY_USER_EXTENSION", ["TB-2"], "ENHANCEMENT"),
     v3gap("R-4", "CONFIGURATION", ["TB-2"]), v3gap("R-5", "CLASSIC_RICEFW", ["TB-3"], "ENHANCEMENT"), v3gap("R-6", "CONFIGURATION", ["TB-3"])] },
   foundation: {
     masterDataPrerequisites: [{ ...rentalLegacyRegisters.masterDataPrerequisites[0]!, creationChannel: "Created by the master-data steward in the asset register app, or loaded at cutover.",
@@ -54,7 +54,7 @@ export const rentalRegisterGroups: RegisterPayloads = {
       { id: "SCP-1", kind: "IN_SCOPE", statement: "Hire order creation, partial returns and monthly hire billing.", reason: "These are the three current steps discovery described.", requirementIds: ["R-1"], contextFieldIds: [], stepIds: [] },
       { id: "SCP-2", kind: "OUT_OF_SCOPE", statement: "Maintenance and repair of hired assets.", reason: "Discovery did not describe it; the business must confirm.", requirementIds: [], contextFieldIds: [], stepIds: [] },
     ],
-    orgStructure: [{ ...rentalLegacyRegisters.orgStructure[0]!, parentId: null, codeStatus: "BUSINESS_TO_PROVIDE" as const, code: null, owner: "Finance controller" }],
+    orgStructure: [{ ...rentalLegacyRegisters.orgStructure[0]!, parentId: null, codeStatus: "BUSINESS_TO_PROVIDE" as const, code: null, owner: "Billing clerk" }],
   },
   reporting: {
     reports: [{ id: "REP-1", name: "Open hire items by return date", purpose: "Show which items are still on hire and when each is due back.",
@@ -69,7 +69,7 @@ export const rentalRegisterGroups: RegisterPayloads = {
         { from: "Partly returned", to: "Fully returned", stepId: "TB-2", event: "Last item returned" }],
       editLockRules: [{ afterEvent: "An item is returned", locked: "The start date and the asset of that item", stillEditable: "The dates of the other items" }], requirementIds: ["R-3"] }],
     configurationCatalogue: [{ id: "CFG-1", category: "DOCUMENT_TYPE", name: "Hire order", purpose: "Carries the individually tracked hire items.", status: "BUSINESS_TO_PROVIDE",
-      owner: "Rental operations lead", referenceIds: [], note: "The business names the document type and its number range.", stepIds: ["TB-1"] }],
+      owner: "Rental coordinator", referenceIds: [], note: "The business names the document type and its number range.", stepIds: ["TB-1"] }],
   },
   governance: {
     roles: [{ id: "ROLE-1", name: "Rental coordinator", responsibilities: "Creates hire items and assigns assets.", stepIds: ["TB-1"] },

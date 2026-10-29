@@ -199,15 +199,18 @@ describe("roles, segregation of duties and control mappings (checklists 24 to 26
   it("every step is covered by a role named like the step's actor", () => {
     const short = design(draft => { draft.roles = draft.roles!.slice(0, 2); });
     expect(codes(short)).toEqual(["UNKNOWN_ROLE@draft.sodAssessments.0"]);
-    expect(blocked(short)).toEqual(["ROLE_STEP_UNCOVERED@draft.steps.2"]);
-    expectFinding(design(draft => { draft.roles![2]!.name = "Accounts clerk"; }), "ROLE_ACTOR_UNMATCHED@draft.steps.2");
+    expect(blocked(short).filter(item => !item.startsWith("ROLE_OWNER"))).toEqual(["ROLE_STEP_UNCOVERED@draft.steps.2"]);
+    // Renaming a role also leaves the owners that used its old name uncatalogued: that is a second finding, not part of this one.
+    const renamed = design(draft => { draft.roles![2]!.name = "Accounts clerk"; });
+    expect(codes(renamed)).toEqual([]);
+    expect(blocked(renamed).filter(item => !item.startsWith("ROLE_OWNER"))).toEqual(["ROLE_ACTOR_UNMATCHED@draft.steps.2"]);
     const none = design(draft => { draft.roles = []; });
     expect(codes(none)).toEqual(expect.arrayContaining(["ROLE_MISSING@draft.roles"]));
     expect(blocked(none)).toEqual(["ROLE_STEP_UNCOVERED@draft.steps.0", "ROLE_STEP_UNCOVERED@draft.steps.1", "ROLE_STEP_UNCOVERED@draft.steps.2"]);
     expect(blocked(design(draft => { draft.roles![2]!.name = "billing CLERK"; }))).toEqual([]); // case does not matter
     const twin = design(draft => { draft.roles![1]!.name = "Billing clerk"; });
     expect(codes(twin)).toEqual(["DUPLICATE_ROLE@draft.roles"]);
-    expect(blocked(twin)).toEqual(["ROLE_ACTOR_UNMATCHED@draft.steps.1"]);
+    expect(blocked(twin).filter(item => !item.startsWith("ROLE_OWNER"))).toEqual(["ROLE_ACTOR_UNMATCHED@draft.steps.1"]);
   });
   it("segregation of duties is assessed: a row exists, uses known roles, and a conflict spans two steps", () => {
     expect(codes(design(draft => { draft.sodAssessments = []; }))).toEqual(["SOD_ASSESSMENT_MISSING@draft.sodAssessments"]);

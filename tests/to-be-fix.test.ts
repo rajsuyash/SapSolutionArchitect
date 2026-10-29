@@ -198,7 +198,7 @@ describe("fix pass: a finding that needs a new step takes one outline patch", ()
     implementation: { kind: "MANUAL", referenceIds: [] } };
   const patch = { steps: [newStep] };
   const tb4 = () => { const base = split.details["TB-3"]!;
-    return { ...base, businessRules: base.businessRules.map(rule => ({ ...rule, id: `${rule.id}-RECEIPT` })), outputDocuments: ["Goods receipt note"], inputDocuments: ["Return note"],
+    return { ...base, businessRules: base.businessRules.map(rule => ({ ...rule, id: `${rule.id}-RECEIPT`, condition: "Returned goods arrive at the receiving store without a return note.", response: "Hold the receipt until the note is matched to the open return." })), outputDocuments: ["Goods receipt note"], inputDocuments: ["Return note"],
       acceptanceTests: base.acceptanceTests.map(test => ({ ...test, id: `${test.id}-RECEIPT`, requirementIds: [] })) }; };
   const covered = {
     scope: { ...groups.scope, objectives: groups.scope.objectives.map(row => row.id === "OBJ-2" ? { ...row, stepIds: ["TB-3", "TB-4"] } : row) },

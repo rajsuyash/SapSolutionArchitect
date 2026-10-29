@@ -73,7 +73,7 @@ function registersExample(example: WorkedExample): string {
     ...REGISTER_GROUP_NAMES.flatMap(group => [`group ${group}:`, json(registers[group]), ""]),
     "Notice: a decision has genuine options with honest cons and a recommendation that is exactly one option name; a fit-gap row says why this class and not the cleaner one, " +
     "cites the reference and flags what to validate, and names the mitigation, an owner and status OPEN; an interface gives direction, frequency, payload, the role that owns errors and how a failed message is seen, alerted, rerun and kept from posting twice; " +
-    "a KPI copies baseline and target verbatim from the context and says what is counted and over what period; an objective cites the context answer it rests on; a status model names only statuses its transitions use, at the step that produces the document; " +
+    "a KPI copies, verbatim from the context, only the part of the answer about its own measure as baseline and target (else \"not provided\") and says what is counted and over what period; an objective cites the context answer it rests on; a status model names only statuses its transitions use, at the step that produces the document; " +
     "a role is named exactly like the step actors it covers; a control requirement is mapped to the business rule that enforces it."].join("\n");
 }
 

@@ -55,6 +55,16 @@ export class AIStageError extends Error {
 type Config = Pick<Environment, "NODE_ENV" | "AI_PROVIDER" | "AI_FALLBACK_PROVIDER" | "AI_FALLBACK_MODEL" | "AI_FALLBACK_MODEL_DESIGN" | "ANTHROPIC_API_KEY" | "DEEPINFRA_API_KEY" | "OPENROUTER_API_KEY" | "AI_REASONING_EFFORT" | "AI_MODEL" | "AI_MODEL_DESIGN" | "AI_MAX_INPUT_TOKENS" | "AI_MAX_CONCURRENCY" | "AI_CHAT_CONCURRENCY" | "AI_FAULT_INJECTION"
   | "AI_NO_THINKING_STAGES" | "AI_STAGE_BUDGET_SECONDS" | "AI_CALL_TIMEOUT_SECONDS" | "AI_DESIGN_CALL_TIMEOUT_SECONDS" | "AI_DESIGN_PARALLELISM" | "AI_TO_BE_OUTLINE_REPAIRS" | "AI_TO_BE_PART_REPAIRS" | "AI_TO_BE_OUTLINE_MAX_TOKENS" | "AI_TO_BE_STEP_MAX_TOKENS" | "AI_TO_BE_REGISTERS_MAX_TOKENS"> & Partial<Pick<Environment, "AI_TO_BE_REVIEW" | "AI_TO_BE_FIX_MAX_PARTS">>;
 const SDK_TIMEOUT_MARGIN_MS = 5000;
+/** With a fallback configured, the first calls of a stage (until the primary has answered once) may not use more than the stage budget minus this
+ * share of it, so a primary that hangs on the outline leaves the fallback a real window (1200 s budget: primary at most 720 s, fallback at least 480 s). */
+const FALLBACK_RESERVE_SHARE = 0.4;
+/** A call on the primary that ends on max_tokens this many times, the last one already at its maximum ceiling, is sent to the fallback from then on. */
+const TRUNCATIONS_BEFORE_FALLBACK = 2;
+type FallbackReason = "timeout" | "truncated";
+/** One structured line when a timeout or repeated truncation on the primary moves a call to the fallback. No prompt, user data, key or provider message. */
+function logFallbackUsed(reason: FallbackReason, stage: string, substage: string | undefined, from: Provider, to: Provider, fromModel: string, toModel: string) {
+  console.error(JSON.stringify({ event: "ai_fallback_used", reason, stage, ...(substage && { substage }), from, to, fromModel, toModel }));
+}
 /** OpenRouter has no count_tokens endpoint: input size is estimated locally. 3.5 chars/token is deliberately below the ~4 of English prose
  * (JSON, SAP codes and non-English text tokenize worse), so the AI_MAX_INPUT_TOKENS guard errs towards refusing. Not a measured count. */
 const CHARS_PER_TOKEN = 3.5;
@@ -200,6 +210,13 @@ export function createStageRunner(config: Config, options: Options = {}) {
     const signal = externalSignal ? AbortSignal.any([externalSignal, deadline.signal]) : deadline.signal;
     const pending = new Set<Promise<unknown>>();
     let acquired = false;
+    /** Set by the first primary timeout: every later call of this stage goes straight to the fallback (the slow primary is not paid for again). */
+    let stageOnFallback = false;
+    /** True once the primary has answered a generation in this stage; until then its calls are capped to leave the fallback a window. */
+    let primaryProven = false;
+    /** max_tokens endings on the primary, and the calls (stage:substage:part) that now go to the fallback. Per call, not per stage: a model that
+     * overruns one part is not known to overrun the others. */
+    const truncations = new Map<string, number>(), truncatedToFallback = new Set<string>();
 
     async function call<T>(work: (signal: AbortSignal) => Promise<T>, timeoutMs = callTimeout): Promise<T> {
       signal.throwIfAborted();
@@ -222,7 +239,8 @@ export function createStageRunner(config: Config, options: Options = {}) {
     /** One provider request with the transient-retry policy: see retry.ts. Used by every stage, token counts included. */
     async function transport<T>(work: (signal: AbortSignal) => Promise<T>, timeoutMs: number, route: Route): Promise<T> {
       return withProviderRetry(() => call(work, timeoutMs), { signal, deadlineAt: started + stageBudget, callTimeoutMs: timeoutMs,
-        passthrough: error => error instanceof AIStageError,
+        // The SDK's own timeout is transient (retried); with a fallback to switch to, the primary is not retried but handed to viaRoute.
+        passthrough: error => error instanceof AIStageError || (!!fallback && route === primary && !stageOnFallback && error instanceof Anthropic.APIConnectionTimeoutError),
         giveUp: (error, reason) => {
           logProviderFailure(route.provider, route.modelFor(isDesign), stage, error);
           return fail(reason === "deadline" || error instanceof Anthropic.APIConnectionTimeoutError ? "AI_TIMEOUT"
@@ -238,12 +256,19 @@ export function createStageRunner(config: Config, options: Options = {}) {
      * A primary call refused for credit (AI_PROVIDER_CREDIT after the primary's own policy) starts the cooldown, is logged, and is re-sent
      * once, unchanged, to the fallback with that route's model. Any other failure, and a credit failure of the fallback, propagates as is.
      * metrics.provider and metrics.model always name the route that was last used, so the answering model is the one recorded (and priced). */
-    async function viaRoute<T>(work: (route: Route) => Promise<T>): Promise<T> {
+    async function viaRoute<T>(work: (route: Route) => Promise<T>, substage?: Substage, toFallback = false): Promise<T> {
       const attempt = (route: Route) => { metrics.provider = route.provider; metrics.model = route.modelFor(isDesign); return work(route); };
       if (!fallback) return attempt(primary);
-      if (now() < fallbackUntil) return attempt(fallback);
+      if (toFallback || stageOnFallback || now() < fallbackUntil) return attempt(fallback);
       try { return await attempt(primary); }
       catch (error) {
+        // A per-call timeout (ours, or the SDK's) on the primary: not the stage deadline and not a cancel. Switch at once instead of
+        // retrying the slow primary, and stay on the fallback for the rest of the stage.
+        if (!signal.aborted && ((error instanceof AIStageError && error.code === "AI_TIMEOUT") || error instanceof Anthropic.APIConnectionTimeoutError)) {
+          stageOnFallback = true;
+          logFallbackUsed("timeout", stage, substage, primary.provider, fallback.provider, primary.modelFor(isDesign), fallback.modelFor(isDesign));
+          return attempt(fallback);
+        }
         if (!(error instanceof AIStageError) || error.code !== "AI_PROVIDER_CREDIT") throw error;
         fallbackUntil = now() + FALLBACK_COOLDOWN_MS;
         logProviderFallback(primary.provider, fallback.provider, fallback.modelFor(isDesign), stage);
@@ -303,12 +328,19 @@ export function createStageRunner(config: Config, options: Options = {}) {
        * except that interview stages (textFallback) also accept one JSON text block when the model made no tool call. */
       const generate = async (a: { system: string; user: string; tool: Anthropic.Tool; maxTokens: number; guard: boolean;
         thinkingOff: (route: Route) => boolean; textFallback?: boolean; substage?: Substage;
+        /** Identifies the logical call across its re-asks (a step id, a register group, "outline"); default: the tool name. */
+        callKey?: string;
         /** Eval only: called with a short description of a response that held no usable tool payload. */
         onNoPayload?: (description: unknown) => void; onToolMarkup?: () => void }): Promise<unknown> => {
         const messages: Anthropic.MessageParam[] = [{ role: "user", content: a.user }];
         const tools = [a.tool];
-        const timeoutMs = isDesign ? designCallTimeout : callTimeout;
+        const fullTimeoutMs = isDesign ? designCallTimeout : callTimeout;
+        const truncationKey = `${stage}:${a.substage ?? ""}:${a.callKey ?? a.tool.name}`;
+        let usedRoute!: Route;
         const message = await viaRoute(async (route) => {
+          usedRoute = route;
+          const remainingMs = stageBudget - (Date.now() - started), reserveMs = stageBudget * FALLBACK_RESERVE_SHARE;
+          const timeoutMs = fallback && route === primary && !primaryProven && remainingMs > reserveMs ? Math.min(fullTimeoutMs, remainingMs - reserveMs) : fullTimeoutMs;
           const routeModel = route.modelFor(isDesign), toolChoice = route.toolChoiceFor(a.tool.name);
           if (a.guard) {
             const inputTokens = route.provider === "openrouter" ? estimateTokens(JSON.stringify({ system: a.system, messages, tools, tool_choice: toolChoice }))
@@ -324,7 +356,8 @@ export function createStageRunner(config: Config, options: Options = {}) {
               // tool; validation still requires exactly one complete tool payload.
               tool_choice: toolChoice }, { signal, timeout: timeoutMs }).finalMessage();
           }, timeoutMs, route);
-        });
+        }, a.substage, truncatedToFallback.has(truncationKey));
+        if (usedRoute === primary) primaryProven = true;
         const usage = z.object({ input_tokens: z.number().int().nonnegative(), output_tokens: z.number().int().nonnegative(),
           cache_creation_input_tokens: z.number().int().nonnegative().nullish(), cache_read_input_tokens: z.number().int().nonnegative().nullish(),
         }).safeParse(message.usage);
@@ -336,6 +369,16 @@ export function createStageRunner(config: Config, options: Options = {}) {
         if (a.substage) {
           const entry = (metrics.substages ??= {})[a.substage] ??= { calls: 0, inputTokens: 0, outputTokens: 0 };
           entry.calls++; entry.inputTokens += inputTokens; entry.outputTokens += usage.data.output_tokens;
+        }
+        if (fallback && usedRoute === primary && message.stop_reason === "max_tokens") {
+          const seen = (truncations.get(truncationKey) ?? 0) + 1;
+          truncations.set(truncationKey, seen);
+          // A design call below TO_BE_MAX_TOKENS_CAP is re-asked on the primary with its ceiling doubled (to-be-pipeline); only a cut-off at the cap has nowhere left to go.
+          const ceilingCanRise = isDesign && a.maxTokens < TO_BE_MAX_TOKENS_CAP;
+          if (seen >= TRUNCATIONS_BEFORE_FALLBACK && !ceilingCanRise && !truncatedToFallback.has(truncationKey)) {
+            truncatedToFallback.add(truncationKey);
+            logFallbackUsed("truncated", stage, a.substage, primary.provider, fallback.provider, primary.modelFor(isDesign), fallback.modelFor(isDesign));
+          }
         }
         // A design answer cut off by the output limit is reported as such (reasoning tokens count against max_tokens), not as a missing payload.
         if (a.substage && message.stop_reason === "max_tokens") return TRUNCATED;
@@ -411,7 +454,7 @@ export function createStageRunner(config: Config, options: Options = {}) {
             const rawKeyOf = group && group !== "patch" ? String(group) : substage === "to_be_step" || (substage === "to_be_fix" && !group) ? (request as { step: { id: string } }).step.id : substage === "to_be_review" ? "review" : group === "patch" ? "outline-patch" : "outline";
             const output = await generate({ system: kind.system, user: JSON.stringify(request), tool: tools[key]!, maxTokens,
               // A thinking retry (one last call for a step that kept failing) sends the request without thinking-disabled; an operator's AI_REASONING_EFFORT=none still wins.
-              guard: true, thinkingOff: route => route.reasoningOff || (!askOptions?.thinking && (route.noThinking.has(substage) || route.noThinking.has("to_be") || route.expansionThinkingOff(substage))),
+              guard: true, callKey: rawKeyOf, thinkingOff: route => route.reasoningOff || (!askOptions?.thinking && (route.noThinking.has(substage) || route.noThinking.has("to_be") || route.expansionThinkingOff(substage))),
               // A model that ends its turn with the payload as a JSON text block instead of calling the tool is accepted exactly as in the interview.
               textFallback: true, substage, ...(askOptions?.onToolMarkup && { onToolMarkup: askOptions.onToolMarkup }),
               ...(options.captureRaw && { onNoPayload: (description: unknown) => keepRaw(substage, rawKeyOf, { noToolPayload: description }) }) });

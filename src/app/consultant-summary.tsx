@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, type ReactNode } from "react";
-import { REQUIREMENT_KIND_LABELS, STEP_KEYS, STEP_LABELS, WORKSPACE_FIELDS, describeBlocker, describeField, describeProposal,
+import { REQUIREMENT_KIND_LABELS, STEP_KEYS, STEP_LABELS, WORKSPACE_FIELDS, carriedGaps, describeBlocker, describeField, describeProposal,
   requirementLabel, stepLabel } from "../lib/workspace-fields";
 import { isActive, type Command, type Fact, type JobView, type Workspace, type WorkspaceView } from "./consultant-api";
 import { FieldRow, type FactUpdate } from "./consultant-field";
@@ -67,6 +67,7 @@ export function ConsultantSummary({ workspace, jobs, locked, run, onGenerate, re
     </EditableGroup>;
   };
   const softBlockers = readiness?.blockers.filter(blocker => blocker.soft) ?? [];
+  const carried = carriedGaps(state, readiness?.blockers ?? []);
   const canConfirmDraft = !readiness?.ready && !!readiness?.draftReady && !confirmed;
   const unresolved = [...state.facts, ...state.stepDrafts.flatMap(draft => draft.fields), ...state.requirementDrafts.map(draft => draft.statement)]
     .filter(fact => fact.status === "UNKNOWN" || fact.status === "OWNER_PENDING");
@@ -91,7 +92,7 @@ export function ConsultantSummary({ workspace, jobs, locked, run, onGenerate, re
         </div>
         : <p className={styles.muted}>Only project leads and consultants can confirm. You can still answer questions and add details.</p>}
       {confirmed && state.confirmation?.withGaps && <p className={styles.muted} data-testid="draft-confirmed">
-        Confirmed as a draft with gaps: {softBlockers.length || "some"} open item{softBlockers.length === 1 ? " is" : "s are"} carried into the To-Be as &lsquo;to confirm&rsquo; or open questions.</p>}
+        Confirmed as a draft with gaps: {carried.total ? `${carried.parts} ${carried.total === 1 ? "is" : "are"}` : "some open items are"} carried into the To-Be as open questions.</p>}
       {confirmed && <p className={styles.muted}>Any change to the answers will require confirming again.</p>}
       {toBe && <p id="to-be-status" role="status" data-testid="to-be-status" data-state={toBe.result?.status ?? toBe.status}>
         {resultCopy(toBe, toBe.result?.sourceRevision === state.confirmation?.revision)}</p>}

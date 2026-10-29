@@ -130,7 +130,7 @@ describe("company-context coverage", () => {
     expect(issues(["TimeTrack timesheet system", "Salesforce CRM"], answer)).toEqual([]);
   });
   let counter = 0;
-  const kpi = (target: string, baseline = "not provided", contextFieldIds = ["kpi_targets"]) => ({ id: `KPI-${++counter}`, name: "Measure", baseline, target, measuredFrom: "Billing documents",
+  const kpi = (target: string, baseline = "not provided", contextFieldIds = ["kpi_targets"], measure = "Days sales outstanding and on-time delivery rate") => ({ id: `KPI-${++counter}`, name: measure, baseline, target, measuredFrom: "Billing documents",
     referenceIds: [], needsValidation: true, validationReason: "App to be confirmed", requirementIds: [], contextFieldIds, stepIds: ["TB-3"] });
   const targets = ctx(answered(["kpi_targets", "Days sales outstanding 45 days\nOn-time delivery 98%"], ["kpi_baselines", "Days sales outstanding 62 days"]));
 
@@ -145,6 +145,37 @@ describe("company-context coverage", () => {
   });
   it("a heading line and an unquantified line do not have to be covered", () => {
     expect(codes(design(draft => { draft.kpis = [kpi("98% on time")]; }), ctx(answered(["kpi_targets", "Targets we want:\n- 98% on time\n- fewer disputes"])))).toEqual([]);
+  });
+});
+
+describe("a KPI value is about its own measure (KPI_VALUE_NOT_FOR_MEASURE)", () => {
+  // The real company-context answers of a production To-Be: the whole answer was copied onto every KPI.
+  const BASELINES = "(6) Customers pay 60-90 days; finance matches receipts in Tally; quarterly steel-price revisions are billed later as supplementary invoices/debit notes, often 2-3 months late.";
+  const TARGETS = "KPI targets: zero unreconciled job-work stock, close in 5 days, MSME paid within 45 days, 100% heat traceability.";
+  const answers = ctx(answered(["kpi_baselines", BASELINES], ["kpi_targets", TARGETS]));
+  let counter = 0;
+  const MEASURES = ["Unreconciled job-work stock", "Month-end close duration", "MSME vendor payment days", "Heat traceability coverage"];
+  const rowFor = (measure: string, baseline: string, target: string) => ({ ...kpiRow(measure), baseline, target });
+  const kpiRow = (measure: string) => ({ id: `KPI-N${++counter}`, name: measure, baseline: "not provided", target: "not provided", measuredFrom: "Stock reconciliation report",
+    referenceIds: [], needsValidation: true, validationReason: "App to be confirmed", requirementIds: [], contextFieldIds: ["kpi_targets"], stepIds: ["TB-3"] });
+  const run = (rowsOf: ReturnType<typeof rowFor>[]) => codes(design(draft => { draft.kpis = rowsOf; }), answers);
+  const perMeasure = ["zero unreconciled job-work stock", "close in 5 days", "msme paid within 45 days", "100% heat traceability"];
+
+  it("rejects the whole answer copied onto every KPI as baseline or target", () => {
+    const blobs = run(MEASURES.map(measure => rowFor(measure, BASELINES, TARGETS)));
+    expect([...new Set(blobs.filter(code => code.startsWith("KPI_VALUE_NOT_FOR_MEASURE")))]).toHaveLength(MEASURES.length); // one per KPI row (baseline and target both flagged)
+    expect(run([rowFor(MEASURES[0]!, "not provided", TARGETS), ...MEASURES.slice(1).map((m, i) => rowFor(m, "not provided", perMeasure[i + 1]!))])).toEqual(["KPI_VALUE_NOT_FOR_MEASURE@draft.kpis.0"]);
+  });
+  it("rejects a single segment that is about another measure", () => {
+    expect(run([rowFor(MEASURES[0]!, "finance matches receipts in tally", "not provided")])).toContain("KPI_VALUE_NOT_FOR_MEASURE@draft.kpis.0");
+  });
+  it("accepts one part of the answer per measure, and 'not provided' where the answer has none", () => {
+    expect(run(MEASURES.map((measure, i) => rowFor(measure, "not provided", perMeasure[i]!)))).toEqual([]);
+    expect(run([rowFor("Days sales outstanding", "Customers pay 60-90 days", "not provided"), ...MEASURES.map((m, i) => rowFor(m, "not provided", perMeasure[i]!))])).toEqual([]);
+  });
+  it("does not demand the 'KPI targets:' label as a target to cover", () => {
+    expect(run(MEASURES.map((measure, i) => rowFor(measure, "not provided", perMeasure[i]!))).filter(code => code.includes("UNCOVERED"))).toEqual([]);
+    expect(run([rowFor(MEASURES[1]!, "not provided", "close in 5 days")])).toEqual([]);
   });
 });
 
