@@ -20,7 +20,7 @@ export const DiscoveryInputSchema = z.strictObject({
     id, title: label, revision: label, locator: label, text: rawText(40000),
   })).min(1).max(200),
   asIsSteps: z.array(z.strictObject({
-    id, sequence: z.number().int().positive(), name: label, actor: label, system: label,
+    id, sequence: z.number().int().positive(), name: text, actor: text, system: text,
     trigger: text, description: text, inputs: texts, outputs: texts, controls: texts,
     exceptions: texts, evidence,
   })).min(1).max(200),

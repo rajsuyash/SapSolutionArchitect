@@ -596,6 +596,22 @@ describe("confirming the As-Is as a draft with gaps", () => {
     expect(() => compileDiscovery(withDraft({ actor: "Stores clerk" }), { allowGaps: true })).toThrow("AS_IS_STEP_INCOMPLETE");
   });
 
+  it("keeps a long accepted 'who does it' answer verbatim and still confirms, with and without gaps", () => {
+    // 395 chars: far over the old 200-char label limit, well inside the 8000-char fact limit.
+    const actor = `Returns from job-workers: at Chakan the store keeper receives against the vendor challan, ${"checks quantity and quality with the inspector, ".repeat(6)}and posts the goods receipt.`.slice(0, 395);
+    expect(actor).toHaveLength(395);
+    const all = { name: "Record return", actor, system: "Spreadsheet", trigger: "Equipment arrives", description: "Clerk records the return",
+      inputs: "Return note", outputs: "Return row", controls: "Asset ID check", exceptions: "Missing date" };
+    const partial = withDraft({ name: "Record return", actor });
+    expect(compileDiscovery(partial, { allowGaps: true }).asIsSteps[0]!.actor).toBe(actor);
+    const complete = withDraft(all);
+    expect(compileDiscovery(complete).asIsSteps[0]!.actor).toBe(actor);
+    const confirmed = applyWorkspaceCommand(complete, { type: "CONFIRM" }, meta());
+    expect(confirmed.confirmation).toMatchObject({ revision: confirmed.revision });
+    expect(confirmed.confirmation).not.toHaveProperty("withGaps");
+    expect(applyWorkspaceCommand(partial, gaps, meta()).confirmation).toMatchObject({ withGaps: true });
+  });
+
   /** A draft-ready workspace that also has pending model observations. */
   const withObservations = (count: number, known: Record<string, string> = { name: "Record return" }) => {
     const state = withDraft(known);
