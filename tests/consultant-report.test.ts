@@ -61,6 +61,10 @@ describe("consultant report model", () => {
     expect(empty.catalogWarning).toContain("no verified SAP reference catalog for SAP S/4HANA Cloud Private Edition 2025");
     expect(renderMarkdown(empty)).toContain("**Warning: there is no verified SAP reference catalog");
   });
+  it("names the product once in the warning when the release already starts with it", () => {
+    const doubled = buildReport({ ...data, catalogReferenceCount: 0, targetProduct: "S4HANA_CLOUD_PUBLIC", targetRelease: "SAP S/4HANA Cloud Public Edition 2702" });
+    expect(doubled.catalogWarning).toContain("for SAP S/4HANA Cloud Public Edition 2702. Every");
+  });
   it("maps blocker codes to plain categories and keeps unknown codes labelled", () => {
     expect(model.blockersByCategory.map(group => group.category).sort()).toEqual(["Open decisions", "Other", "Source conflicts"]);
     expect(model.blockers.find(item => item.code === "OPEN_QUESTION")?.subject).toBe("Who approves credits?");

@@ -4,6 +4,7 @@ import { z } from "zod";
 import { BLOCKER_DETAIL_MAX, DetailedDesignSchema, type DetailedDesign, type TrustedReference } from "./ai/design-quality";
 import type { DiscoveryInput } from "./discovery";
 import { deriveSections, inputQuestionRows } from "./to-be-derived";
+import { productRelease } from "./sap-releases";
 import { WORKSPACE_FIELDS } from "./workspace-fields";
 
 /** What the server stores plus the context needed to read it. Never contains provider metrics, sources text or secrets. */
@@ -343,7 +344,7 @@ export function buildReport(data: ReportData) {
       implemented: coverageCount("IMPLEMENTED"), deferred: coverageCount("DEFERRED"), rejected: coverageCount("REJECTED"),
       openQuestions: questions.length, conflicts: conflicts.length },
     catalogWarning: data.catalogReferenceCount === 0
-      ? `Warning: there is no verified SAP reference catalog for ${PRODUCT_LABELS[data.targetProduct] ?? data.targetProduct} ${data.targetRelease ?? "(release not decided)"}. Every SAP claim in this design needs SAP validation.` : null,
+      ? `Warning: there is no verified SAP reference catalog for ${productRelease(PRODUCT_LABELS[data.targetProduct] ?? data.targetProduct, data.targetRelease)}. Every SAP claim in this design needs SAP validation.` : null,
     comparison, steps: stepViews, traceability, registers: { questions, conflicts, sapPoints }, solution,
     sources: discovery.sources,
     /** Document control, As-Is narratives, RICEFW list and actor-role matrix: built from trusted inputs, no model involved. */

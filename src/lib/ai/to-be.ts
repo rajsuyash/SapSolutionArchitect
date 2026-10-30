@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { z } from "zod";
 import { AuthError } from "../auth";
 import { DiscoveryInputSchema, validateDiscovery, type createDiscoveryRepository } from "../discovery";
+import { inputQuestionRows } from "../to-be-derived";
 import { DetailedDesignSchema, boundDetail, evaluateDesign, type DesignContext, type DesignEvaluation, type DetailedDesign } from "./design-quality";
 import { loadSapReferences, type SapReferenceOptions } from "./sap-references";
 import type { ValidationIssue } from "./problem-analysis";
@@ -87,8 +88,12 @@ export function validateToBeOutput(input: ToBeInput, raw: unknown, references: D
   const design = DetailedDesignSchema.parse(raw);
   // Model omission cannot erase a business question or its assigned owner.
   const unresolvedInputQuestions = input.discovery.openQuestions;
+  // A design question filed under an input question's IQ-n label is that input question: its INPUT_QUESTION_UNRESOLVED blocker already counts it once.
+  const inputLabels = new Set(inputQuestionRows(unresolvedInputQuestions).map(row => row.label));
+  const isInputQuestion = ({ code, path }: { code: string; path: string }) =>
+    code === "OPEN_QUESTION" && inputLabels.has(design.openQuestions[Number(/^draft\.openQuestions\.(\d+)$/.exec(path)?.[1])]?.id ?? "");
   if (demoted.length) { evaluation.errors = []; evaluation.structurallyValid = true; }
-  evaluation.blockers.splice(0, evaluation.blockers.length, ...demoteErrors([...demoted, ...evaluation.blockers, ...unresolvedInputQuestions.map((_, i) =>
+  evaluation.blockers.splice(0, evaluation.blockers.length, ...demoteErrors([...demoted, ...evaluation.blockers.filter(blocker => !isInputQuestion(blocker)), ...unresolvedInputQuestions.map((_, i) =>
     ({ code: "INPUT_QUESTION_UNRESOLVED", path: `input.openQuestions.${i}` })), ...extraBlockers]));
   if (evaluation.blockers.length) evaluation.reviewStatus = "BLOCKED";
   return { success: true, data: { design, evaluation, unresolvedInputQuestions } };
