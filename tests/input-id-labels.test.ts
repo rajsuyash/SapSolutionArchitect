@@ -61,10 +61,26 @@ describe("long input ids are shown to the model as RQ-n / AS-n and written back"
         if (substage === "to_be_step") return replaceIds(untested(split.details[(user as { step: { id: string } }).step.id] as never), toModel);
         return replaceIds(rentalRegisterGroups[group as RegisterGroup], toModel);
       } };
-    await expect(runDesign(input, [], deps)).rejects.toThrow("AI_INVALID_OUTPUT");
+    // Repairs run out on a content error: the draft is saved as blocked, its errors listed with the original ids.
+    const out = await runDesign(input, [], deps);
+    expect(out.evaluation.reviewStatus).toBe("BLOCKED");
+    expect(out.evaluation.blockers.length).toBeGreaterThan(0);
+    expect(JSON.stringify(out.evaluation.blockers)).not.toMatch(/(?<![A-Za-z0-9_-])(?:RQ|AS)-\d+(?![A-Za-z0-9_-])/);
     expect(drafts.length).toBeGreaterThan(0);
     expect(drafts[0]).toContain(rq(1));
     expect(drafts[0] + errors.join()).not.toMatch(/(?<![A-Za-z0-9_-])(?:RQ|AS)-\d+(?![A-Za-z0-9_-])/);
+  });
+
+  it("a failed run whose remaining error is structural is still rejected", async () => {
+    const { input, forward } = longInput(), toModel = shortFor(forward, input), split = splitDesign(rentalDraft);
+    input.discovery.requirements[0]!.evidence.quote = "not in the source";
+    const deps: DesignDeps = { parallelism: 2, invalid: () => new Error("AI_INVALID_OUTPUT"), record: () => {}, maxPartRepairs: 0, maxOutlineRepairs: 0,
+      ask: async (substage: Substage, user, group) => {
+        if (substage === "to_be_outline") return replaceIds(split.outline, toModel);
+        if (substage === "to_be_step") return replaceIds(split.details[(user as { step: { id: string } }).step.id], toModel);
+        return replaceIds(rentalRegisterGroups[group as RegisterGroup], toModel);
+      } };
+    await expect(runDesign(input, [], deps)).rejects.toThrow("AI_INVALID_OUTPUT");
   });
 
   it("a step answer that mis-copies a long id the model sees verbatim (a decision id) is repaired", async () => {

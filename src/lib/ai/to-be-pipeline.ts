@@ -578,9 +578,12 @@ async function runLabelledDesign(input: ToBeInput, references: DesignContext["re
   const isLate = (group: RegisterGroup) => (LATE_GROUPS as readonly string[]).includes(group);
   // Re-requests per call in total (AI_TO_BE_PART_REPAIRS, the second only while the stage budget is more than half unspent),
   // whether the answer failed its schema or the assembled design's checks.
+  // Set when a part has used its repairs: the final loop then saves the design it holds as a blocked draft instead of failing.
+  let repairsExhausted = false;
+  const exhausted = () => { repairsExhausted = true; return deps.invalid(); };
   const markRetry = (key: string) => {
     const done = retries.get(key) ?? 0;
-    if (!outlineRepairAllowed(done, deps.maxPartRepairs ?? 2, deps.remainingBudget?.() ?? 1)) throw deps.invalid();
+    if (!outlineRepairAllowed(done, deps.maxPartRepairs ?? 2, deps.remainingBudget?.() ?? 1)) throw exhausted();
     retries.set(key, done + 1);
   };
 
@@ -650,7 +653,7 @@ async function runLabelledDesign(input: ToBeInput, references: DesignContext["re
           deps.warn?.([{ code: "RETRIED_WITH_THINKING", path: `draft.steps.${index}` }]);
           continue;
         }
-        if (thinking) throw deps.invalid();
+        if (thinking) throw exhausted();
         markRetry(stepId);
       }
     };
@@ -894,6 +897,13 @@ async function runLabelledDesign(input: ToBeInput, references: DesignContext["re
     return result.data;
   };
 
+  /** A part out of repairs ends the loop with the design held at the start of the round, saved as blocked; any other failure (a timeout, a cancelled call) still propagates. */
+  const degradeIfExhausted = (error: unknown, design: DetailedDesign, errorCount: number) => {
+    if (!repairsExhausted) throw error;
+    deps.progress?.("expand", false);
+    return degraded(design, errorCount);
+  };
+
   await expand(outline.steps.map(step => step.id), REGISTER_GROUP_NAMES, new Map());
   for (let round = 0; ; round++) {
     const design = assembled(outline, details, registers);
@@ -916,8 +926,10 @@ async function runLabelledDesign(input: ToBeInput, references: DesignContext["re
       return degraded(design, result.errors.length);
     }
     const redo = new Set(byStep.keys()), redoGroups = new Set(byGroup.keys());
-    for (const stepId of redo) markRetry(stepId);
-    for (const group of redoGroups) markRetry(registerKey(group));
+    try {
+      for (const stepId of redo) markRetry(stepId);
+      for (const group of redoGroups) markRetry(registerKey(group));
+    } catch (error) { return degradeIfExhausted(error, design, result.errors.length); }
     // The late groups were written from the old step bodies; a redone step makes them stale, which is not their own failure.
     if (redo.size) for (const group of LATE_GROUPS) redoGroups.add(group);
     if (global.length) {
@@ -936,7 +948,9 @@ async function runLabelledDesign(input: ToBeInput, references: DesignContext["re
       registers.clear();
       for (const group of REGISTER_GROUP_NAMES) { retries.delete(registerKey(group)); redoGroups.add(group); }
     }
-    await expand([...redo].filter(stepId => outline.steps.some(step => step.id === stepId)), [...redoGroups],
-      new Map([...byStep, ...[...byGroup].map(([group, issues]) => [registerKey(group), issues] as const)]));
+    try {
+      await expand([...redo].filter(stepId => outline.steps.some(step => step.id === stepId)), [...redoGroups],
+        new Map([...byStep, ...[...byGroup].map(([group, issues]) => [registerKey(group), issues] as const)]));
+    } catch (error) { return degradeIfExhausted(error, design, result.errors.length); }
   }
 }

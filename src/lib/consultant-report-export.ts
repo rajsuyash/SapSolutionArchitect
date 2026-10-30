@@ -1,4 +1,5 @@
 // Markdown and CSV renderings of the same ReportModel the page shows.
+import { productRelease } from "./sap-releases";
 import { REVIEW_FINDINGS_CATEGORY, TEST_LABEL, testKindLabel, type Register, type ReportModel } from "./consultant-report";
 
 /** Table cells cannot hold newlines or bare pipes. */
@@ -41,7 +42,7 @@ export function renderMarkdown(source: ReportModel): string {
   add("## Document control", table(["Field", "Value"], [row("Document", control.title), row("Version", control.version), row("Date", control.date),
     row("Review status", control.status), row("Design schema version", control.designSchemaVersion),
     row("Discovery revision", control.sourceRevision.discoveryRevision ?? "Not recorded"), row("Process variant", `${control.sourceRevision.variantName} (${control.sourceRevision.variantCode ?? "-"})`),
-    row("Frozen revision id", control.sourceRevision.snapshotId ?? "Not recorded"), row("Target product and release", `${header.product}, ${control.sourceRevision.targetRelease}`)]),
+    row("Frozen revision id", control.sourceRevision.snapshotId ?? "Not recorded"), row("Target product and release", productRelease(header.product, control.sourceRevision.targetRelease))]),
   "**Sources (frozen revision)**", table(["Source", "Title", "Revision", "SHA-256 digest"], control.sourceRevision.sources.map(source => row(source.id, source.title, source.revision, source.digest))),
   "**Reviewers**", table(["Role", "Assigned to"], control.reviewerRoles.map(item => row(item.role, item.assignee))),
   "**Sign-off.** Nothing here is approved; each line is completed by a person.", table(["Role", "Name", "Date", "Status"], control.signOff.map(item => row(item.role, item.name, item.date, item.status))));

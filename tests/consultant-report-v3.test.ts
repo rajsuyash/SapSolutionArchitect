@@ -149,3 +149,14 @@ describe("report: sections added with the consistency work", () => {
     expect(text).not.toContain("## Blockers");
   });
 });
+
+describe("target product and release in document control", () => {
+  const line = (release: string | null) => renderMarkdown(buildReport({ ...data(rentalDraftV3), targetRelease: release })).split("\n").find(text => text.includes("Target product and release"))!;
+  it("prints the product name once when the release already begins with it", () => {
+    expect(line("SAP S/4HANA Cloud Private Edition 2023")).toContain("| SAP S/4HANA Cloud Private Edition 2023 |");
+    expect(line("SAP S/4HANA Cloud Private Edition 2023").match(/Private Edition/g)).toHaveLength(1);
+  });
+  it("puts the product before a bare release", () => {
+    expect(line("2023")).toContain("| SAP S/4HANA Cloud Private Edition 2023 |");
+  });
+});
