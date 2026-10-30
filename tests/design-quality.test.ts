@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { rentalContext, rentalDraft } from "../fixtures/ai/to-be/rental-benchmark";
 import { evaluateDesign, materializeComparison } from "../src/lib/ai/design-quality";
+import { FIXABLE_BLOCKERS, blockerPart, explainBlocker } from "../src/lib/ai/to-be-fix";
 
 const fixture = () => ({ input: structuredClone(rentalContext), draft: structuredClone(rentalDraft) });
 const codes = (input: unknown, draft: unknown) => evaluateDesign(input, draft).errors.map(error => error.code);
@@ -56,6 +57,48 @@ describe("detailed design quality contract", () => {
   it("requires tests for critical requirements, not merely tests somewhere in the document", () => {
     const { input, draft } = fixture(); draft.steps[1]!.acceptanceTests[1]!.requirementIds = ["R-3"];
     expect(codes(input, draft)).toContain("CRITICAL_REQUIREMENT_UNTESTED");
+  });
+
+  describe("critical requirement traced to a variant step", () => {
+    // R-1 is critical and tested by TB-1; TB-2 becomes a variant that traces it too.
+    const traced = () => {
+      const f = fixture();
+      f.draft.steps[1]!.requirementIds = [...f.draft.steps[1]!.requirementIds, "R-1"];
+      f.draft.coverage[0]!.stepIds = ["TB-1", "TB-2"];
+      return f;
+    };
+    const evaluate = (f: ReturnType<typeof fixture>) => evaluateDesign(f.input, f.draft);
+    const partly = (f: ReturnType<typeof fixture>) => evaluate(f).blockers.filter(item => item.code === "CRITICAL_REQUIREMENT_PARTLY_TESTED");
+
+    it("warns, not fails, when at least one traced step tests it, naming the untested step", () => {
+      const f = traced();
+      expect(codes(f.input, f.draft)).not.toContain("CRITICAL_REQUIREMENT_UNTESTED");
+      expect(partly(f)).toEqual([{ code: "CRITICAL_REQUIREMENT_PARTLY_TESTED", path: "draft.steps.1", detail: "R-1" }]);
+    });
+
+    it("still fails when no traced step tests it", () => {
+      const f = traced();
+      f.draft.steps[0]!.acceptanceTests.forEach(test => { test.requirementIds = test.requirementIds.filter(id => id !== "R-1"); });
+      expect(codes(f.input, f.draft)).toContain("CRITICAL_REQUIREMENT_UNTESTED");
+      expect(partly(f)).toEqual([]);
+    });
+
+    it("raises neither when every traced step tests it", () => {
+      const f = traced();
+      f.draft.steps[1]!.acceptanceTests[0]!.requirementIds = [...f.draft.steps[1]!.acceptanceTests[0]!.requirementIds, "R-1"];
+      expect(codes(f.input, f.draft)).not.toContain("CRITICAL_REQUIREMENT_UNTESTED");
+      expect(partly(f)).toEqual([]);
+    });
+
+    it("is a fixable blocker routed to the untested step, whose note names the requirement", () => {
+      const f = traced();
+      const [hit] = partly(f);
+      expect(FIXABLE_BLOCKERS.has("CRITICAL_REQUIREMENT_PARTLY_TESTED")).toBe(true);
+      expect(blockerPart(hit!, f.draft)).toEqual({ type: "step", stepId: "TB-2" });
+      const note = explainBlocker(hit!, f.draft, { discovery: { requirements: [] } } as never);
+      expect(note).toContain("TB-2");
+      expect(note).toContain("R-1");
+    });
   });
 
   it("requires exception-path tests and explicit reasons when exceptions are not applicable", () => {

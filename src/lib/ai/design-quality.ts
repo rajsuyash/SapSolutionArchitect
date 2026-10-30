@@ -343,9 +343,11 @@ export function evaluateDesign(input: unknown, value: unknown): DesignEvaluation
       if (!item.stepIds.length || traced.length !== item.stepIds.length ||
           traced.some(step => !item.stepIds.includes(step.id))) error("COVERAGE_TRACE_MISMATCH", path);
       if (item.decisionId !== null) error("UNEXPECTED_DECISION", path);
-      if (requirements.get(item.requirementId)?.critical &&
-          (!traced.length || traced.some(step => !step.acceptanceTests.some(test => test.requirementIds.includes(item.requirementId))))) {
-        error("CRITICAL_REQUIREMENT_UNTESTED", path);
+      if (requirements.get(item.requirementId)?.critical) {
+        const untested = traced.filter(step => !step.acceptanceTests.some(test => test.requirementIds.includes(item.requirementId)));
+        // Nothing tests it: fatal. Some traced step tests it and a variant does not: that step is sent back to gain a test, the plan is kept.
+        if (!traced.length || untested.length === traced.length) error("CRITICAL_REQUIREMENT_UNTESTED", path);
+        else untested.forEach(step => block("CRITICAL_REQUIREMENT_PARTLY_TESTED", `draft.steps.${draft.steps.indexOf(step)}`, item.requirementId));
       }
     } else {
       approved(item.decisionId, "REQUIREMENT", item.requirementId, item.disposition, path);

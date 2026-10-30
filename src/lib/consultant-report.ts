@@ -92,6 +92,7 @@ export const REVIEW_FINDINGS: Record<string, string> = {
   BUILD_REALIZATION_UNLISTED: "A step's realization names something to build, but it is neither an extension or integration step nor listed by a built fit-gap row, so the RICEFW list would miss it.",
   DANGLING_ID_REFERENCE: "Text cites an id in this design's own pattern (a step, rule, test, question or register row) that does not exist. Correct the id or remove the reference.",
   UNKNOWN_QUESTION_REFERENCE: "A step cites an open question id (for example ETO-OQ-4 or IQ-7) that no register holds. Correct the id or remove the reference.",
+  CRITICAL_REQUIREMENT_PARTLY_TESTED: "A critical requirement is tested in one step but a variant step that also traces it has no acceptance test for it. Add a test to that step.",
   ...REVIEW_PASS_FINDINGS,
 };
 const BLOCKERS: Record<string, { category: string; label: string }> = {

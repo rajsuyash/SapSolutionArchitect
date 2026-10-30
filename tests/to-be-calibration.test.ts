@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { loadSapReferences } from "../src/lib/ai/sap-references";
-import { runDesign, validateOutline, assemble, attributeErrors, type Outline } from "../src/lib/ai/to-be-pipeline";
+import { runDesign, validateOutline, assemble, type Outline } from "../src/lib/ai/to-be-pipeline";
 import { toBeContext, validateToBeOutput, type ToBeInput } from "../src/lib/ai/to-be";
 import { evaluateDesign } from "../src/lib/ai/design-quality";
 import { loadExpert } from "./support/expert-control";
@@ -25,7 +25,8 @@ describe("validators against the hand-written expert control (pump-o2c, the inpu
     expect(result.success).toBe(false);
     if (!result.success) expect(codes(result.errors)).toEqual(
       // The control's step text also cites GAP-04, -06, -08 and -10, rows its register does not carry: DANGLING_ID_REFERENCE, a fixable blocker (see below), not an error.
-      ["AS_IS_DISPOSITION_CONFLICT", "AS_IS_TRACE_MISMATCH", "CRITICAL_REQUIREMENT_UNTESTED", "SAP_APPLICABILITY_UNVERIFIED"]);
+      // (The untested critical requirements are no longer an error: another step tests them, so they are CRITICAL_REQUIREMENT_PARTLY_TESTED blockers, see below.)
+      ["AS_IS_DISPOSITION_CONFLICT", "AS_IS_TRACE_MISMATCH", "SAP_APPLICABILITY_UNVERIFIED"]);
   });
 
   /** The control claims STANDARD/CONFIGURATION for two steps while citing no reference. With no catalog that claim is unevidenced,
@@ -49,21 +50,17 @@ describe("validators against the hand-written expert control (pump-o2c, the inpu
     expect(result.warnings.filter(w => w.code === "REPAIRED_AS_IS_TRACE")).toHaveLength(7);
   });
 
-  it("the assembled expert design keeps only the genuine defect: critical requirements a listing step never tests", () => {
+  it("the assembled expert design is accepted, with the steps that list a tested critical requirement without a test citing it as fixable blockers", () => {
     const outline = validateOutline(expert.input, expert.references, weakened());
     if (!outline.success) throw new Error("outline");
     const design = assemble(outline.outline, details);
     const result = validateToBeOutput(expert.input, design, expert.references);
-    expect(result.success).toBe(false);
-    if (result.success) return;
-    // The genuine defect is the untested critical requirements; the four dangling GAP-nn citations are text heuristics, so they are no longer errors.
-    expect(result.errors.filter(e => e.code === "DANGLING_ID_REFERENCE")).toHaveLength(0);
-    const untested = result.errors.filter(e => e.code === "CRITICAL_REQUIREMENT_UNTESTED");
-    expect(untested).toHaveLength(2);
-    expect(result.errors).toHaveLength(2);
-    expect(evaluateDesign(toBeContext(expert.input, expert.references), design).blockers.filter(b => b.code === "DANGLING_ID_REFERENCE")).toHaveLength(4);
-    const { byStep } = attributeErrors(untested, design);
-    expect([...byStep.keys()].sort()).toEqual(["O2C-ORD-030", "O2C-QTE-010", "O2C-RPT-110"]); // steps that list rq_otif / rq_dso without a test citing it
+    // Another step tests rq_otif / rq_dso, so the plan is kept; the four dangling GAP-nn citations are text heuristics, not errors.
+    expect(result.success).toBe(true);
+    const { blockers } = evaluateDesign(toBeContext(expert.input, expert.references), design);
+    expect(blockers.filter(b => b.code === "DANGLING_ID_REFERENCE")).toHaveLength(4);
+    const partly = blockers.filter(b => b.code === "CRITICAL_REQUIREMENT_PARTLY_TESTED");
+    expect(partly.map(b => design.steps[Number(/\.(\d+)$/.exec(b.path)![1])]!.id).sort()).toEqual(["O2C-ORD-030", "O2C-QTE-010", "O2C-RPT-110"]);
   });
 
   it("without the decision register the expert's DEC ids are an input mismatch, not a check defect", () => {
