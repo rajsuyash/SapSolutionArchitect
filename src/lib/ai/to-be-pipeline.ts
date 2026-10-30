@@ -879,6 +879,15 @@ async function runLabelledDesign(input: ToBeInput, references: DesignContext["re
     return out;
   };
 
+  /** A design that cannot be repaired further is saved as a Blocked draft listing what is left, instead of failing the job: only a structural error (see STRUCTURAL_ERROR_CODES) still fails.
+   * No review or fix pass follows: each adopts a repair only when the whole design validates, which it cannot while these errors remain. */
+  const degraded = (design: DetailedDesign, errorCount: number): ToBeOutput => {
+    const result = validateToBeOutput(input, design, references, [], { degrade: true });
+    if (!result.success) throw deps.invalid();
+    deps.warn?.([{ code: "TO_BE_DEGRADED_TO_BLOCKED", path: "to_be", detail: `${errorCount} unresolved errors kept as blockers` }]);
+    return result.data;
+  };
+
   await expand(outline.steps.map(step => step.id), REGISTER_GROUP_NAMES, new Map());
   for (let round = 0; ; round++) {
     const design = assembled(outline, details, registers);
@@ -891,7 +900,7 @@ async function runLabelledDesign(input: ToBeInput, references: DesignContext["re
     }
     deps.record(result.errors);
     deps.lastDraft?.(design, result.errors);
-    if (round >= MAX_REEXPANSION_ROUNDS) { deps.progress?.("expand", false); throw deps.invalid(); }
+    if (round >= MAX_REEXPANSION_ROUNDS) { deps.progress?.("expand", false); return degraded(design, result.errors.length); }
     const { byStep, byGroup, global } = attributeErrors(result.errors, design);
     const redo = new Set(byStep.keys()), redoGroups = new Set(byGroup.keys());
     for (const stepId of redo) markRetry(stepId);
@@ -899,10 +908,10 @@ async function runLabelledDesign(input: ToBeInput, references: DesignContext["re
     // The late groups were written from the old step bodies; a redone step makes them stale, which is not their own failure.
     if (redo.size) for (const group of LATE_GROUPS) redoGroups.add(group);
     if (global.length) {
-      if (!canRepairOutline()) throw deps.invalid();
+      if (!canRepairOutline()) return degraded(design, result.errors.length);
       outlineRepairs++;
       const repaired = await repairOutline(global);
-      if (!repaired.success) throw deps.invalid();
+      if (!repaired.success) return degraded(design, result.errors.length);
       // Frozen means unchanged steps keep their expansion; a step whose outline entry changed (or is new) is expanded again.
       // The registers were written against the old outline, so they are all written again.
       const before = new Map(outline.steps.map(step => [step.id, JSON.stringify(step)]));

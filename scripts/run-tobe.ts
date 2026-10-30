@@ -102,7 +102,7 @@ async function main() {
     errorCode = failed?.code ?? `DRIVER_ERROR:${message(error).slice(0, 120)}`;
   }
 
-  const validation = payload ? validateToBeOutput(input, payload.design, references, reviewBlockers(payload.reviewFindings)) : null;
+  const validation = payload ? validateToBeOutput(input, payload.design, references, reviewBlockers(payload.reviewFindings), { degrade: true }) : null;
   const validationIssues = validation && !validation.success ? validation.errors.map(({ path, code, detail }) => ({ path, code, ...(detail && { detail }) })) : [];
   if (payload && !validation?.success) errorCode = "VALIDATION_FAILED";
   for (const issue of validationIssues.slice(0, 10)) console.error(`validation: ${issue.path} ${issue.code}${issue.detail ? ` (${issue.detail})` : ""}`);

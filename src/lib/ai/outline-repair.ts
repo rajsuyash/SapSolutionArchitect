@@ -106,7 +106,16 @@ export function repairOutlineShape(input: Pick<ToBeInput["discovery"], "requirem
     return { ...item, decisionIds: kept };
   });
 
-  return { value: { ...raw, steps, coverage: knownDecisions(repairedCoverage, "coverage"), openQuestions: knownDecisions(questions, "openQuestions"),
+  // A coverage row citing an open question the outline does not hold cites an invention: the id is dropped (a row left with no link stays an error for the model).
+  const heldQuestions = new Set(Array.isArray(raw.openQuestions) ? raw.openQuestions.flatMap(question => isObj(question) && typeof question.id === "string" ? [question.id] : []) : []);
+  const knownQuestions = (items: unknown) => !Array.isArray(items) || !Array.isArray(raw.openQuestions) ? items : items.map((item, i) => {
+    const cited = isObj(item) ? strings(item.questionIds) : undefined, kept = cited?.filter(ref => heldQuestions.has(ref));
+    if (!isObj(item) || !cited || kept!.length === cited.length) return item;
+    warn("REPAIRED_UNKNOWN_QUESTION_REF", `outline.coverage.${i}`);
+    return { ...item, questionIds: kept };
+  });
+
+  return { value: { ...raw, steps, coverage: knownQuestions(knownDecisions(repairedCoverage, "coverage")), openQuestions: knownDecisions(questions, "openQuestions"),
     eliminatedAsIsSteps: eliminated }, warnings };
 }
 

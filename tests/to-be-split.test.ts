@@ -958,17 +958,19 @@ describe("late register groups (documents, governance)", () => {
     expect(h.registerCount.fitgap).toBe(1);
     expect(result.metrics.warnings).toContainEqual({ code: "RICEFW_TYPE_INFERRED", path: "draft.fitGap.0" });
   });
-  it("a stage that ends on an invalid design keeps the last assembled draft and its errors in metrics when raw capture is on, and nothing otherwise", async () => {
+  it("a stage that ends on a design with content errors saves it as Blocked and keeps the last assembled draft and its errors in metrics when raw capture is on, and nothing otherwise", async () => {
     const g = rentalRegisterGroups.governance;
     const broken = { ...g, sodAssessments: [{ ...g.sodAssessments[0]!, roleIds: ["ROLE-99"] }] };
     const attempt = async (captureRaw: boolean) => {
       const h = harness({ registers: group => group === "governance" ? broken : rentalRegisterGroups[group] });
-      return createStageRunner(settings(), { fetch: h.fetch, captureRaw })("to_be", fixture()).then(() => null, (error: unknown) => (error as { metrics: { lastDraft?: { design: { roles: unknown[] }; errors: { code: string }[] } } }).metrics);
+      return createStageRunner(settings(), { fetch: h.fetch, captureRaw })("to_be", fixture()).then(done => done, (error: unknown) => error as never).then(done => done as { metrics: { lastDraft?: { design: { roles: unknown[] }; errors: { code: string }[] }; warnings?: { code: string }[] }; payload: { evaluation: { blockers: { code: string }[] } } });
     };
     const on = await attempt(true);
-    expect(on?.lastDraft?.errors.map(item => item.code)).toContain("UNKNOWN_ROLE");
-    expect(on?.lastDraft?.design.roles).toHaveLength(3);
-    expect((await attempt(false))?.lastDraft).toBeUndefined();
+    expect(on.payload.evaluation.blockers.map(item => item.code)).toContain("UNKNOWN_ROLE");
+    expect(on.metrics.warnings?.map(item => item.code)).toContain("TO_BE_DEGRADED_TO_BLOCKED");
+    expect(on.metrics.lastDraft?.errors.map(item => item.code)).toContain("UNKNOWN_ROLE");
+    expect(on.metrics.lastDraft?.design.roles).toHaveLength(3);
+    expect((await attempt(false)).metrics.lastDraft).toBeUndefined();
   });
   it("a governance answer whose roles do not match the step actors is settled by the owner roles the server adds, with no repair call", async () => {
     const wrong = { ...rentalRegisterGroups.governance, roles: rentalRegisterGroups.governance.roles.map((role, i) => i === 2 ? { ...role, name: "Accounts clerk" } : role) };
@@ -1220,10 +1222,12 @@ describe("repair requests", () => {
     expect(h.stepCount["TB-3"]).toBe(3);
     expect(result.payload.design).toEqual(rentalDraftV3);
   });
-  it("re-expansion rounds are bounded: a part that never passes the assembled checks is asked 3 times, then the stage fails", async () => {
+  it("re-expansion rounds are bounded: a part that never passes the assembled checks is asked 3 times, then the design is saved as Blocked with what is left", async () => {
     const h = harness({ step: id => id === "TB-3" ? badTrace : split.details[id] });
-    await expect(h.run()).rejects.toMatchObject({ code: "AI_INVALID_OUTPUT" });
+    const result = await h.run();
     expect(h.stepCount["TB-3"]).toBe(3);
+    expect(result.payload.evaluation.reviewStatus).toBe("BLOCKED");
+    expect(result.payload.evaluation.blockers.map(item => item.code)).toContain("TEST_TRACE_MISMATCH");
   });
 });
 

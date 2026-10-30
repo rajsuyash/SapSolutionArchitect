@@ -63,19 +63,33 @@ export function toBeContext(input: ToBeInput, references: DesignContext["referen
   };
 }
 
-/** `extraBlockers` are review findings that come from outside the design checks (the consistency pass); they are added to the evaluation like any other blocker. */
-export function validateToBeOutput(input: ToBeInput, raw: unknown, references: DesignContext["references"] = [], extraBlockers: readonly DesignEvaluation["blockers"][number][] = []):
+/** Error codes that mean the draft cannot be stored or read, or that the saved input itself is corrupt: no design is worth keeping. Every other error is a content
+ * problem (a missing test, a dangling link, placeholder text) that a consultant can see and fix in a stored draft; `degrade` turns those into blockers. */
+export const STRUCTURAL_ERROR_CODES: ReadonlySet<string> = new Set(["INVALID_INPUT", "INVALID_DRAFT", TOOL_MARKUP_LEAKED,
+  "DUPLICATE_INPUT_ID", "UNKNOWN_SOURCE", "SOURCE_QUOTE_INVALID", "INVALID_APPROVED_DECISION"]);
+/** What the stored result may hold (consultant-report.ts reads the same bounds). */
+const STORED_BLOCKERS_MAX = 1000, STORED_PATH_MAX = 200;
+/** Validation errors as stored blockers: code, path and detail kept, bounded to what the reader accepts. */
+export const demoteErrors = (errors: readonly ValidationIssue[]): ValidationIssue[] => errors.slice(0, STORED_BLOCKERS_MAX).map(({ code, path, detail }) =>
+  ({ code, path: path.slice(0, STORED_PATH_MAX), ...(detail && { detail: boundDetail(detail) }) }));
+
+/** `extraBlockers` are review findings that come from outside the design checks (the consistency pass); they are added to the evaluation like any other blocker.
+ * With `degrade`, a design whose only errors are content errors is accepted: those errors are listed as blockers and the status is BLOCKED (the final acceptance of a design, never the loops that repair it). */
+export function validateToBeOutput(input: ToBeInput, raw: unknown, references: DesignContext["references"] = [], extraBlockers: readonly DesignEvaluation["blockers"][number][] = [],
+  options: { degrade?: boolean } = {}):
   { success: true; data: ToBeOutput } | { success: false; errors: ValidationIssue[] } {
   // Last gate: whatever the stage checks missed, a design holding tool-call markup in any string is never accepted.
   const marked = findToolMarkup(raw, "draft");
   if (marked) return { success: false, errors: [{ path: marked, code: TOOL_MARKUP_LEAKED, detail: LEAK_DETAIL }] };
   const evaluation = evaluateDesign(toBeContext(input, references), raw);
-  if (!evaluation.structurallyValid) return { success: false, errors: evaluation.errors.slice(0, 30) };
+  const demoted = options.degrade && evaluation.errors.length && !evaluation.errors.some(error => STRUCTURAL_ERROR_CODES.has(error.code)) ? evaluation.errors : [];
+  if (!evaluation.structurallyValid && !demoted.length) return { success: false, errors: evaluation.errors.slice(0, 30) };
   const design = DetailedDesignSchema.parse(raw);
   // Model omission cannot erase a business question or its assigned owner.
   const unresolvedInputQuestions = input.discovery.openQuestions;
-  evaluation.blockers.push(...unresolvedInputQuestions.map((_, i) =>
-    ({ code: "INPUT_QUESTION_UNRESOLVED", path: `input.openQuestions.${i}` })), ...extraBlockers.map(blocker => blocker.detail ? { ...blocker, detail: boundDetail(blocker.detail) } : blocker));
+  if (demoted.length) { evaluation.errors = []; evaluation.structurallyValid = true; }
+  evaluation.blockers.splice(0, evaluation.blockers.length, ...demoteErrors([...demoted, ...evaluation.blockers, ...unresolvedInputQuestions.map((_, i) =>
+    ({ code: "INPUT_QUESTION_UNRESOLVED", path: `input.openQuestions.${i}` })), ...extraBlockers]));
   if (evaluation.blockers.length) evaluation.reviewStatus = "BLOCKED";
   return { success: true, data: { design, evaluation, unresolvedInputQuestions } };
 }

@@ -260,7 +260,7 @@ export function createConsultantJobs(pool: Pool, auth: AuthService, queue: PgBos
             if (workspace.state.revision !== job.input_revision) throw stale();
             if (!workspace.canConfirm || workspace.confirmedSnapshotId !== job.snapshot_id) throw stale();
             const validation = validateToBeOutput(input.input, (generated.payload as { design?: unknown }).design,
-              await loadToBeReferences(input.input, catalog), reviewBlockers((generated.payload as { reviewFindings?: ReviewOutcome[] }).reviewFindings));
+              await loadToBeReferences(input.input, catalog), reviewBlockers((generated.payload as { reviewFindings?: ReviewOutcome[] }).reviewFindings), { degrade: true });
             if (!validation.success) throw new Error("Invalid design output");
             result = { ...validation.data, sourceRevision: job.input_revision, snapshotId: job.snapshot_id,
               status: validation.data.evaluation.blockers.length ? "BLOCKED" : "HUMAN_REVIEW_REQUIRED" };
