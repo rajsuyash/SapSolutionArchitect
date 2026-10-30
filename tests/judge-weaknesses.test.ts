@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { evaluateDesign, type DesignContext, type DetailedDesign } from "../src/lib/ai/design-quality";
+import { BLOCKER_DETAIL_MAX, evaluateDesign, type DesignContext, type DetailedDesign } from "../src/lib/ai/design-quality";
 import { buildTypeOf } from "../src/lib/ai/design-registers-v3";
 import { FIXABLE_BLOCKERS, explainBlocker } from "../src/lib/ai/to-be-fix";
-import { REVIEW_FINDINGS } from "../src/lib/consultant-report";
+import { REVIEW_FINDINGS, parseStoredToBe } from "../src/lib/consultant-report";
 import { ricefwList } from "../src/lib/to-be-derived";
 import { rentalContext } from "../fixtures/ai/to-be/rental-benchmark";
 import { rentalDraftV3 } from "../fixtures/ai/to-be/rental-registers";
@@ -145,5 +145,18 @@ describe("the new findings reach the fix pass and the report", () => {
       expect(REVIEW_FINDINGS[code], code).toBeTruthy();
       expect(explainBlocker({ code, path: "draft.steps.0", detail: "x" }, rentalDraftV3, { discovery: { requirements: [] } } as never), code).not.toBe(code);
     }
+  });
+});
+
+describe("blocker detail is bounded where it is written", () => {
+  it("a STATUS_MODEL_UNCOVERED joining many long outputs stays within BLOCKER_DETAIL_MAX and the stored shape parses", () => {
+    const long = (n: number) => `Advance shipping notice number ${n} to the customer ${"with a long free-text description ".repeat(6)}`;
+    const draft = design(d => { d.steps[2]!.outputDocuments = [...d.steps[2]!.outputDocuments, ...[1, 2, 3, 4, 5, 6].map(long)]; });
+    const { blockers } = evaluateDesign(rentalContext, draft);
+    const joined = blockers.find(item => item.code === "STATUS_MODEL_UNCOVERED");
+    expect(joined?.detail?.length).toBeGreaterThan(0);
+    expect(blockers.length).toBeGreaterThan(0);
+    for (const item of blockers) expect((item.detail ?? "").length).toBeLessThanOrEqual(BLOCKER_DETAIL_MAX);
+    expect(() => parseStoredToBe({ design: draft, evaluation: { blockers }, unresolvedInputQuestions: [], sourceRevision: 1, snapshotId: "s" })).not.toThrow();
   });
 });

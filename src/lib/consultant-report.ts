@@ -1,7 +1,7 @@
 // Reviewable To-Be report: one pure view-model shared by the page, the JSON endpoint and the exports.
 // Human labels live here only. Internal codes are kept as secondary text for consultants.
 import { z } from "zod";
-import { DetailedDesignSchema, type DetailedDesign, type TrustedReference } from "./ai/design-quality";
+import { BLOCKER_DETAIL_MAX, DetailedDesignSchema, type DetailedDesign, type TrustedReference } from "./ai/design-quality";
 import type { DiscoveryInput } from "./discovery";
 import { deriveSections, inputQuestionRows } from "./to-be-derived";
 import { WORKSPACE_FIELDS } from "./workspace-fields";
@@ -24,11 +24,11 @@ export type ReportData = {
 
 const StoredSchema = z.object({
   design: DetailedDesignSchema,
-  evaluation: z.object({ blockers: z.array(z.object({ code: z.string().max(80), path: z.string().max(200), detail: z.string().max(500).optional() })).max(1000) }),
+  evaluation: z.object({ blockers: z.array(z.object({ code: z.string().max(80), path: z.string().max(200), detail: z.string().transform(detail => detail.slice(0, BLOCKER_DETAIL_MAX)).optional() })).max(1000) }),
   unresolvedInputQuestions: z.array(z.object({ id: z.string(), question: z.string(), owner: z.string(), label: z.string().optional() })).max(100),
   sourceRevision: z.number().int(), snapshotId: z.string(),
 });
-/** Re-validates what was stored; a corrupted row must fail loudly rather than render partially. */
+/** Re-validates what was stored; a corrupted row must fail loudly rather than render partially. Only a blocker detail is tolerated over-long (rows saved before the writer bounded it): it is truncated, every other field keeps its cap. */
 export const parseStoredToBe = (result: unknown) => StoredSchema.parse(result);
 
 export const PRODUCT_LABELS: Record<string, string> = {

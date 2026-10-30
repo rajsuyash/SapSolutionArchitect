@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { z } from "zod";
 import { AuthError } from "../auth";
 import { DiscoveryInputSchema, validateDiscovery, type createDiscoveryRepository } from "../discovery";
-import { DetailedDesignSchema, evaluateDesign, type DesignContext, type DesignEvaluation, type DetailedDesign } from "./design-quality";
+import { DetailedDesignSchema, boundDetail, evaluateDesign, type DesignContext, type DesignEvaluation, type DetailedDesign } from "./design-quality";
 import { loadSapReferences, type SapReferenceOptions } from "./sap-references";
 import type { ValidationIssue } from "./problem-analysis";
 import type { StageMetrics } from "./runStage";
@@ -75,7 +75,7 @@ export function validateToBeOutput(input: ToBeInput, raw: unknown, references: D
   // Model omission cannot erase a business question or its assigned owner.
   const unresolvedInputQuestions = input.discovery.openQuestions;
   evaluation.blockers.push(...unresolvedInputQuestions.map((_, i) =>
-    ({ code: "INPUT_QUESTION_UNRESOLVED", path: `input.openQuestions.${i}` })), ...extraBlockers);
+    ({ code: "INPUT_QUESTION_UNRESOLVED", path: `input.openQuestions.${i}` })), ...extraBlockers.map(blocker => blocker.detail ? { ...blocker, detail: boundDetail(blocker.detail) } : blocker));
   if (evaluation.blockers.length) evaluation.reviewStatus = "BLOCKED";
   return { success: true, data: { design, evaluation, unresolvedInputQuestions } };
 }

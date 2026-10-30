@@ -6,6 +6,7 @@ import { createServer } from "node:net";
 import { setTimeout as delay } from "node:timers/promises";
 import { parseEnv, promisify } from "node:util";
 import { Client } from "pg";
+import { z } from "zod";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { AuthError } from "../src/lib/auth";
 import { handleAuth, type HttpRuntime } from "../src/lib/auth-http";
@@ -111,6 +112,22 @@ describe("auth HTTP boundary", () => {
       expect(response.status).toBe(500);
       expect(log).toHaveBeenCalledOnce();
       expect(JSON.parse(log.mock.calls[0]![0] as string)).toEqual({ event: "api_error", requestId: response.headers.get("x-request-id"), code });
+    } finally { log.mockRestore(); }
+  });
+
+  it("logs the Zod issue paths and codes, never the received values", async () => {
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    const runtime = mockRuntime();
+    const failure = z.object({ evaluation: z.object({ blockers: z.array(z.object({ detail: z.string().max(5) })) }) }).safeParse(
+      { evaluation: { blockers: [{ detail: "secret-client-text" }] } });
+    runtime.auth.login.mockRejectedValue(failure.error);
+    try {
+      const response = await handleAuth(post("{}"), "login", () => runtime);
+      expect(response.status).toBe(500);
+      expect(log).toHaveBeenCalledOnce();
+      expect(log.mock.calls[0]![0] as string).not.toMatch(/\n|secret-client-text/);
+      expect(JSON.parse(log.mock.calls[0]![0] as string)).toEqual({ event: "api_error", requestId: response.headers.get("x-request-id"), code: "ZodError",
+        issues: [{ path: "evaluation.blockers.0.detail", code: "too_big" }] });
     } finally { log.mockRestore(); }
   });
 

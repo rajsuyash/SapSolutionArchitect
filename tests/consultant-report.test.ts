@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DetailedDesignSchema } from "../src/lib/ai/design-quality";
+import { BLOCKER_DETAIL_MAX, DetailedDesignSchema } from "../src/lib/ai/design-quality";
 import { buildReport, parseStoredToBe, type ReportData } from "../src/lib/consultant-report";
 import { renderMarkdown, renderTraceabilityCsv, reportFilename } from "../src/lib/consultant-report-export";
 
@@ -200,5 +200,19 @@ describe("an input question the design already registers is listed once", () => 
     const model = buildReport({ ...data, design: withIq, unresolvedInputQuestions: [{ id: "q_raw_1", question: "Which plants are in scope?", owner: "Process owner", label: "IQ-1" }, { id: "q_raw_2", question: "Who pays freight?", owner: "Finance lead", label: "IQ-2" }] });
     expect(model.registers.questions.filter(item => item.id === "IQ-1")).toEqual([expect.objectContaining({ sourceId: "q_raw_1", affects: expect.stringContaining("Record return") })]);
     expect(model.registers.questions.filter(item => item.id === "IQ-2")).toHaveLength(1);
+  });
+});
+
+describe("stored To-Be blocker detail", () => {
+  const stored = (detail: string) => ({ design, evaluation: { blockers: [{ code: "STATUS_MODEL_UNCOVERED", path: "draft.documentStatusModels", detail }] },
+    unresolvedInputQuestions: [], sourceRevision: 1, snapshotId: "snap" });
+  it("opens a row stored with an over-long detail (773 chars) and truncates it on read", () => {
+    const parsed = parseStoredToBe(stored("x".repeat(773)));
+    expect(parsed.evaluation.blockers[0]!.detail).toHaveLength(BLOCKER_DETAIL_MAX);
+  });
+  it("still rejects an over-long code", () => {
+    const row = stored("ok");
+    row.evaluation.blockers[0]!.code = "C".repeat(81);
+    expect(() => parseStoredToBe(row)).toThrow();
   });
 });

@@ -181,13 +181,17 @@ export function orgCodeConflicts(org: readonly OrgRow[], texts: readonly { path:
   return [...found.values()];
 }
 
+/** The most a stored blocker may say; the report reader truncates to the same bound. */
+export const BLOCKER_DETAIL_MAX = 500;
+export const boundDetail = (detail: string) => detail.slice(0, BLOCKER_DETAIL_MAX);
+
 /** This checks structure and trace integrity, not semantic correctness.
  * Even a clean result requires a consultant to review business/SAP fit. */
 export function evaluateDesign(input: unknown, value: unknown): DesignEvaluation {
   const errors: Issue[] = [];
   const blockers: Issue[] = [];
   const error = (code: string, path: string, detail?: string) => { errors.push(detail ? { code, path, detail } : { code, path }); };
-  const block = (code: string, path: string, detail?: string) => { blockers.push(detail ? { code, path, detail } : { code, path }); };
+  const block = (code: string, path: string, detail?: string) => { blockers.push(detail ? { code, path, detail: boundDetail(detail) } : { code, path }); };
   const result = (): DesignEvaluation => ({
     structurallyValid: errors.length === 0, errors, blockers,
     reviewStatus: errors.length || blockers.length ? "BLOCKED" : "HUMAN_REVIEW_REQUIRED",
