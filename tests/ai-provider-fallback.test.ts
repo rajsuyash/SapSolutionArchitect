@@ -3,7 +3,8 @@ import { parseEnv } from "node:util";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { OPENROUTER_DEFAULT_MODEL, parseEnvironment } from "../src/lib/env";
 import { createStageRunner } from "../src/lib/ai/runStage";
-import { FALLBACK_COOLDOWN_MS } from "../src/lib/ai/provider";
+import Anthropic from "@anthropic-ai/sdk";
+import { FALLBACK_COOLDOWN_MS, classifyProviderError, isTransientProviderError } from "../src/lib/ai/provider";
 import { fixture as toBeInput } from "./support/to-be-input";
 import { asStream, messageEvents, sseResponse } from "./support/sse";
 
@@ -120,6 +121,52 @@ describe("credit fallback", () => {
     n.seen.length = 0; primaryOk = true; now += 1;
     expect((await run("problem_analysis", input)).metrics).toMatchObject({ provider: "deepinfra", model: FLASH });
     expect(n.seen.map(call => call.host)).toEqual(["primary"]);
+  });
+});
+
+describe("credit refusals fail fast", () => {
+  // A spend cap reached on OpenRouter arrives as HTTP 403 permission_error (seen in production logs).
+  const credit403 = () => new Response(JSON.stringify({ type: "error", error: { type: "permission_error", message: "Your workspace budget has been exceeded. Add credits." } }), { status: 403, headers: { "content-type": "application/json" } });
+  // The same refusal as an error event inside a 200 stream: the SDK sees no failing status, only the code in the body.
+  const credit403Stream = () => sseResponse(messageEvents({ content: [{ type: "text", text: "x" }] }, { type: "permission_error", message: "Your workspace budget has been exceeded. Add credits." }));
+
+  it.each([["HTTP 403", credit403], ["a 403 inside a stream", credit403Stream]])("a design call refused for credit (%s) goes once to the fallback, with no retry on the primary", async (_name, refuse) => {
+    vi.useFakeTimers();
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const n = network(refuse, noTool);
+    const pending = createStageRunner(settings(), { fetch: n.fetch })("to_be", toBeInput()).catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(60_000);
+    await pending;
+    expect(n.seen.slice(0, 2)).toEqual([{ host: "primary", model: PRO }, { host: "fallback", model: "fb/design" }]);
+    expect(n.seen.filter(call => call.host === "primary")).toHaveLength(1);
+  });
+
+  it.each([["HTTP 403", credit403], ["a 403 inside a stream", credit403Stream]])("credit refused on both routes (%s) fails with AI_PROVIDER_CREDIT within seconds and sends two calls", async (_name, refuse) => {
+    vi.useFakeTimers();
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const n = network(refuse, refuse);
+    const started = Date.now();
+    const pending = createStageRunner(settings(), { fetch: n.fetch })("to_be", toBeInput()).catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(await pending).toMatchObject({ code: "AI_PROVIDER_CREDIT" });
+    expect(Date.now() - started).toBeLessThan(5000); // no backoff wait (the first retry delay would be 2 s)
+    expect(n.seen.map(call => call.host)).toEqual(["primary", "fallback"]);
+  });
+
+  it.each(["Key limit exceeded (daily limit). Manage it at https://openrouter.ai/settings/keys", "Key limit exceeded (total limit)"])("classifies OpenRouter's key-limit wording %j as credit", message => {
+    const error = Anthropic.APIError.generate(403, { type: "error", error: { type: "permission_error", message } }, message, new Headers());
+    expect(classifyProviderError(error)).toMatchObject({ status: 403, category: "credit" });
+    expect(isTransientProviderError(error)).toBe(false);
+  });
+
+  it("credit refused on the only route fails at once with AI_PROVIDER_CREDIT after one call", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const n = network(credit403);
+    const pending = createStageRunner(parseEnvironment(base), { fetch: n.fetch })("to_be", toBeInput()).catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(await pending).toMatchObject({ code: "AI_PROVIDER_CREDIT" });
+    expect(n.seen).toHaveLength(1);
   });
 });
 

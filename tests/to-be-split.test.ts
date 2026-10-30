@@ -210,13 +210,40 @@ describe("OpenRouter provider", () => {
         expect(request.body.tool_choice).toEqual({ type: "tool", name: request.body.tools[0]!.name, disable_parallel_tool_use: true });
       }
     });
-    it("derives the budget from AI_OUTLINE_REASONING_EFFORT and keeps max_tokens at least budget + 16000", async () => {
-      for (const [effort, budget, maxTokens] of [["low", 4000, 32000], ["medium", 12000, 32000], ["high", 24000, 40000]] as const) {
+    it("derives the budget from AI_OUTLINE_REASONING_EFFORT and sends max_tokens at the cap, so a model that overruns its budget still has room for the answer", async () => {
+      for (const [effort, budget] of [["low", 4000], ["medium", 12000], ["high", 24000]] as const) {
         const outline = await outlineOf({ AI_OUTLINE_REASONING_EFFORT: effort });
         expect(outline.thinking).toEqual({ type: "enabled", budget_tokens: budget });
-        expect(outline.max_tokens).toBe(maxTokens);
+        expect(outline.max_tokens).toBe(64000);
         expect(outline.tool_choice).toEqual({ type: "auto", disable_parallel_tool_use: true });
       }
+    });
+    // Measured 2026-10-30 (5 runs): DeepSeek overran budget_tokens 24000 and 4 of 5 first outline calls ended on max_tokens; the re-ask, with the same budget, finished.
+    const cut = () => toolResponse({}, "submit_to_be_outline", "max_tokens");
+    const thinkingOf = (body: RequestBody) => (body.thinking as { type: string; budget_tokens?: number } | undefined);
+    it("re-asks a cut-off outline one effort level lower, with the same ceiling, and logs the step", async () => {
+      const log = vi.spyOn(console, "error").mockImplementation(() => {});
+      const h = harness({ outline: nth => nth === 1 ? cut() : split.outline, overrides: { ...DI, AI_OUTLINE_REASONING_EFFORT: "high" } });
+      await h.run();
+      expect(h.outlineCalls.map(body => thinkingOf(body))).toEqual([{ type: "enabled", budget_tokens: 24000 }, { type: "enabled", budget_tokens: 12000 }]);
+      expect(h.outlineCalls.map(body => body.max_tokens)).toEqual([64000, 64000]);
+      const events = log.mock.calls.map(call => String(call[0])).filter(line => line.includes("ai_outline_thinking_reduced")).map(line => JSON.parse(line) as Record<string, unknown>);
+      expect(events).toEqual([expect.objectContaining({ event: "ai_outline_thinking_reduced", substage: "to_be_outline", from: 24000, to: 12000 })]);
+      log.mockRestore();
+    });
+    it("keeps stepping down on every cut-off, stops at low, and never turns thinking off", async () => {
+      vi.spyOn(console, "error").mockImplementation(() => {});
+      const h = harness({ outline: () => cut(), overrides: { ...DI, AI_OUTLINE_REASONING_EFFORT: "max" } });
+      await h.run().catch(() => {});
+      expect(h.outlineCalls.length).toBeGreaterThanOrEqual(4);
+      expect(h.outlineCalls.map(body => thinkingOf(body)?.budget_tokens)).toEqual([48000, 24000, 12000, 4000, 4000, 4000, 4000].slice(0, h.outlineCalls.length));
+      for (const body of h.outlineCalls) expect(thinkingOf(body)?.type).toBe("enabled");
+    });
+    it("an outline that was not cut off keeps its budget on the repair", async () => {
+      vi.spyOn(console, "error").mockImplementation(() => {});
+      const h = harness({ outline: nth => nth === 1 ? { ...split.outline, steps: [] } : split.outline, overrides: { ...DI, AI_OUTLINE_REASONING_EFFORT: "high" } });
+      await h.run();
+      expect(h.outlineCalls.map(body => thinkingOf(body)?.budget_tokens)).toEqual([24000, 24000]);
     });
     it("none sends no thinking field and keeps the forced tool", async () => {
       const outline = await outlineOf({ AI_OUTLINE_REASONING_EFFORT: "none" });

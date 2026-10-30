@@ -6,7 +6,7 @@ import type { RegisterGroup } from "../src/lib/ai/design-registers";
 import { parseStoredToBe } from "../src/lib/consultant-report";
 import { repairOutlineShape } from "../src/lib/ai/outline-repair";
 import { STRUCTURAL_ERROR_CODES, demoteErrors, validateToBeOutput } from "../src/lib/ai/to-be";
-import { MAX_REEXPANSION_ROUNDS, runDesign, type DesignDeps } from "../src/lib/ai/to-be-pipeline";
+import { MAX_REEXPANSION_ROUNDS, OUTLINE_ROUND_MIN_REMAINING, REEXPANSION_MIN_REMAINING, reexpansionAllowed, runDesign, type DesignDeps } from "../src/lib/ai/to-be-pipeline";
 import { fixture } from "./support/to-be-input";
 import { splitDesign } from "./support/to-be-split";
 
@@ -57,10 +57,10 @@ describe("validateToBeOutput degrade", () => {
 });
 
 /** A model that answers the rental design as it is, except that step TB-2 always carries a placeholder: the re-expansion rounds never clear it. */
-function run(input = fixture()) {
+function run(input = fixture(), remainingBudget?: () => number) {
   const warnings: { code: string; path: string; detail?: string }[] = [], calls: string[] = [];
   const deps: DesignDeps = {
-    parallelism: 2, invalid: () => new Error("AI_INVALID_OUTPUT"), record: () => {}, warn: issues => { warnings.push(...issues); }, review: true, reviewRounds: 2, maxFixParts: 8,
+    parallelism: 2, invalid: () => new Error("AI_INVALID_OUTPUT"), record: () => {}, warn: issues => { warnings.push(...issues); }, review: true, reviewRounds: 2, maxFixParts: 8, ...(remainingBudget && { remainingBudget }),
     ask: async (substage, user, group) => {
       calls.push(substage);
       if (substage === "to_be_outline") return split.outline;
@@ -86,6 +86,32 @@ describe("the final validation loop", () => {
   it("still fails when the remaining error is structural", async () => {
     const input = fixture(); input.discovery.requirements[0]!.evidence.quote = "not in the source";
     await expect(run(input).result).rejects.toThrow("AI_INVALID_OUTPUT");
+  });
+});
+
+describe("the final validation loop with the stage budget nearly spent", () => {
+  const stepCalls = (h: ReturnType<typeof run>) => h.calls.filter(call => call === "to_be_step").length;
+  it("saves the blocked draft at once, without starting a re-expansion round the deadline would kill", async () => {
+    const h = run(fixture(), () => REEXPANSION_MIN_REMAINING - 0.01);
+    const out = await h.result;
+    expect(out.evaluation.reviewStatus).toBe("BLOCKED");
+    expect(stepCalls(h)).toBe(rentalDraft.steps.length); // the first expansion only
+    expect(h.warnings).toContainEqual(expect.objectContaining({ code: "REEXPANSION_SKIPPED_BUDGET" }));
+    expect(h.warnings).toContainEqual(expect.objectContaining({ code: "TO_BE_DEGRADED_TO_BLOCKED" }));
+    expect(h.calls).not.toContain("to_be_review");
+  });
+  it("still re-expands while more than the threshold remains", async () => {
+    const h = run(fixture(), () => 0.6);
+    await h.result;
+    expect(stepCalls(h)).toBeGreaterThan(rentalDraft.steps.length);
+    expect(h.warnings.some(warning => warning.code === "REEXPANSION_SKIPPED_BUDGET")).toBe(false);
+  });
+  it("asks for more room when the round repairs the outline, which costs most of an outline call plus a full re-expansion", () => {
+    expect(OUTLINE_ROUND_MIN_REMAINING).toBeGreaterThan(REEXPANSION_MIN_REMAINING);
+    for (const left of [REEXPANSION_MIN_REMAINING, (REEXPANSION_MIN_REMAINING + OUTLINE_ROUND_MIN_REMAINING) / 2, OUTLINE_ROUND_MIN_REMAINING]) expect(reexpansionAllowed(left, true)).toBe(false);
+    expect(reexpansionAllowed(OUTLINE_ROUND_MIN_REMAINING + 0.01, true)).toBe(true);
+    expect(reexpansionAllowed((REEXPANSION_MIN_REMAINING + OUTLINE_ROUND_MIN_REMAINING) / 2, false)).toBe(true);
+    expect(reexpansionAllowed(REEXPANSION_MIN_REMAINING, false)).toBe(false);
   });
 });
 

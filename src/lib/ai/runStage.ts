@@ -4,7 +4,7 @@ import { z } from "zod";
 import { parseEnvironment, STAGE_NAMES, TO_BE_MAX_TOKENS_CAP, TO_BE_SUBSTAGES, type Environment } from "../env";
 import { ProblemAnalysisInputSchema, ProblemAnalysisSchema, redactInput, schemaIssues, validateProblemAnalysis,
   type ProblemAnalysis, type ValidationIssue } from "./problem-analysis";
-import { FALLBACK_COOLDOWN_MS, classifyProviderError, createProviderClient, logProviderFailure, logProviderFallback, logOutputCeilingRaised, logProviderRetry, logStageTimeout, type Provider } from "./provider";
+import { FALLBACK_COOLDOWN_MS, classifyProviderError, createProviderClient, logProviderFailure, logProviderFallback, logOutputCeilingRaised, logOutlineThinkingReduced, logProviderRetry, logStageTimeout, type Provider } from "./provider";
 import { withProviderRetry } from "./retry";
 import { loadToBeReferences, parseToBeInput, type ToBeOutput } from "./to-be";
 import { REGISTER_GROUP_NAMES, RegisterGroupSchemas } from "./design-registers";
@@ -62,7 +62,9 @@ const SDK_TIMEOUT_MARGIN_MS = 5000;
 const FALLBACK_RESERVE_SHARE = 0.4;
 /** DeepInfra outline thinking budget (budget_tokens) per AI_OUTLINE_REASONING_EFFORT; "none" sends no thinking field. */
 const DEEPINFRA_OUTLINE_THINKING_BUDGETS: Record<string, number | undefined> = { low: 4000, medium: 12000, high: 24000, max: 48000 };
-/** Output tokens kept free above the thinking budget for the visible outline (~6k measured) plus headroom. */
+/** The effort levels that send a budget, lowest first: a re-ask after a max_tokens ending steps down this list (never to "none": an outline without reasoning failed validation). */
+const OUTLINE_EFFORT_LEVELS = ["low", "medium", "high", "max"] as const;
+/** Output tokens kept free above the thinking budget for the visible outline (~6k measured) plus headroom: the budget is clamped to the cap minus this. */
 const OUTLINE_VISIBLE_TOKENS = 16000;
 /** Anthropic's minimum budget_tokens; a smaller budget is not sent. */
 const MIN_THINKING_BUDGET = 1024;
@@ -192,9 +194,13 @@ export function createStageRunner(config: Config, options: Options = {}) {
     // DeepSeek To-Be outline without reasoning failed validation 3 times (12 COVERAGE_TRACE_MISMATCH). Same gate as the OpenRouter outline effort
     // (to_be_outline only, AI_REASONING_EFFORT unset, AI_OUTLINE_REASONING_EFFORT unset = "max"); "none" sends nothing. Restricted to DeepSeek model ids:
     // MiMo's reasoning behaviour on this endpoint was not measured, so it keeps its request unchanged.
-    const outlineThinkingBudgetFor = (substage: Substage | undefined, model: string): number | undefined =>
-      routeProvider === "deepinfra" && config.AI_REASONING_EFFORT === undefined && substage === "to_be_outline" && /deepseek/i.test(model)
-        ? DEEPINFRA_OUTLINE_THINKING_BUDGETS[config.AI_OUTLINE_REASONING_EFFORT ?? "max"] : undefined;
+    // `stepsDown`: how many times this call already ended on max_tokens; each one lowers the effort a level (DeepSeek overruns budget_tokens, so the re-ask
+    // needs less thinking, not just a bigger ceiling: measured 2026-10-30, 4 of 5 first outline calls cut off at 40000 with budget 24000).
+    const outlineThinkingBudgetFor = (substage: Substage | undefined, model: string, stepsDown = 0): number | undefined => {
+      if (routeProvider !== "deepinfra" || config.AI_REASONING_EFFORT !== undefined || substage !== "to_be_outline" || !/deepseek/i.test(model)) return undefined;
+      const effort = config.AI_OUTLINE_REASONING_EFFORT ?? "max", level = OUTLINE_EFFORT_LEVELS.indexOf(effort as (typeof OUTLINE_EFFORT_LEVELS)[number]);
+      return DEEPINFRA_OUTLINE_THINKING_BUDGETS[level < 0 ? effort : OUTLINE_EFFORT_LEVELS[Math.max(0, level - stepsDown)]!];
+    };
     return { provider: routeProvider, client: routeClient, noThinking, effort, outlineThinkingBudgetFor, effortFor: (substage?: Substage) => outlineEffort(substage) ?? effort,
       outlineReasoningOff: (substage?: Substage) => outlineEffort(substage) === "none", reasoningOff: routeProvider === "openrouter" && effort === "none",
       modelFor: (isDesign: boolean) => isDesign ? designModel : chatModel,
@@ -247,6 +253,8 @@ export function createStageRunner(config: Config, options: Options = {}) {
     /** max_tokens endings on the primary, and the calls (stage:substage:part) that now go to the fallback. Per call, not per stage: a model that
      * overruns one part is not known to overrun the others. */
     const truncations = new Map<string, number>(), truncatedToFallback = new Set<string>();
+    /** Per call: how many of its answers with thinking on ended on max_tokens. Each lowers the next request's thinking budget one effort level. */
+    const thinkingCutOffs = new Map<string, number>();
 
     async function call<T>(work: (signal: AbortSignal) => Promise<T>, timeoutMs = callTimeout): Promise<T> {
       signal.throwIfAborted();
@@ -366,17 +374,22 @@ export function createStageRunner(config: Config, options: Options = {}) {
         const tools = [a.tool];
         const fullTimeoutMs = isDesign ? designCallTimeout : callTimeout;
         const truncationKey = `${stage}:${a.substage ?? ""}:${a.callKey ?? a.tool.name}`;
-        let usedRoute!: Route;
+        let usedRoute!: Route, thinkingBudget: number | undefined;
         const message = await viaRoute(async (route) => {
           usedRoute = route;
           const remainingMs = stageBudget - (Date.now() - started), reserveMs = stageBudget * FALLBACK_RESERVE_SHARE;
           const timeoutMs = fallback && route === primary && !primaryProven && remainingMs > reserveMs ? Math.min(fullTimeoutMs, remainingMs - reserveMs) : fullTimeoutMs;
           const routeModel = route.modelFor(isDesign);
-          // DeepInfra outline thinking: the visible outline needs OUTLINE_VISIBLE_TOKENS above the budget, so max_tokens is raised (up to the cap) or the budget cut to fit.
-          const wantedBudget = a.thinkingOff(route) ? undefined : route.outlineThinkingBudgetFor(a.substage, routeModel);
-          const maxTokens = wantedBudget === undefined ? a.maxTokens : Math.min(TO_BE_MAX_TOKENS_CAP, Math.max(a.maxTokens, wantedBudget + OUTLINE_VISIBLE_TOKENS));
+          // DeepInfra outline thinking: DeepSeek treats budget_tokens as a soft limit and overran it by up to 60% (measured), so the request always carries the cap as max_tokens
+          // (a limit, not a cost) and the budget is clamped to leave OUTLINE_VISIBLE_TOKENS for the answer. After a cut-off the budget steps down a level.
+          const stepsDown = thinkingCutOffs.get(truncationKey) ?? 0;
+          const wantedBudget = a.thinkingOff(route) ? undefined : route.outlineThinkingBudgetFor(a.substage, routeModel, stepsDown);
+          const maxTokens = wantedBudget === undefined ? a.maxTokens : TO_BE_MAX_TOKENS_CAP;
           const budget = wantedBudget === undefined ? undefined : Math.min(wantedBudget, maxTokens - OUTLINE_VISIBLE_TOKENS);
           const thinkingOn = budget !== undefined && budget >= MIN_THINKING_BUDGET;
+          thinkingBudget = thinkingOn ? budget : undefined;
+          const before = stepsDown > 0 && thinkingOn ? route.outlineThinkingBudgetFor(a.substage, routeModel, stepsDown - 1) : undefined;
+          if (before !== undefined && budget !== undefined && before !== budget) logOutlineThinkingReduced(route.provider, routeModel, stage, a.substage!, before, budget);
           const toolChoice = route.toolChoiceFor(a.tool.name, thinkingOn);
           if (a.guard) {
             const inputTokens = route.provider === "openrouter" ? estimateTokens(JSON.stringify({ system: a.system, messages, tools, tool_choice: toolChoice }))
@@ -406,6 +419,7 @@ export function createStageRunner(config: Config, options: Options = {}) {
           const entry = (metrics.substages ??= {})[a.substage] ??= { calls: 0, inputTokens: 0, outputTokens: 0 };
           entry.calls++; entry.inputTokens += inputTokens; entry.outputTokens += usage.data.output_tokens;
         }
+        if (thinkingBudget !== undefined && message.stop_reason === "max_tokens") thinkingCutOffs.set(truncationKey, (thinkingCutOffs.get(truncationKey) ?? 0) + 1);
         if (fallback && usedRoute === primary && message.stop_reason === "max_tokens") {
           const seen = (truncations.get(truncationKey) ?? 0) + 1;
           truncations.set(truncationKey, seen);

@@ -464,6 +464,12 @@ export const FIX_PATCH_MIN_REMAINING = 0.4;
 const findingKey = (finding: Pick<ReviewOutcome, "kind" | "paths" | "explanation">) =>
   `${finding.kind}|${[...finding.paths].sort().join(",")}|${finding.explanation.toLowerCase().replace(/\s+/g, " ").trim()}`;
 const percent = (fraction: number) => `${Math.round(fraction * 100)}%`;
+/** The final validation loop starts another re-expansion round (steps and register groups redone) only while more than this share of the stage budget remains: a round takes
+ * 10-20% (estimated from the 2026-10-30 runs: everything after the outline took ~190-370 s of 1800 s), and the draft must still be validated and stored after it. */
+export const REEXPANSION_MIN_REMAINING = 0.25;
+/** A round that also repairs the outline needs more: an outline call took ~570-700 s (~30-40% of 1800 s; estimated from 26-40k output tokens at ~60-70 tokens/s) before the re-expansion. */
+export const OUTLINE_ROUND_MIN_REMAINING = 0.5;
+export const reexpansionAllowed = (remaining: number, repairsOutline: boolean) => remaining > (repairsOutline ? OUTLINE_ROUND_MIN_REMAINING : REEXPANSION_MIN_REMAINING);
 export const outlineRepairAllowed = (done: number, max: number, remaining: number) =>
   done < max && (done === 0 || remaining > EXTRA_OUTLINE_REPAIR_MIN_REMAINING);
 
@@ -902,6 +908,13 @@ async function runLabelledDesign(input: ToBeInput, references: DesignContext["re
     deps.lastDraft?.(design, result.errors);
     if (round >= MAX_REEXPANSION_ROUNDS) { deps.progress?.("expand", false); return degraded(design, result.errors.length); }
     const { byStep, byGroup, global } = attributeErrors(result.errors, design);
+    // A round the deadline would kill mid-call ends the stage as AI_TIMEOUT and loses the draft: save it as a blocked draft instead while there is still time to store it.
+    const left = deps.remainingBudget?.() ?? 1;
+    if (!reexpansionAllowed(left, global.length > 0)) {
+      deps.warn?.([{ code: "REEXPANSION_SKIPPED_BUDGET", path: "to_be", detail: `${percent(left)} of the budget left` }]);
+      deps.progress?.("expand", false);
+      return degraded(design, result.errors.length);
+    }
     const redo = new Set(byStep.keys()), redoGroups = new Set(byGroup.keys());
     for (const stepId of redo) markRetry(stepId);
     for (const group of redoGroups) markRetry(registerKey(group));

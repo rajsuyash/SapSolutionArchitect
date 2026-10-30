@@ -16,7 +16,7 @@ export function createProviderClient(provider: "anthropic" | "deepinfra" | "open
 }
 
 // Provider wording for an exhausted balance or spend cap. Deliberately not a bare "limit exceeded": that is also a rate limit.
-const CREDIT = /credit balance|insufficient (funds|credit|balance)|positive balance|billing|payment required|out of credit|budget\b.{0,60}\bexceeded|(spend|spending|usage|credit) limit|exceeded your (current )?quota/i;
+const CREDIT = /credit balance|insufficient (funds|credit|balance)|positive balance|billing|payment required|out of credit|budget\b.{0,60}\bexceeded|(spend|spending|usage|credit) limit|key limit exceeded|exceeded your (current )?quota/i;
 
 /** OpenRouter reports its HTTP-like code in the body, `{"error":{"code":402,"message":...}}`, and repeats it there for errors
  * that arrive inside a 200 stream, where the SDK sees no failing status. Numeric (or numeric-string) 4xx/5xx codes only. */
@@ -98,6 +98,11 @@ export function logProviderRetry(provider: Provider, model: string, stage: strin
 /** One structured line per To-Be call that runs with a raised output ceiling after a cut-off or empty answer. Carries no prompt, user data or key. */
 export function logOutputCeilingRaised(provider: Provider, model: string, stage: string, substage: string, maxTokens: number) {
   console.error(JSON.stringify({ event: "ai_output_ceiling_raised", provider, model, stage, substage, maxTokens }));
+}
+
+/** One structured line when a cut-off outline is re-asked with a lower thinking budget (budget_tokens `from` -> `to`). Carries no prompt, user data or key. */
+export function logOutlineThinkingReduced(provider: Provider, model: string, stage: string, substage: string, from: number, to: number) {
+  console.error(JSON.stringify({ event: "ai_outline_thinking_reduced", provider, model, stage, substage, from, to }));
 }
 
 /** One structured line when the runner's whole-stage budget expires. Carries no prompt, user data or key. */
