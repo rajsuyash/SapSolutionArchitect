@@ -73,6 +73,16 @@ type FallbackReason = "timeout" | "truncated";
 function logFallbackUsed(reason: FallbackReason, stage: string, substage: string | undefined, from: Provider, to: Provider, fromModel: string, toModel: string) {
   console.error(JSON.stringify({ event: "ai_fallback_used", reason, stage, ...(substage && { substage }), from, to, fromModel, toModel }));
 }
+const PHASE_SUBSTAGES = { outline: [["outline", "to_be_outline"]], expand: [["steps", "to_be_step"], ["registers", "to_be_registers"]],
+  review_fix: [["review", "to_be_review"], ["fix", "to_be_fix"]] } as const;
+/** To-Be progress: one event per substage of a phase that ended. calls is cumulative for the stage so far, elapsedMs counts from the stage start.
+ * Review and fix are listed only when they made calls (both can be switched off). Counts and names only, no prompt or design text. */
+export function substageEvents(phase: keyof typeof PHASE_SUBSTAGES, substages: StageMetrics["substages"], elapsedMs: number, ok: boolean, jobId?: string) {
+  return PHASE_SUBSTAGES[phase].flatMap(([substage, key]) => {
+    const calls = substages?.[key]?.calls ?? 0;
+    return phase === "review_fix" && !calls ? [] : [{ event: "to_be_substage_finished", ...(jobId && { jobId }), substage, calls, elapsedMs, ok }];
+  });
+}
 /** OpenRouter has no count_tokens endpoint: input size is estimated locally. 3.5 chars/token is deliberately below the ~4 of English prose
  * (JSON, SAP codes and non-English text tokenize worse), so the AI_MAX_INPUT_TOKENS guard errs towards refusing. Not a measured count. */
 const CHARS_PER_TOKEN = 3.5;
@@ -216,7 +226,7 @@ export function createStageRunner(config: Config, options: Options = {}) {
   // A long batch stage can hold every batch slot and a chat turn still runs.
   const chatLane = createLane(config.AI_CHAT_CONCURRENCY), batchLane = createLane(config.AI_MAX_CONCURRENCY);
 
-  return async function runStage<S extends Stage>(stage: S, rawInput: unknown, externalSignal?: AbortSignal): Promise<{ payload: Payloads[S]; metrics: StageMetrics }> {
+  return async function runStage<S extends Stage>(stage: S, rawInput: unknown, externalSignal?: AbortSignal, jobId?: string): Promise<{ payload: Payloads[S]; metrics: StageMetrics }> {
     const started = Date.now();
     const isDesign = DESIGN_STAGES.has(stage);
     const lane = stage === "interview_turn" || stage === "extraction_turn" ? chatLane : batchLane;
@@ -469,6 +479,7 @@ export function createStageRunner(config: Config, options: Options = {}) {
           maxFixParts: config.AI_TO_BE_FIX_MAX_PARTS ?? 8,
           reviewRounds: config.AI_TO_BE_REVIEW_ROUNDS ?? 2,
           invalid: () => fail("AI_INVALID_OUTPUT"),
+          progress: (phase, ok) => { for (const event of substageEvents(phase, metrics.substages, Date.now() - started, ok, jobId)) console.error(JSON.stringify(event)); },
           record: (issues) => { metrics.validationErrors.push(...issues); metrics.attemptIssues!.push(issues); },
           warn: (issues) => { metrics.warnings = [...(metrics.warnings ?? []), ...issues]; },
           ...(options.captureRaw && { rawFailure: keepRaw, lastDraft: (draft: unknown, errors: ValidationIssue[]) => { metrics.lastDraft = { design: draft, errors }; } }),

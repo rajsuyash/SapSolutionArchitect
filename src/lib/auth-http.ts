@@ -21,7 +21,7 @@ const errorCode = (error: unknown) => error instanceof Error ? (FIXED_ERROR_CODE
 
 const MAX_LOGGED_ISSUES = 5;
 /** Where a Zod failure happened (path and issue code of the first few issues), never the received value or the message, which can quote data. */
-const zodIssues = (error: unknown) => error instanceof ZodError
+export const zodIssues = (error: unknown) => error instanceof ZodError
   ? { issues: error.issues.slice(0, MAX_LOGGED_ISSUES).map(issue => ({ path: issue.path.map(String).join("."), code: issue.code })) } : {};
 
 async function boundary(work: (requestId: string) => Promise<NextResponse>): Promise<NextResponse> {

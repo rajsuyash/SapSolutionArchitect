@@ -27,6 +27,17 @@ export const LEGACY_CONSULTANT_QUEUE = "consultant.discovery";
 export const CONSULTANT_QUEUES = [CONSULTANT_CHAT_QUEUE, CONSULTANT_BATCH_QUEUE, LEGACY_CONSULTANT_QUEUE] as const;
 export const consultantQueueFor = (kind: "INTERVIEW" | "TO_BE") => kind === "INTERVIEW" ? CONSULTANT_CHAT_QUEUE : CONSULTANT_BATCH_QUEUE;
 const timeoutError = () => Object.assign(new Error("AI_TIMEOUT"), { code: "AI_TIMEOUT" as const });
+export type FailureClass = "timeout" | "invalid_output" | "provider_credit" | "provider_error" | "other";
+/** Coarse bucket for the failure log, from the code already stored on the job. */
+export const classifyFailure = (code: string): FailureClass => code === "AI_TIMEOUT" ? "timeout" : code === "AI_INVALID_OUTPUT" ? "invalid_output"
+  : code === "AI_PROVIDER_CREDIT" ? "provider_credit" : code === "AI_PROVIDER_ERROR" ? "provider_error" : "other";
+type LoggedMetrics = { inputTokens: number; outputTokens: number; substages?: Record<string, { calls: number }> };
+/** The success line: only figures the stage metrics already hold (no cost: there is no price table in the worker). */
+export function jobSucceededEvent(jobId: string, kind: string, durationMs: number, metrics: LoggedMetrics, blockerCount?: number) {
+  const calls = metrics.substages ? Object.values(metrics.substages).reduce((sum, entry) => sum + entry.calls, 0) : 0;
+  return { event: "consultant_job_succeeded", jobId, kind, durationMs, ...(calls && { calls }), inputTokens: metrics.inputTokens,
+    outputTokens: metrics.outputTokens, ...(blockerCount !== undefined && { blockerCount }) };
+}
 const scope = z.strictObject({ projectId: z.uuid(), variantCode: z.string().regex(/^[A-Z][A-Z0-9_-]{0,39}$/) });
 const request = z.discriminatedUnion("kind", [
   z.strictObject({ kind: z.literal("INTERVIEW"), expectedRevision: z.number().int().positive(), messageId: z.string().regex(/^[A-Za-z0-9_-]{1,64}$/) }),
@@ -207,6 +218,9 @@ export function createConsultantJobs(pool: Pool, auth: AuthService, queue: PgBos
       const job = (await pool.query<StoredJob>(`UPDATE consultant_jobs SET status='RUNNING',run_token=$2,
         deadline_at=clock_timestamp()+make_interval(secs=>$3) WHERE id=$1 AND status='QUEUED' RETURNING *`, [id, runToken, deadlineSeconds])).rows[0];
       if (!job) return;
+      const startedAt = Date.now();
+      console.error(JSON.stringify({ event: "consultant_job_started", jobId: id, kind: job.kind }));
+      let blockerCount: number | undefined;
       try {
         signal.throwIfAborted();
         const input = await transaction(pool, async client => {
@@ -222,7 +236,7 @@ export function createConsultantJobs(pool: Pool, auth: AuthService, queue: PgBos
         });
         const generated = input.kind === "INTERVIEW"
           ? await runStage("interview_turn", input.input, signal)
-          : await runStage("to_be", input.input, signal);
+          : await runStage("to_be", input.input, signal, id);
         const metrics = metricsSchema.parse(generated.metrics);
         if (metrics.stage !== (job.kind === "INTERVIEW" ? "interview_turn" : "to_be")) throw new Error("Invalid stage metrics");
         signal.throwIfAborted();
@@ -250,6 +264,7 @@ export function createConsultantJobs(pool: Pool, auth: AuthService, queue: PgBos
             if (!validation.success) throw new Error("Invalid design output");
             result = { ...validation.data, sourceRevision: job.input_revision, snapshotId: job.snapshot_id,
               status: validation.data.evaluation.blockers.length ? "BLOCKED" : "HUMAN_REVIEW_REQUIRED" };
+            blockerCount = validation.data.evaluation.blockers.length;
           }
           signal.throwIfAborted();
           const completed = await client.query(`UPDATE consultant_jobs SET status='SUCCEEDED',result=$3,metrics=$4,
@@ -258,11 +273,12 @@ export function createConsultantJobs(pool: Pool, auth: AuthService, queue: PgBos
           if (!completed.rowCount) throw timeoutError();
           signal.throwIfAborted();
         });
+        console.error(JSON.stringify(jobSucceededEvent(id, job.kind, Date.now() - startedAt, metrics, blockerCount)));
       } catch (error) {
         const safe = z.enum(["AI_INPUT_INVALID", "AI_INPUT_TOO_LARGE", "AI_INVALID_OUTPUT", "AI_PROVIDER_ERROR", "AI_PROVIDER_CREDIT", "AI_TIMEOUT", "AI_CANCELLED", "STALE_INPUT"])
           .safeParse((error as { code?: unknown })?.code);
         const code = signal.aborted ? "AI_CANCELLED" : safe.success ? safe.data : "CONSULTANT_FAILED";
-        console.error(JSON.stringify({ event: "consultant_job_failed", jobId: id, kind: job.kind, code, cause: failureCode(error) }));
+        console.error(JSON.stringify({ event: "consultant_job_failed", jobId: id, kind: job.kind, code, class: classifyFailure(code), durationMs: Date.now() - startedAt, cause: failureCode(error) }));
         await pool.query(`UPDATE consultant_jobs SET status='FAILED',error=$3,run_token=NULL,deadline_at=NULL,finished_at=clock_timestamp()
           WHERE id=$1 AND status='RUNNING' AND run_token=$2`, [id, runToken, { code,
           message: code === "STALE_INPUT" ? "The answers changed while the consultant was working. Review the latest conversation and retry."

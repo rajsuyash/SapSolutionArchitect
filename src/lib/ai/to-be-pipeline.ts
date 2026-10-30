@@ -444,7 +444,10 @@ export type DesignDeps = {
   maxFixParts?: number;
   /** Review rounds (AI_TO_BE_REVIEW_ROUNDS, 1-3). Default 1 here (the single review and fix pass); the stage runner passes the operator's value, default 2. */
   reviewRounds?: number;
+  /** Observability only: called when a phase ends (outline accepted, steps and registers expanded, review and fix done), ok false when the phase gave up. */
+  progress?: (phase: DesignPhase, ok: boolean) => void;
 };
+export type DesignPhase = "outline" | "expand" | "review_fix";
 
 /** The first outline repair is always allowed; each further one only while more than this share of the stage budget remains. */
 export const EXTRA_OUTLINE_REPAIR_MIN_REMAINING = 0.5;
@@ -541,6 +544,7 @@ async function runLabelledDesign(input: ToBeInput, references: DesignContext["re
     if (!raiseCeiling("outline", "to_be_outline", undefined, "to_be_outline", first.errors)) { if (!canRepairOutline()) break; outlineRepairs++; }
     first = await repairOutline(first.errors);
   }
+  deps.progress?.("outline", first.success);
   if (!first.success) throw deps.invalid();
   let outline = first.outline;
 
@@ -879,10 +883,15 @@ async function runLabelledDesign(input: ToBeInput, references: DesignContext["re
   for (let round = 0; ; round++) {
     const design = assembled(outline, details, registers);
     const result = validateToBeOutput(input, design, references);
-    if (result.success) return reviewRounds(result.data, design);
+    if (result.success) {
+      deps.progress?.("expand", true);
+      const reviewedOutput = await reviewRounds(result.data, design);
+      deps.progress?.("review_fix", true);
+      return reviewedOutput;
+    }
     deps.record(result.errors);
     deps.lastDraft?.(design, result.errors);
-    if (round >= MAX_REEXPANSION_ROUNDS) throw deps.invalid();
+    if (round >= MAX_REEXPANSION_ROUNDS) { deps.progress?.("expand", false); throw deps.invalid(); }
     const { byStep, byGroup, global } = attributeErrors(result.errors, design);
     const redo = new Set(byStep.keys()), redoGroups = new Set(byGroup.keys());
     for (const stepId of redo) markRetry(stepId);
