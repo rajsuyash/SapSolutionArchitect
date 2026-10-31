@@ -1,12 +1,16 @@
 import { z } from "zod";
 
-const text = z.string().trim().min(1).max(8000);
-const id = z.string().regex(/^[A-Za-z0-9_-]{1,64}$/);
-const ids = z.array(id).max(200);
-const texts = z.array(text).min(1).max(100);
-const list = <T extends z.ZodType>(schema: T) => z.array(schema).max(200);
+import { FIT_TYPES, STEP_TYPES, id, ids, list, phase, text, texts } from "./design-primitives";
+import { checkRegisters, REGISTER_KEYS, RegistersShape } from "./design-registers";
+import { danglingIdHits, designIds, internalTermHits, textFields } from "./design-text-lint";
+import { junkHits, languageHits, truncationHits } from "./design-text-quality";
+import { lintSapObjects } from "./sap-object-lint";
 
-export const FIT_TYPES = ["STANDARD", "CONFIGURATION", "EXTENSION", "INTEGRATION", "MANUAL", "LICENSE_DEPENDENT"] as const;
+export { id, ids, list, text, FIT_TYPES, STEP_TYPES };
+/** Inventory, financial and ownership effects are stated separately (checklist 9). `accountingEntry` (checklist 8) is the posting in accounting terms:
+ * debit and credit account categories or the account-determination key, or "None: <reason>". Required when the model answers, optional in a stored design. */
+export const EFFECTS_SHAPE = { inventory: text, financial: text, ownership: text };
+export const IMPLEMENTATION_KINDS = ["STANDARD", "CONFIGURATION", "EXTENSION", "INTEGRATION", "MANUAL", "NEEDS_VALIDATION"] as const;
 
 /** A reference is trusted only because a server-side curated catalog supplied it. */
 export const TrustedReferenceSchema = z.strictObject({
@@ -25,7 +29,9 @@ export const DesignContextSchema = z.strictObject({
   targetRelease: text,
   asIsSteps: list(z.strictObject({ id, name: text })).min(1),
   sources: list(z.strictObject({ id, locator: text, text: text.max(40000) })).min(1),
-  requirements: list(z.strictObject({ id, asIsStepId: id, sourceId: id, quote: text, critical: z.boolean() })).min(1),
+  requirements: list(z.strictObject({ id, asIsStepId: id, sourceId: id, quote: text, critical: z.boolean(),
+    /** Optional so older callers keep working; the version 3 register checks use it to find controls and pain points. */
+    kind: z.enum(["PAIN_POINT", "TO_BE_REQUIREMENT", "CONTROL"]).optional() })).min(1),
   conflicts: list(z.strictObject({ id, sourceIds: ids.min(1), question: text })),
   approvedDecisions: list(z.strictObject({
     id, subjectType: z.enum(["REQUIREMENT", "CONFLICT"]), subjectId: id,
@@ -34,22 +40,33 @@ export const DesignContextSchema = z.strictObject({
   references: list(TrustedReferenceSchema),
   /** Ids of OPEN decisions supplied as guidance (never approvals). Omitted on the hosted path. */
   decisionRegister: list(z.strictObject({ id })).optional(),
+  /** Answered company-context fields. Registers are checked against what the user actually said. */
+  companyContext: list(z.strictObject({ fieldId: id, value: text })).optional(),
 });
 
+/** Version 1 designs (steps only) stay readable forever; version 2 adds the solution-design registers and version 3 the scope, document,
+ * governance and reporting registers plus step type and phase. evaluateDesign enforces which version carries which: version 3 needs every
+ * register and the step fields, version 2 the first eight registers, version 1 none. */
 export const DetailedDesignSchema = z.strictObject({
-  schemaVersion: z.literal(1), processName: text,
+  schemaVersion: z.union([z.literal(1), z.literal(2), z.literal(3)]), processName: text, ...RegistersShape,
   steps: list(z.strictObject({
     id, sequence: z.number().int().positive(), title: text,
-    asIsStepIds: ids, requirementIds: ids.min(1), actor: text, trigger: text,
+    asIsStepIds: ids, requirementIds: ids,
+    /** Ids of the steps this one makes possible (project/WBS set-up, master data, org units). A step may leave requirementIds
+     * empty only when this is non-empty; version 1 designs never carry it, so their rule (at least one requirement) is unchanged. */
+    enablesStepIds: ids.optional(),
+    actor: text, trigger: text,
+    /** Version 3: how the step is performed, the phase it goes live in, and the interim process while it is not yet live. */
+    stepType: z.enum(STEP_TYPES).optional(), phase: phase.optional(), interimProcess: text.nullable().optional(),
     inputDocuments: texts, outputDocuments: texts,
     actions: list(z.strictObject({ actor: text, system: text, operation: text, fields: texts })).min(1),
     businessRules: list(z.strictObject({ id, condition: text, response: text })).min(1),
     exceptions: list(z.strictObject({ condition: text, response: text, owner: text })),
     exceptionsNotApplicableReason: text.nullable(),
     masterData: list(z.strictObject({ object: text, fields: texts, owner: text })).min(1),
-    effects: z.strictObject({ inventory: text, financial: text, ownership: text }),
+    effects: z.strictObject({ ...EFFECTS_SHAPE, accountingEntry: text.optional() }),
     implementation: z.strictObject({
-      kind: z.enum(["STANDARD", "CONFIGURATION", "EXTENSION", "INTEGRATION", "MANUAL", "NEEDS_VALIDATION"]),
+      kind: z.enum(IMPLEMENTATION_KINDS),
       detail: text, referenceIds: ids,
     }),
     /** Open decisions (decisionRegister ids) this step is held on or conditional on. */
@@ -57,7 +74,7 @@ export const DetailedDesignSchema = z.strictObject({
     addedValue: text,
     acceptanceTests: list(z.strictObject({
       id, kind: z.enum(["NORMAL", "EXCEPTION"]), given: text, when: text, then: text,
-      requirementIds: ids.min(1),
+      requirementIds: ids,
     })).min(1),
   })).min(1),
   eliminatedAsIsSteps: list(z.strictObject({ asIsStepId: id, reason: text })),
@@ -76,20 +93,97 @@ export type DetailedDesign = z.infer<typeof DetailedDesignSchema>;
 type Issue = { code: string; path: string; detail?: string };
 const MAX_DRAFT_ERRORS = 20;
 const SAFE_NAME = /^[A-Za-z][A-Za-z0-9_]{0,40}$/;
+/** What kind of mistake a zod issue is, without any model-supplied value: expected/received TYPE names, the schema's own bounds,
+ * or the offending key names (safe identifiers only). Never reads issue.input and never echoes issue.message beyond the
+ * `received <type>` token zod puts there. */
+function issueKind(issue: z.core.$ZodIssue): string {
+  switch (issue.code) {
+    case "invalid_type": {
+      const received = /received ([a-z]+)/.exec(issue.message)?.[1] ?? "unknown";
+      return `expected ${String(issue.expected).slice(0, 20)}, received ${received}`;
+    }
+    case "unrecognized_keys": return issue.keys.slice(0, 5).map(key => SAFE_NAME.test(key) ? key : "<unsafe_key>").join(", ");
+    case "too_small": return `${String(issue.origin)} at least ${String(issue.minimum)}`;
+    case "too_big": return `${String(issue.origin)} at most ${String(issue.maximum)}`;
+    case "invalid_format": return String(issue.format).slice(0, 20);
+    case "invalid_value": return `one of ${issue.values.length} allowed values`;
+    default: return "";
+  }
+}
+
 /** Locate a strict-parse failure for the repair loop: real path, issue code and
  * key names/expected types only. Model-supplied values are never echoed. */
-function draftIssues(issues: z.core.$ZodIssue[]): Issue[] {
+export function draftIssues(issues: z.core.$ZodIssue[]): Issue[] {
   return issues.slice(0, MAX_DRAFT_ERRORS).map(issue => {
     const path = ["draft", ...issue.path.filter(part => typeof part === "number" || (typeof part === "string" && SAFE_NAME.test(part)))].join(".");
-    const extra = issue.code === "unrecognized_keys" ? issue.keys.slice(0, 5).map(key => SAFE_NAME.test(key) ? key : "<unsafe_key>").join(", ")
-      : issue.code === "invalid_type" ? `expected ${String(issue.expected).slice(0, 20)}` : "";
+    const extra = issueKind(issue);
     return { code: "INVALID_DRAFT", path: path.slice(0, 200), detail: `${issue.code}${extra ? `: ${extra}` : ""}`.slice(0, 200) };
   });
 }
+/** Every id of the input that text may cite: requirements, As-Is steps, sources, conflicts, decisions, references, company-context fields. */
+export const inputIds = (context: DesignContext): string[] => [...context.requirements.map(item => item.id), ...context.asIsSteps.map(item => item.id), ...context.sources.map(item => item.id),
+  ...context.conflicts.map(item => item.id), ...context.approvedDecisions.map(item => item.id), ...context.references.map(item => item.id), ...(context.companyContext ?? []).map(item => item.fieldId)];
 export type DesignEvaluation = {
   structurallyValid: boolean; errors: Issue[]; blockers: Issue[];
   reviewStatus: "BLOCKED" | "HUMAN_REVIEW_REQUIRED";
 };
+
+// --- organisation codes: one unit, one code, in every text --------------------------------------------------------------------------
+
+type OrgRow = { id: string; unitType: string; proposal: string; name?: string; parentId?: string | null; code?: string | null };
+const ORG_KIND_WORDS = String.raw`(company\s+codes?|plants?|storage\s+locations?)`;
+const ORG_NAME_STOP = new Set(["one", "the", "this", "that", "each", "all", "both", "two", "three", "new", "use", "keep", "single", "separate", "existing", "proposed", "company", "code",
+  "plant", "storage", "location", "sales", "purchasing", "organisation", "organization", "controlling", "area", "cost", "profit", "centre", "center", "legal", "entity", "business", "confirm"]);
+const orgKind = (words: string) => /company/i.test(words) ? "company" : /storage/i.test(words) ? "storage" : /plant/i.test(words) ? "plant" : undefined;
+const escapeName = (name: string) => name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/\s+/g, String.raw`\s+`);
+/** The proper names an organisation unit goes by: its own name field when it has one, else the capitalised words of its proposal (generic organisation words left out). */
+const orgUnitNames = (row: OrgRow) => [...new Set([...(row.name ? [row.name] : []), ...(row.proposal.match(/\b[A-Z][A-Za-z0-9]+(?:\s+[A-Z][A-Za-z0-9]+)*/g) ?? [])]
+  .map(name => name.split(/\s+/).filter(word => !ORG_NAME_STOP.has(word.toLowerCase())).join(" ")).filter(name => name.length >= 4))];
+
+/** Texts that pair a known organisation unit with a plant, company code or storage location number different from the one the organisation structure holds for it
+ * ("Chakan (company code 1000)" where the structure says Chakan is 2000). A unit answers for its own kind; for another kind it answers through its nearest ancestor of that
+ * kind (a plant's company code); when neither exists the pairing cannot be judged and is left alone. Patterns: "<unit> ... <kind> NNNN" within one clause, and "<kind> NNNN (<unit>)". */
+export type OrgCodeSpan = { name: string; code: string; expected: string; start: number; end: number; unambiguous: boolean };
+/** The checker behind orgCodeConflicts, kept as spans of the code token inside the text so a repair can rewrite just that token. A span is unambiguous when every unit
+ * of that name agrees on the expected code. */
+export function orgCodeChecker(org: readonly OrgRow[]): (text: string) => OrgCodeSpan[] {
+  const byId = new Map(org.map(row => [row.id, row]));
+  const kindOf = (row: OrgRow) => orgKind(row.unitType);
+  const expectedCode = (row: OrgRow, kind: string): string | undefined => {
+    for (let at: OrgRow | undefined = row, hops = 0; at && hops++ <= org.length; at = at.parentId ? byId.get(at.parentId) : undefined) {
+      if (kindOf(at) === kind || (at === row && !kindOf(row))) return at.code ?? undefined; // a unit of a kind the text does not name answers through its ancestors; one of no known kind answers with its own code
+    }
+    return undefined;
+  };
+  const named = org.flatMap(row => row.code ? orgUnitNames(row).map(name => ({ row, name, pattern: escapeName(name) })) : []);
+  return text => {
+    const seen: { name: string; kind: string; code: string; start: number; end: number }[] = [];
+    for (const { name, pattern } of named) {
+      const after = new RegExp(String.raw`(?<![A-Za-z0-9])${pattern}(?![A-Za-z0-9])[^.;:!?\n]{0,25}?\b${ORG_KIND_WORDS}\s*(?:code\s*)?(?:is\s+|=\s*|:\s*)?(\d{3,4})(?![A-Za-z0-9])`, "gid");
+      const before = new RegExp(String.raw`\b${ORG_KIND_WORDS}\s+(\d{3,4})\s*(?:\(\s*|[-\u2013\u2014:/]\s*)${pattern}(?![A-Za-z0-9])`, "gid");
+      for (const match of [...text.matchAll(after), ...text.matchAll(before)]) {
+        const [start, end] = match.indices![2]!;
+        seen.push({ name, kind: orgKind(match[1]!)!, code: match[2]!, start, end });
+      }
+    }
+    return seen.flatMap(({ name, kind, code, start, end }) => {
+      const owners = named.filter(item => item.name.toLowerCase() === name.toLowerCase()).map(item => expectedCode(item.row, kind)).filter((item): item is string => !!item);
+      if (!owners.length || owners.includes(code)) return [];
+      return [{ name, code, expected: owners[0]!, start, end, unambiguous: new Set(owners).size === 1 }];
+    });
+  };
+}
+
+export function orgCodeConflicts(org: readonly OrgRow[], texts: readonly { path: string; text: string }[]): { path: string; detail: string }[] {
+  const check = orgCodeChecker(org);
+  const found = new Map<string, { path: string; detail: string }>();
+  for (const { path, text } of texts) for (const hit of check(text)) found.set(`${path}|${hit.name}|${hit.code}`, { path, detail: `${hit.name} is ${hit.expected}, text says ${hit.code}` });
+  return [...found.values()];
+}
+
+/** The most a stored blocker may say; the report reader truncates to the same bound. */
+export const BLOCKER_DETAIL_MAX = 500;
+export const boundDetail = (detail: string) => detail.slice(0, BLOCKER_DETAIL_MAX);
 
 /** This checks structure and trace integrity, not semantic correctness.
  * Even a clean result requires a consultant to review business/SAP fit. */
@@ -97,7 +191,7 @@ export function evaluateDesign(input: unknown, value: unknown): DesignEvaluation
   const errors: Issue[] = [];
   const blockers: Issue[] = [];
   const error = (code: string, path: string, detail?: string) => { errors.push(detail ? { code, path, detail } : { code, path }); };
-  const block = (code: string, path: string) => { blockers.push({ code, path }); };
+  const block = (code: string, path: string, detail?: string) => { blockers.push(detail ? { code, path, detail: boundDetail(detail) } : { code, path }); };
   const result = (): DesignEvaluation => ({
     structurallyValid: errors.length === 0, errors, blockers,
     reviewStatus: errors.length || blockers.length ? "BLOCKED" : "HUMAN_REVIEW_REQUIRED",
@@ -110,6 +204,17 @@ export function evaluateDesign(input: unknown, value: unknown): DesignEvaluation
   if (!parsedInput.success || !parsedDraft.success) return result();
   const context = parsedInput.data;
   const draft = parsedDraft.data;
+  for (const hit of lintSapObjects(draft, context.references)) error("UNKNOWN_SAP_OBJECT", hit.path, `${hit.kind} ${hit.token}`);
+  // The generator's working vocabulary in client text is a review finding, never a reason to reject the design.
+  for (const hit of internalTermHits(draft)) block("INTERNAL_TERM", hit.path, hit.term);
+  // An id the text cites that follows this design's own id pattern but names nothing is a heuristic blocker (the fix pass sends the part back); the id-list fields have their own UNKNOWN_* errors.
+  const ownIds = [...designIds(draft), ...(context.decisionRegister ?? []).map(item => item.id)];
+  const knownIds = new Set([...ownIds, ...inputIds(context)]);
+  for (const hit of danglingIdHits(draft, ownIds, knownIds)) block("DANGLING_ID_REFERENCE", hit.path, `${hit.token} does not exist in this design`);
+  // Placeholder text is an error: the element is not finished and the part that owns it is asked again. Cut-off text and a foreign-language fragment are fixable blockers.
+  for (const hit of junkHits(draft)) error("PLACEHOLDER_TEXT", hit.path, hit.detail);
+  for (const hit of truncationHits(draft)) block("TRUNCATED_TEXT", hit.path, hit.detail);
+  for (const hit of languageHits(draft)) block("LANGUAGE_FRAGMENT", hit.path, hit.detail);
   const unique = (values: string[], path: string, code: string) => {
     if (new Set(values).size !== values.length) error(code, path);
   };
@@ -163,6 +268,14 @@ export function evaluateDesign(input: unknown, value: unknown): DesignEvaluation
     if (step.sequence !== i + 1) error("INVALID_SEQUENCE", path);
     unique(step.asIsStepIds, path, "DUPLICATE_TRACE");
     unique(step.requirementIds, path, "DUPLICATE_TRACE");
+    // A step with no requirement of its own is an enabling step; it must name the requirement-bearing steps it enables.
+    unique(step.enablesStepIds ?? [], path, "DUPLICATE_TRACE");
+    if (!step.requirementIds.length && !step.enablesStepIds?.length) error("ENABLING_STEP_UNLINKED", path);
+    for (const ref of step.enablesStepIds ?? []) {
+      const target = steps.get(ref);
+      if (!target) error("UNKNOWN_STEP", path);
+      else if (ref === step.id || !target.requirementIds.length) error("ENABLING_TARGET_INVALID", path);
+    }
     checkDecisions(step.decisionIds, path);
     if (step.asIsStepIds.some(ref => !asIs.has(ref))) error("UNKNOWN_AS_IS", path);
     for (const ref of step.requirementIds) {
@@ -176,6 +289,7 @@ export function evaluateDesign(input: unknown, value: unknown): DesignEvaluation
     if (step.exceptions.length && !step.acceptanceTests.some(test => test.kind === "EXCEPTION")) error("EXCEPTION_TEST_MISSING", path);
     step.acceptanceTests.forEach((test, j) => {
       unique(test.requirementIds, `${path}.acceptanceTests.${j}`, "DUPLICATE_TRACE");
+      if (step.requirementIds.length && !test.requirementIds.length) error("TEST_TRACE_MISSING", `${path}.acceptanceTests.${j}`);
       for (const ref of test.requirementIds) {
         if (!requirements.has(ref)) error("UNKNOWN_REQUIREMENT", `${path}.acceptanceTests.${j}`);
         else if (!step.requirementIds.includes(ref)) error("TEST_TRACE_MISMATCH", `${path}.acceptanceTests.${j}`);
@@ -194,9 +308,9 @@ export function evaluateDesign(input: unknown, value: unknown): DesignEvaluation
     if (cited.some(reference => reference.fitType === "LICENSE_DEPENDENT")) block("LICENSE_ENTITLEMENT_UNCONFIRMED", `${path}.implementation`);
     if (implementation.kind === "STANDARD" || implementation.kind === "CONFIGURATION") {
       if (!applicable) error("SAP_APPLICABILITY_UNVERIFIED", `${path}.implementation`);
-      // Standard/configuration may be realized by either, never by an extension or license-gated entry.
-      else if (cited.some(reference => reference.fitType !== "STANDARD" && reference.fitType !== "CONFIGURATION") ||
-          !cited.some(reference => reference.fitType === implementation.kind)) fitMismatch();
+      // The kind must be at least as demanding as the most demanding cited reference (STANDARD < CONFIGURATION < the rest).
+      // A CONFIGURATION claim over STANDARD references is conservative and accepted; a STANDARD claim may cite only STANDARD.
+      else if (cited.some(reference => reference.fitType !== "STANDARD" && !(implementation.kind === "CONFIGURATION" && reference.fitType === "CONFIGURATION"))) fitMismatch();
     } else if (implementation.kind === "EXTENSION" || implementation.kind === "INTEGRATION") {
       if (!cited.length) block("SAP_REFERENCE_MISSING", `${path}.implementation`);
       else if (!applicable) error("SAP_APPLICABILITY_UNVERIFIED", `${path}.implementation`);
@@ -233,9 +347,11 @@ export function evaluateDesign(input: unknown, value: unknown): DesignEvaluation
       if (!item.stepIds.length || traced.length !== item.stepIds.length ||
           traced.some(step => !item.stepIds.includes(step.id))) error("COVERAGE_TRACE_MISMATCH", path);
       if (item.decisionId !== null) error("UNEXPECTED_DECISION", path);
-      if (requirements.get(item.requirementId)?.critical &&
-          (!traced.length || traced.some(step => !step.acceptanceTests.some(test => test.requirementIds.includes(item.requirementId))))) {
-        error("CRITICAL_REQUIREMENT_UNTESTED", path);
+      if (requirements.get(item.requirementId)?.critical) {
+        const untested = traced.filter(step => !step.acceptanceTests.some(test => test.requirementIds.includes(item.requirementId)));
+        // Nothing tests it: fatal. Some traced step tests it and a variant does not: that step is sent back to gain a test, the plan is kept.
+        if (!traced.length || untested.length === traced.length) error("CRITICAL_REQUIREMENT_UNTESTED", path);
+        else untested.forEach(step => block("CRITICAL_REQUIREMENT_PARTLY_TESTED", `draft.steps.${draft.steps.indexOf(step)}`, item.requirementId));
       }
     } else {
       approved(item.decisionId, "REQUIREMENT", item.requirementId, item.disposition, path);
@@ -262,6 +378,21 @@ export function evaluateDesign(input: unknown, value: unknown): DesignEvaluation
     if (question.affectedStepIds.some(ref => !steps.has(ref))) error("UNKNOWN_STEP", path);
     block("OPEN_QUESTION", path);
   });
+  checkRegisters(draft, {
+    requirements: new Map(context.requirements.map(item => [item.id, { critical: item.critical, kind: item.kind }])),
+    stepIds: new Set(steps.keys()), referenceIds: new Set(references.keys()), companyContext: context.companyContext ?? [],
+    steps: draft.steps.map(step => ({ id: step.id, actor: step.actor, outputDocuments: step.outputDocuments, stepType: step.stepType, phase: step.phase, texts: textFields(step),
+      interimProcess: step.interimProcess, businessRuleIds: step.businessRules.map(rule => rule.id),
+      owners: [...step.exceptions.map(item => item.owner), ...step.masterData.map(item => item.owner)],
+      ruleTexts: step.businessRules.map(rule => ({ id: rule.id, text: `${rule.condition} ${rule.response}` })),
+      implementation: { kind: step.implementation.kind, detail: step.implementation.detail } })),
+    referenceTexts: new Map(context.references.map(item => [item.id, [item.capability ?? "", ...(item.objects ?? [])].join(" ")])),
+    takenIds: new Set([...steps.keys(), ...draft.steps.flatMap(step => [...step.businessRules.map(rule => rule.id), ...step.acceptanceTests.map(test => test.id)]),
+      ...draft.openQuestions.map(question => question.id)]),
+  }, error, block);
+  const orgTexts = [...draft.steps.flatMap((step, i) => textFields(step).map(text => ({ path: `draft.steps.${i}`, text }))),
+    ...REGISTER_KEYS.filter(key => key !== "orgStructure").flatMap(key => ((draft[key] ?? []) as unknown[]).flatMap((row, i) => textFields(row).map(text => ({ path: `draft.${key}.${i}`, text }))))];
+  for (const hit of orgCodeConflicts((draft.orgStructure ?? []) as OrgRow[], orgTexts)) block("ORG_CODE_MISMATCH", hit.path, hit.detail);
   return result();
 }
 

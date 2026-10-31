@@ -8,6 +8,7 @@ import { parseEnv, promisify } from "node:util";
 import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import { Client } from "pg";
+import { startS3Stub } from "../tests/browser/support/s3-stub";
 
 const cwd = fileURLToPath(new URL("../", import.meta.url));
 const run = promisify(execFile);
@@ -21,8 +22,27 @@ url.pathname = `/${database}`;
 let child: ChildProcess | undefined;
 let proxy: ReturnType<typeof httpsServer> | undefined;
 let temporary: string | undefined;
+let s3Stub: Awaited<ReturnType<typeof startS3Stub>> | undefined;
 let created = false;
 let connected = false;
+
+// The worker verifies its bucket on startup. Use an explicit BROWSER_TEST_S3_ENDPOINT as-is; otherwise
+// fall back to the in-process stub when the configured MinIO is unreachable. BROWSER_TEST_S3_STUB=1 forces
+// the stub, =0 forbids it (used to prove the stub is load-bearing).
+// A listening port is not enough (a wedged Docker proxy accepts TCP and never answers): require an HTTP reply.
+async function reachable(endpoint: string) {
+  try { await fetch(endpoint, { method: "HEAD", signal: AbortSignal.timeout(2000) }); return true; }
+  catch { return false; }
+}
+async function resolveS3Endpoint() {
+  const explicit = process.env.BROWSER_TEST_S3_ENDPOINT;
+  if (explicit) return explicit;
+  const mode = process.env.BROWSER_TEST_S3_STUB;
+  if (mode === "0" || (mode !== "1" && await reachable(local.S3_ENDPOINT!))) return local.S3_ENDPOINT!;
+  s3Stub = await startS3Stub(process.env.BROWSER_TEST_S3_BUCKET ?? local.S3_BUCKET!);
+  console.log(`MinIO unavailable or stub forced; using HeadBucket/CreateBucket-only S3 stub at ${s3Stub.endpoint}`);
+  return s3Stub.endpoint;
+}
 
 async function stop(process: ChildProcess | undefined) {
   if (!process || process.exitCode !== null || process.signalCode !== null) return;
@@ -85,8 +105,9 @@ try {
     try { if ((await fetch(`http://127.0.0.1:${port}/login`, { signal: AbortSignal.timeout(1000) })).status === 200) break; } catch { /* Startup only. */ }
     await delay(100);
   }
+  const s3Endpoint = await resolveS3Endpoint();
   const tests = spawn("pnpm", ["test:browser", ...process.argv.slice(2)], { cwd, detached: true, stdio: "inherit", env: { ...process.env,
-    PLAYWRIGHT_BASE_URL: origin, BROWSER_TEST_DATABASE_URL: url.href, RUN_SYNTHETIC_E2E: "1" } });
+    BROWSER_TEST_S3_ENDPOINT: s3Endpoint, PLAYWRIGHT_BASE_URL: origin, BROWSER_TEST_DATABASE_URL: url.href, RUN_SYNTHETIC_E2E: "1" } });
   const timeout = setTimeout(() => tests.kill("SIGTERM"), 240000);
   try {
     const [code] = await once(tests, "exit");
@@ -96,6 +117,7 @@ try {
 } finally {
   if (proxy) { proxy.closeAllConnections(); await new Promise<void>((resolve) => proxy!.close(() => resolve())); }
   await stop(child);
+  if (s3Stub) { s3Stub.server.closeAllConnections(); await new Promise<void>((resolve) => s3Stub!.server.close(() => resolve())); }
   try {
     if (created) {
       await admin.query(`DROP DATABASE "${database}"`);

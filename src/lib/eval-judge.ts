@@ -5,8 +5,47 @@
 // finished To-Be (never the generator's prompt or identity), and must cite a specific element for every credit.
 import type Anthropic from "@anthropic-ai/sdk";
 import { z } from "zod";
+import { creditHint, type Provider } from "./ai/provider";
+import { withProviderRetry, type RetryOptions } from "./ai/retry";
+import { WORKSPACE_FIELDS } from "./workspace-fields";
 
 export const JUDGE_MODEL = "deepseek-ai/DeepSeek-V4-Pro-0813";
+/** Judge used when the generator is DeepSeek, Xiaomi or unknown-but-not-Qwen. Measured 2026-10-23: a same-family judge inflated scores by 10 to 20 points. */
+export const QWEN_JUDGE_MODEL = "Qwen/Qwen3.8-Max";
+
+// --- judge independence --------------------------------------------------------------------------------------
+
+export const MODEL_FAMILIES = ["deepseek", "qwen", "xiaomi", "moonshot", "zai", "openai", "anthropic"] as const;
+export type ModelFamily = (typeof MODEL_FAMILIES)[number] | "unknown";
+const FAMILY_PATTERNS: readonly [Exclude<ModelFamily, "unknown">, RegExp][] = [
+  ["deepseek", /deepseek/i], ["qwen", /qwen|qwq/i], ["xiaomi", /xiaomi|mimo/i], ["moonshot", /moonshot|kimi/i],
+  ["zai", /(?:^|[/_-])z-?ai(?:-org)?(?:[/_-]|$)|zhipu|glm/i], ["openai", /openai|(?:^|[/_-])gpt[-\d]/i], ["anthropic", /anthropic|claude/i],
+];
+/** The model family behind an id or vendor path (DeepInfra, OpenRouter and native ids alike), or "unknown". */
+export function modelFamily(modelId: string | null | undefined): ModelFamily {
+  const id = (modelId ?? "").trim();
+  return FAMILY_PATTERNS.find(([, pattern]) => pattern.test(id))?.[0] ?? "unknown";
+}
+/** The default judge for a generator: a different family, Qwen unless the generator is Qwen or MiMo (then DeepSeek). */
+export function defaultJudgeModel(generatorModel: string | null | undefined): string {
+  const family = modelFamily(generatorModel);
+  return family === "qwen" || family === "xiaomi" ? JUDGE_MODEL : QWEN_JUDGE_MODEL;
+}
+export type Independence = {
+  status: "INDEPENDENT" | "NOT_INDEPENDENT" | "UNVERIFIED"; judgeFamily: ModelFamily; generatorFamily: ModelFamily | null; generatorModel: string | null; note: string;
+};
+/** A judge of the generator's own family inflates scores, so such a judgement is never reported as independent. `generatorModel` null = hand-written control. */
+export function assessIndependence(judgeModel: string, generatorModel: string | null | undefined): Independence {
+  const judgeFamily = modelFamily(judgeModel);
+  if (!generatorModel) return { status: "UNVERIFIED", judgeFamily, generatorFamily: null, generatorModel: null,
+    note: "The generator model is not known (a bare design file or a hand-written control), so independence cannot be verified." };
+  const generatorFamily = modelFamily(generatorModel);
+  if (judgeFamily === "unknown" || generatorFamily === "unknown") return { status: "UNVERIFIED", judgeFamily, generatorFamily, generatorModel,
+    note: "A model family could not be derived from the model id, so independence cannot be verified." };
+  return judgeFamily === generatorFamily
+    ? { status: "NOT_INDEPENDENT", judgeFamily, generatorFamily, generatorModel, note: `Judge and generator are both ${judgeFamily}: same-family judges inflated scores by 10 to 20 points when measured.` }
+    : { status: "INDEPENDENT", judgeFamily, generatorFamily, generatorModel, note: `Judge family ${judgeFamily} differs from generator family ${generatorFamily}.` };
+}
 /** USD per million tokens, DeepInfra public model list, measured 2026-10-22. */
 export const JUDGE_PRICE_PER_MTOK = { input: 1.3, output: 2.6 } as const;
 export const DEFAULT_RUNS = 3;
@@ -18,6 +57,13 @@ export const MIN_CALIBRATION_GAP = 20;
 export const VERDICTS = ["PASS", "PARTIAL", "FAIL", "NA"] as const;
 export type Verdict = (typeof VERDICTS)[number];
 const VERDICT_SCORE = { PASS: 1, PARTIAL: 0.5, FAIL: 0 } as const;
+
+/** The header line of a judgement report: both families and the verdict, loud when the judge is not independent. */
+export function independenceLine(judgeModel: string, ind: Independence): string {
+  const generator = ind.generatorModel ? `generator ${ind.generatorModel} (family ${ind.generatorFamily})` : "generator not recorded";
+  const verdict = ind.status === "INDEPENDENT" ? "INDEPENDENT" : ind.status === "NOT_INDEPENDENT" ? "**NOT INDEPENDENT: do not read this score as a quality measure.**" : "independence UNVERIFIED";
+  return `Judge ${judgeModel} (family ${ind.judgeFamily}), ${generator}: ${verdict} ${ind.note}`;
+}
 
 // --- rubric --------------------------------------------------------------------------------------------------
 
@@ -129,7 +175,10 @@ const DesignLooseSchema = z.looseObject({
   steps: z.array(z.looseObject({ id: z.string() })).min(1),
 });
 const RequirementSchema = z.object({ id: z.string(), statement: z.string(), critical: z.boolean().optional() });
-export type ToBe = { design: Record<string, unknown>; requirements: z.infer<typeof RequirementSchema>[] };
+/** `derived` is what the server builds without a model (document control, As-Is narratives, RICEFW list, actor-role matrix); see to-be-derived.ts. */
+export type ToBe = { design: Record<string, unknown>; requirements: z.infer<typeof RequirementSchema>[]; derived?: Record<string, unknown>;
+  /** The model that generated the design, when the file records it (an eval run transcript does). */
+  generator?: { provider: string | null; model: string } };
 
 /** Accepts an eval run file ({transcript}), a bare transcript ({toBe}), {design, requirements?} or a bare design. */
 export function loadToBe(raw: unknown): ToBe {
@@ -140,25 +189,32 @@ export function loadToBe(raw: unknown): ToBe {
   const design = toBe.design ?? root.design ?? (Array.isArray(root.steps) ? root : undefined);
   const requirements = toBe.requirements ?? root.requirements ?? [];
   const parsed = DesignLooseSchema.safeParse(design);
+  if (!parsed.success && typeof toBe.errorCode === "string" && !toBe.design) throw new Error(`No design to judge: the run's To-Be was not valid (${toBe.errorCode})`);
   if (!parsed.success) throw new Error("No To-Be design found: expected an eval run file, a transcript, {design, requirements} or a design object");
-  return { design: design as Record<string, unknown>, requirements: z.array(RequirementSchema).parse(requirements) };
+  const derived = toBe.derived ?? root.derived;
+  const generator = typeof transcript.model === "string" && transcript.model ? { provider: typeof transcript.provider === "string" ? transcript.provider : null, model: transcript.model } : undefined;
+  return { ...(generator && { generator }), design: design as Record<string, unknown>, requirements: z.array(RequirementSchema).parse(requirements), ...(derived && typeof derived === "object" ? { derived: derived as Record<string, unknown> } : {}) };
 }
 
 const CaseSchema = z.looseObject({
   caseId: z.string(), company: z.string(),
-  project: z.looseObject({ problemStatement: z.string() }),
+  project: z.looseObject({ problemStatement: z.string(), targetProduct: z.string().optional(), targetRelease: z.string().nullable().optional() }),
   answerBank: z.looseObject({ catalog: z.record(z.string(), z.string()) }),
   steps: z.array(z.looseObject({ n: z.number(), name: z.string(), system: z.string() })).min(1),
   requirements: z.array(z.looseObject({ key: z.string(), stepN: z.number(), kind: z.string(), critical: z.boolean(), statement: z.string() })),
 });
 export type CaseBrief = ReturnType<typeof buildCaseBrief>;
 /** What the business told the consultant: problem, targets, constraints, as-is steps and requirement list. No expected answers. */
-export function buildCaseBrief(rawCase: unknown) {
+export function buildCaseBrief(rawCase: unknown, verifiedReferences: number | null = null) {
   const c = CaseSchema.parse(rawCase);
   const catalog = c.answerBank.catalog;
   return {
     caseId: c.caseId, company: c.company, problem: c.project.problemStatement,
+    // How many verified SAP references the design generator had. With none, NEEDS_VALIDATION is the correct answer for SAP claims.
+    sapCatalog: { targetProduct: c.project.targetProduct ?? null, targetRelease: c.project.targetRelease ?? null, verifiedReferences },
     desiredOutcome: catalog.desired_outcome ?? "", desiredControlsAndConstraints: catalog.desired_controls ?? "",
+    // The company-context answers the business gave, so the judge can check the registers (KPIs, interfaces, org units) against them.
+    companyContext: WORKSPACE_FIELDS.flatMap(field => catalog[field.id] ? [{ fieldId: field.id, label: field.label, value: catalog[field.id]! }] : []),
     asIsSteps: c.steps.map(s => ({ id: `as_is_${s.n}`, name: s.name, system: s.system })),
     requirements: c.requirements.map(r => ({ id: `rq_${r.key}`, asIsStepId: `as_is_${r.stepN}`, kind: r.kind, critical: r.critical, statement: r.statement })),
   };
@@ -182,7 +238,11 @@ export function buildSystemPrompt(rubric: readonly Criterion[]): string {
     "Evidence rules:",
     "- Grade only what is written. Do not give credit for intent, for things the case implies but the plan does not say, or for length.",
     "- Generic phrases such as 'handled in SAP standard', 'improves efficiency' or 'per standard' are not specifics: FAIL for any criterion that demands specifics.",
-    "- The design has no dedicated field for some artefacts (document control, RICEFW list, role catalogue, gap register, interface list, KPIs). Such a criterion is satisfied only if the text of the design actually contains it.",
+    "- Some artefacts have no field in the design itself. Such a criterion is satisfied only if the text of the design or of `derivedSections` actually contains it.",
+    "- `derivedSections` is written by the application from the saved discovery revision, not by the author of the design, and is part of the document under review: documentControl (version, date, source revision with digests, reviewer roles, sign-off table; sign-off is always HUMAN_REVIEW_REQUIRED and never approved), asIsNarratives (the client's own words per To-Be step, apart from the To-Be), eliminatedAsIs, ricefwList (every fit-gap row that needs something built or connected, every step realised as an extension or integration, and every report or KPI realised with custom analytics, each with type, linked steps and rationale) and actorRoles (each step's actor next to the role-catalogue rows that cover it), and reviewFindings (completeness and consistency gaps the application itself detected and shows in the report; a design that discloses a gap this way is being honest about it, so do not mark that gap as hidden, but it is still a gap in the content). Cite its ids (RICEFW-1, an As-Is step id, a step id) like any other element. A design without `derivedSections` was judged from an older run: grade those criteria on the design alone.",
+    "- A design with schemaVersion 2 also carries solution-design registers: keyDesignDecisions (options, recommendation, owner), fitGap (clean-core class and RICEFW type per requirement), orgStructure, masterDataPrerequisites, interfaces, kpis, dataMigration and cutover. Read them as the decision log, gap and RICEFW register, interface list, KPI list and migration/cutover plan. A schemaVersion 1 design has none of them.",
+    "- A design with schemaVersion 3 adds: step stepType, phase and interimProcess; objectives and scopeStatements (objectives and in/out of scope); documentStatusModels (statuses, transitions per step, edit and lock rules); configurationCatalogue (document types, reason codes, pricing elements, number ranges, each CONFIRMED_IN_CATALOG, BUSINESS_TO_PROVIDE or NEEDS_VALIDATION with an owner); roles (role catalogue), sodAssessments (segregation of duties) and controlMappings (each discovery control to a rule, workflow, authorization or report); reports; endToEndTests (one scenario per value stream); periodEndActivities (activity, sequence, owner, steps); steps carry effects.accountingEntry (the posting in account categories, or None with a reason); and on the older registers: orgStructure.parentId, orgStructure.code, codeStatus (CODE_CONFIRMED or BUSINESS_TO_PROVIDE) and owner, interfaces.systemOfRecord, masterDataPrerequisites.creationChannel and governance, interfaces.failureHandling (how a failed message is seen, alerted, rerun and kept from posting twice), kpis.owner and producingStepId, fitGap.mitigationType, owner and status (the gap register).",
+    "- case.sapCatalog.verifiedReferences is how many verified SAP references the author had. When it is 0 there was no verified SAP catalog for the target product and release, so NEEDS_VALIDATION realizations that name the SAP object to validate are correct: do not penalise them for being unverified.",
     "- Values marked 'business to provide' or held in an open decision with an owner are correctly flagged uncertainty; invented thresholds, rates or accounting rules are not.",
     "- For PASS and PARTIAL, `citation` must name the strongest specific element: stepId.field (for example O2C-ORD-030.effects.financial), or a rule, test, open-question or requirement id from the design. A PASS or PARTIAL whose citation names no real element id is rejected and scored FAIL.",
     "- For FAIL, `citation` names where the content should be or says design-wide, and `reason` says what is missing.",
@@ -195,12 +255,13 @@ export function buildSystemPrompt(rubric: readonly Criterion[]): string {
 
 export function buildUserPrompt(brief: CaseBrief, tobe: ToBe, issues: Issue[] = []): string {
   const requirements = tobe.requirements.length ? tobe.requirements : brief.requirements.map(r => ({ id: r.id, statement: r.statement, critical: r.critical }));
-  return JSON.stringify({ case: { ...brief, requirements: undefined }, requirements, toBeDesign: tobe.design, validationErrors: issues });
+  return JSON.stringify({ case: { ...brief, requirements: undefined }, requirements, toBeDesign: tobe.design, ...(tobe.derived && { derivedSections: tobe.derived }), validationErrors: issues });
 }
 
 // --- validation and grading ----------------------------------------------------------------------------------
 
 /** Every element id a citation may legitimately point at. */
+const V3_REGISTERS = ["objectives", "scopeStatements", "documentStatusModels", "configurationCatalogue", "roles", "sodAssessments", "controlMappings", "reports", "endToEndTests", "periodEndActivities"] as const;
 export function citableIds(tobe: ToBe): Set<string> {
   const ids = new Set<string>(["processName", "coverage", "openQuestions", "eliminatedAsIsSteps", "conflictDecisions", "steps"]);
   const add = (value: unknown) => { if (typeof value === "string" && value) ids.add(value); };
@@ -212,6 +273,17 @@ export function citableIds(tobe: ToBe): Set<string> {
     for (const test of list(step.acceptanceTests)) add(test.id);
   }
   for (const q of list(design.openQuestions)) add(q.id);
+  for (const key of ["keyDesignDecisions", "orgStructure", "masterDataPrerequisites", "interfaces", "kpis", "dataMigration", "cutover", ...V3_REGISTERS]) {
+    add(key);
+    for (const row of list(design[key])) add(row.id);
+  }
+  // The derived sections are part of the document under review, so their ids are citable too.
+  const derived = (tobe.derived ?? {}) as Record<string, unknown>;
+  if (tobe.derived) for (const key of ["documentControl", "asIsNarratives", "eliminatedAsIs", "ricefwList", "actorRoles"]) add(key);
+  for (const item of list(derived.ricefwList)) add(item.id);
+  for (const item of list(derived.asIsNarratives)) for (const asIs of list(item.asIs)) add(asIs.asIsStepId);
+  for (const item of list(derived.eliminatedAsIs)) add(item.asIsStepId);
+  add("fitGap");
   for (const c of list(design.coverage)) add(c.requirementId);
   for (const r of tobe.requirements) add(r.id);
   return ids;
@@ -224,9 +296,9 @@ export function isGrounded(citation: string, ids: ReadonlySet<string>): boolean 
 
 /** Checks the raw tool input against the schema and the rubric ids. Issues are fed back to the model on a repair attempt. */
 export function validateJudgeOutput(rubric: readonly Criterion[], raw: unknown):
-  { success: true; data: JudgeOutput } | { success: false; issues: Issue[] } {
+  { success: true; data: JudgeOutput } | { success: false; issues: Issue[]; schema: boolean } {
   const parsed = JudgeOutputSchema.safeParse(raw);
-  if (!parsed.success) return { success: false, issues: parsed.error.issues.slice(0, 20).map(i => ({ path: i.path.join("."), code: i.code, detail: i.message })) };
+  if (!parsed.success) return { success: false, schema: true, issues: parsed.error.issues.slice(0, 20).map(i => ({ path: i.path.join("."), code: i.code, detail: i.message })) };
   const issues: Issue[] = [];
   const seen = new Map<string, number>();
   for (const v of parsed.data.verdicts) seen.set(v.id, (seen.get(v.id) ?? 0) + 1);
@@ -235,7 +307,7 @@ export function validateJudgeOutput(rubric: readonly Criterion[], raw: unknown):
     if (!rubric.some(c => c.id === id)) issues.push({ path: "verdicts", code: "unknown_criterion", detail: id });
     else if (n > 1) issues.push({ path: "verdicts", code: "duplicate_criterion", detail: id });
   }
-  return issues.length ? { success: false, issues: issues.slice(0, 30) } : { success: true, data: parsed.data };
+  return issues.length ? { success: false, schema: false, issues: issues.slice(0, 30) } : { success: true, data: parsed.data };
 }
 
 export type Flag = "unjustified" | "no_citation" | "illegal_na";
@@ -361,13 +433,15 @@ export function degradeDesign(design: Record<string, unknown>): Record<string, u
   }));
   copy.coverage = (copy.coverage ?? []).map(c => ({ ...c, rationale: "Covered.", decisionId: null }));
   copy.openQuestions = [];
+  // A weak plan has no registers; a version 2 flag without them would only be inconsistent.
+  for (const key of ["keyDesignDecisions", "fitGap", "orgStructure", "masterDataPrerequisites", "interfaces", "kpis", "dataMigration", "cutover", ...V3_REGISTERS]) delete copy[key];
   copy.processName = "To-Be process (weak control)";
   return copy;
 }
 
 // --- provider call -------------------------------------------------------------------------------------------
 
-export type JudgeMessage = { content: { type: string; name?: string; input?: unknown }[]; usage: { input_tokens: number; output_tokens: number; cache_creation_input_tokens?: number | null; cache_read_input_tokens?: number | null } };
+export type JudgeMessage = { stop_reason?: string | null; content: { type: string; name?: string; input?: unknown }[]; usage: { input_tokens: number; output_tokens: number; cache_creation_input_tokens?: number | null; cache_read_input_tokens?: number | null } };
 export type StreamParams = Parameters<Anthropic["messages"]["stream"]>[0];
 /** The slice of the Anthropic SDK client the judge needs; tests supply a mock. */
 export interface JudgeClient {
@@ -375,29 +449,50 @@ export interface JudgeClient {
 }
 export type Usage = { inputTokens: number; outputTokens: number; calls: number };
 export class JudgeError extends Error {
-  constructor(public readonly code: "JUDGE_INVALID_OUTPUT" | "JUDGE_NO_TOOL_CALL", public readonly usage: Usage, public readonly issues: Issue[] = []) {
-    super(code + (issues.length ? `: ${issues.map(i => `${i.code} ${i.detail ?? i.path}`).slice(0, 5).join("; ")}` : ""));
+  constructor(public readonly code: "JUDGE_INVALID_OUTPUT" | "JUDGE_NO_TOOL_CALL" | "JUDGE_OUTPUT_TRUNCATED", public readonly usage: Usage, public readonly issues: Issue[] = []) {
+    super(code + (issues.length ? `: ${issues.map(i => `${i.code} ${i.path ? `${i.path}${i.detail ? " " : ""}` : ""}${i.detail ?? ""}`.trim()).slice(0, 5).join("; ")}` : ""));
     this.name = "JudgeError";
   }
 }
-export type JudgeOptions = { model?: string; temperature?: number; maxTokens?: number; timeoutMs?: number; signal?: AbortSignal; maxAttempts?: number };
+/** Per-call timeout for a judgement: a ~100k-token design needs minutes of streaming, so never below 15 minutes by default. */
+export const DEFAULT_JUDGE_CALL_TIMEOUT_MS = 900_000;
+/** A reasoning model can spend the whole output budget before it calls the tool (stop_reason max_tokens). One retry gets this many times the budget. */
+export const TRUNCATION_RETRY_FACTOR = 2;
+/** Operator line for a credit failure of the judge. OpenRouter reserves a request's maximum output cost up front, so it can refuse a call the balance would have covered. */
+export function judgeCreditHint(provider: Provider): string {
+  return `${creditHint(provider)} OpenRouter reserves max tokens x price per request and answers 402 "maximum cost exceeds your available credits" when the balance is below that: add credit or lower --max-tokens (a truncated judgement is retried once at ${TRUNCATION_RETRY_FACTOR}x).`;
+}
+export type JudgeOptions = { model?: string; temperature?: number; maxTokens?: number; timeoutMs?: number; signal?: AbortSignal; maxAttempts?: number;
+  /** Epoch ms after which no transient-failure retry starts (the judge deadline). */
+  deadlineAt?: number; onRetry?: RetryOptions["onRetry"];
+  /** Asked with the usage so far before the one fresh retry of a schema-invalid judgement; false (e.g. the --max-cost cap is spent) skips it. */
+  canRetry?: (usage: Usage) => boolean };
 
 /** One judgement: up to `maxAttempts` calls, each repair attempt carrying the previous validation issues. */
 export async function judgeOnce(client: JudgeClient, rubric: readonly Criterion[], brief: CaseBrief, tobe: ToBe, options: JudgeOptions = {}):
   Promise<{ graded: Graded[]; score: RunScore; usage: Usage; attempts: number }> {
-  const { model = JUDGE_MODEL, temperature = 0.2, maxTokens = 20000, timeoutMs = 600_000, signal, maxAttempts = 2 } = options;
+  const { model = JUDGE_MODEL, temperature = 0.2, maxTokens = 20000, timeoutMs = DEFAULT_JUDGE_CALL_TIMEOUT_MS, signal, maxAttempts = 2, deadlineAt, onRetry, canRetry } = options;
   const jsonSchema = z.toJSONSchema(JudgeOutputSchema);
   const tools: Anthropic.Tool[] = [{ name: JUDGE_TOOL, description: "Submit the verdicts for every rubric criterion.", input_schema: { ...jsonSchema, type: "object" } }];
   const system = buildSystemPrompt(rubric);
   const usage: Usage = { inputTokens: 0, outputTokens: 0, calls: 0 };
-  let issues: Issue[] = [];
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    const message = await client.messages.stream({ model, max_tokens: maxTokens, temperature, system,
-      messages: [{ role: "user", content: buildUserPrompt(brief, tobe, issues) }], tools, tool_choice: { type: "auto" } },
-      { signal, timeout: timeoutMs }).finalMessage();
+  let issues: Issue[] = [], tokens = maxTokens, retried = false, cut = false, freshRetried = false, limit = maxAttempts;
+  for (let attempt = 1; attempt <= limit; attempt++) {
+    const userPrompt = buildUserPrompt(brief, tobe, issues);
+    // Transient failures (5xx, 429, a connection cut mid-stream) re-send the same request: the retry policy runStage uses.
+    const message = await withProviderRetry(() => client.messages.stream({ model, max_tokens: tokens, temperature, system,
+      messages: [{ role: "user", content: userPrompt }], tools, tool_choice: { type: "auto" } },
+      { signal, timeout: timeoutMs }).finalMessage(), { signal, deadlineAt, callTimeoutMs: timeoutMs, onRetry });
     usage.calls++; usage.outputTokens += message.usage.output_tokens;
     // Cached prompt tokens are still prompt tokens (priced as input here, an upper bound), as runStage counts them.
     usage.inputTokens += message.usage.input_tokens + (message.usage.cache_creation_input_tokens ?? 0) + (message.usage.cache_read_input_tokens ?? 0);
+    // Out of output budget: the tool call is missing or cut off. Retry once with a bigger budget; a second cut is final.
+    cut = message.stop_reason === "max_tokens";
+    if (cut) {
+      if (retried) break;
+      retried = true; tokens = maxTokens * TRUNCATION_RETRY_FACTOR; issues = [];
+      continue;
+    }
     const calls = message.content.filter(block => block.type === "tool_use" && block.name === JUDGE_TOOL);
     if (calls.length !== 1) { issues = [{ path: "tool", code: "expected_exactly_one_tool_call", detail: String(calls.length) }]; continue; }
     const result = validateJudgeOutput(rubric, calls[0]!.input);
@@ -406,6 +501,43 @@ export async function judgeOnce(client: JudgeClient, rubric: readonly Criterion[
       return { graded, score: scoreGraded(rubric, graded), usage, attempts: attempt };
     }
     issues = result.issues;
+    // The repair pass (which sends these issues back) did not fix a schema-invalid reply (e.g. no `verdicts` array at all): one fresh call, same budget, no issues.
+    if (result.schema && attempt === limit && !freshRetried && (canRetry?.(usage) ?? true)) { freshRetried = true; limit++; issues = []; }
   }
+  if (cut) throw new JudgeError("JUDGE_OUTPUT_TRUNCATED", usage, [{ path: "tool", code: "max_tokens", detail: String(tokens) }]);
   throw new JudgeError(issues[0]?.code === "expected_exactly_one_tool_call" ? "JUDGE_NO_TOOL_CALL" : "JUDGE_INVALID_OUTPUT", usage, issues);
+}
+
+// --- running N judgements ------------------------------------------------------------------------------------
+
+/** Judgements that must succeed for a score to count as a measurement; fewer and the script exits non-zero. */
+export const DEFAULT_MIN_RUNS = 2;
+/** Default overall deadline for one set of judgements, in seconds. */
+export const DEFAULT_DEADLINE_SECONDS = 1800;
+/** Overall deadline when --deadline-seconds is not given: DEFAULT_DEADLINE_SECONDS per wave, so judgements run one at a time (OpenRouter) still all get their turn. */
+export function defaultDeadlineSeconds(runs: number, concurrency: number): number { return DEFAULT_DEADLINE_SECONDS * Math.ceil(runs / Math.max(1, concurrency)); }
+/** Long judgements (~100k input tokens) on OpenRouter were cut mid-stream when three ran at once; DeepInfra coped with all three. */
+export function defaultConcurrency(provider: "deepinfra" | "openrouter"): number { return provider === "openrouter" ? 1 : 3; }
+
+export type RunStatus = { run: number; ok: boolean; detail: string };
+
+/** Runs `task(0..count-1)` with at most `concurrency` in flight. Every task settles; none is skipped. */
+export async function runLimited<T>(count: number, concurrency: number, task: (index: number) => Promise<T>): Promise<PromiseSettledResult<T>[]> {
+  const results = new Array<PromiseSettledResult<T>>(count);
+  let next = 0;
+  const worker = async () => {
+    for (let index = next++; index < count; index = next++) {
+      results[index] = await task(index).then(value => ({ status: "fulfilled" as const, value }), (reason: unknown) => ({ status: "rejected" as const, reason }));
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(Math.max(1, concurrency), count) }, worker));
+  return results;
+}
+
+/** One status line per judgement and, when too few succeeded, the verdict that the score is not a measurement. */
+export function assessJudgements(statuses: readonly RunStatus[], minRuns: number): { valid: boolean; lines: string[]; banner: string | null } {
+  const ok = statuses.filter(s => s.ok).length;
+  const valid = ok >= minRuns && ok > 0;
+  return { valid, lines: statuses.map(s => `  run ${s.run + 1}: ${s.ok ? "ok" : "FAILED"} ${s.detail}`),
+    banner: valid ? null : `NOT A MEASUREMENT: only ${ok} of ${statuses.length} judgements succeeded (minimum ${minRuns}). Any total below comes from too few runs, shows no real spread, and must not be quoted as a score.` };
 }

@@ -14,11 +14,13 @@ import { parseEnvironment } from "../src/lib/env";
 import { createStageRunner } from "../src/lib/ai/runStage";
 import { createToBeGenerator, parseToBeInput, toBeContext, validateToBeOutput, type ToBeInput } from "../src/lib/ai/to-be";
 import { rentalDraft } from "../fixtures/ai/to-be/rental-benchmark";
+import { rentalDraftV3 } from "../fixtures/ai/to-be/rental-registers";
 import { asStream } from "./support/sse";
 import { fixture } from "./support/to-be-input";
+import { routeLegacyReply } from "./support/to-be-split";
 
 const local = parseEnv(readFileSync(new URL("../.env.example", import.meta.url), "utf8"));
-const settings = (overrides = {}) => parseEnvironment({ ...local, NODE_ENV: "test",
+const settings = (overrides = {}) => parseEnvironment({ ...local, NODE_ENV: "test", AI_TO_BE_REVIEW: "off", AI_TO_BE_FIX_MAX_PARTS: "0",
   AI_PROVIDER: "anthropic", ANTHROPIC_API_KEY: "synthetic-to-be-key", ...overrides });
 type Body = { model: string; system: string; messages: { content: string }[];
   tools: { name: string; input_schema: unknown }[]; tool_choice: unknown };
@@ -27,19 +29,25 @@ function response(output: unknown = rentalDraft, stop = "tool_use", name = "subm
     content: [{ type: "tool_use", id: "tool_synthetic", name, input: output }], stop_reason: stop,
     usage: { input_tokens: 100, output_tokens: 200 } }), { headers: { "content-type": "application/json" } });
 }
-function harness(reply: (attempt: number) => Response | Promise<Response> = () => response(), count: (attempt: number) => number = () => 1000, sapCatalogDir?: string) {
-  const sent: Body[] = [], counted: Body[] = [];
+/** `reply` still answers with a whole design (as the one-shot protocol did); routeLegacyReply turns it into the outline or step payload the
+ * pipeline asked for, so each test keeps expressing "the model produced this design". `attempt` counts every generation request. */
+function harness(reply: (attempt: number) => Response | Promise<Response> = () => response(), count: (attempt: number) => number = () => 1000, sapCatalogDir?: string, overrides = {}) {
+  // The eight register calls are answered with valid fixture registers and kept out of `sent`/`counted`, which describe the outline and step protocol.
+  const sent: Body[] = [], counted: Body[] = [], registerCalls: Body[] = [];
+  const isRegister = (body: Body) => body.tools[0]!.name.startsWith("submit_to_be_registers_");
   const fetch = vi.fn<typeof globalThis.fetch>(async (url, init) => {
     expect(String(url)).toMatch(/^https:\/\/api\.anthropic\.com\/v1\/messages/);
     const body = JSON.parse(String(init?.body)) as Body;
     if (String(url).includes("count_tokens")) {
+      if (isRegister(body)) return new Response(JSON.stringify({ input_tokens: 1000 }), { headers: { "content-type": "application/json" } });
       counted.push(body);
       return new Response(JSON.stringify({ input_tokens: count(counted.length) }), { headers: { "content-type": "application/json" } });
     }
-    sent.push(body); return asStream(reply(sent.length));
+    if (isRegister(body)) { registerCalls.push(body); return asStream(routeLegacyReply(response(), body)); }
+    sent.push(body); return asStream(routeLegacyReply(reply(sent.length), body));
   });
-  const runner = createStageRunner(settings(), { fetch, sapCatalogDir });
-  return { sent, counted, fetch, generate: (input: unknown, signal?: AbortSignal) => runner("to_be", input, signal) };
+  const runner = createStageRunner(settings(overrides), { fetch, sapCatalogDir });
+  return { sent, counted, registerCalls, fetch, generate: (input: unknown, signal?: AbortSignal) => runner("to_be", input, signal) };
 }
 
 describe("detailed generation protocol", () => {
@@ -51,22 +59,27 @@ describe("detailed generation protocol", () => {
     expect(h.counted[0]).toEqual(expect.objectContaining({
       system: h.sent[0]!.system, messages: h.sent[0]!.messages, tools: h.sent[0]!.tools, tool_choice: h.sent[0]!.tool_choice,
     }));
-    expect(h.sent[0]!.tools[0]!.name).toBe("submit_to_be");
+    expect(h.sent[0]!.tools[0]!.name).toBe("submit_to_be_outline");
+    expect(h.sent.slice(1).map(body => body.tools[0]!.name)).toEqual(["submit_to_be_step", "submit_to_be_step", "submit_to_be_step"]);
     expect(h.sent[0]!.tool_choice).toEqual({ type: "auto", disable_parallel_tool_use: true });
-    expect(result.payload.design).toEqual(rentalDraft);
-    expect(result.payload.unresolvedInputQuestions).toEqual(input.discovery.openQuestions);
+    expect(result.payload.design).toEqual(rentalDraftV3);
+    expect(result.payload.unresolvedInputQuestions).toEqual(input.discovery.openQuestions.map((question, i) => ({ ...question, label: `IQ-${i + 1}` })));
     expect(result.payload.evaluation).toMatchObject({ structurallyValid: true, reviewStatus: "BLOCKED",
       blockers: expect.arrayContaining([{ code: "INPUT_QUESTION_UNRESOLVED", path: "input.openQuestions.0" }]) });
-    expect(result.metrics).toMatchObject({ stage: "to_be", attempts: 1, inputTokens: 100, outputTokens: 200 });
+    // One outline call plus one call per step (3), each reported as 100 in / 200 out.
+    expect(result.metrics.substages).toMatchObject({ to_be_registers: { calls: 8 } });
+    expect(h.registerCalls.map(body => body.tools[0]!.name).sort()).toEqual(["decisions", "documents", "fitgap", "foundation", "governance", "integration", "reporting", "scope"].map(group => `submit_to_be_registers_${group}`));
+    expect(result.metrics).toMatchObject({ stage: "to_be", attempts: 12, inputTokens: 1200, outputTokens: 2400 });
   });
   it("repairs incomplete coverage once without echoing model prose", async () => {
     const wrong = structuredClone(rentalDraft); wrong.coverage.pop(); wrong.processName = "private-invalid-model-output";
     const h = harness(attempt => response(attempt === 1 ? wrong : rentalDraft));
     const result = await h.generate(fixture());
-    expect(h.sent).toHaveLength(2); expect(h.counted).toHaveLength(2);
+    // The outline is repaired once (2 calls), then 3 step calls.
+    expect(h.sent).toHaveLength(5); expect(h.counted).toHaveLength(5);
     expect(h.sent[1]!.messages[0]!.content).toContain("REQUIREMENT_UNDISPOSITIONED");
     expect(h.sent[1]!.messages[0]!.content).not.toContain("private-invalid-model-output");
-    expect(result.metrics).toMatchObject({ attempts: 2, inputTokens: 200, outputTokens: 400 });
+    expect(result.metrics).toMatchObject({ attempts: 13, inputTokens: 1300, outputTokens: 2600 });
   });
   it.each(["invented approval", "unverified SAP", "truncated", "wrong tool", "no tool"])("rejects %s after bounded repair", async kind => {
     const wrong = structuredClone(rentalDraft);
@@ -74,8 +87,10 @@ describe("detailed generation protocol", () => {
     if (kind === "unverified SAP") wrong.steps[0]!.implementation = { kind: "STANDARD", detail: "Claimed standard", referenceIds: [] };
     const h = harness(() => response(wrong, kind === "truncated" ? "max_tokens" : kind === "no tool" ? "end_turn" : "tool_use",
       kind === "wrong tool" ? "other_tool" : "submit_to_be"));
-    await expect(h.generate(fixture())).rejects.toMatchObject({ code: "AI_INVALID_OUTPUT", metrics: { attempts: 2 } });
-    expect(h.sent).toHaveLength(2);
+    // First answer plus two outline repairs; a cut-off outline is also asked twice more with its ceiling doubled (32000, 64000), which costs no repair.
+    const calls = kind === "truncated" ? 4 : 3;
+    await expect(h.generate(fixture())).rejects.toMatchObject({ code: "AI_INVALID_OUTPUT", metrics: { attempts: calls } });
+    expect(h.sent).toHaveLength(calls);
   });
   it.each([1, 2])("rejects oversized complete request on attempt %i without truncation", async overflowAt => {
     const h = harness(() => response({}), attempt => attempt === overflowAt ? 60001 : 1000);
@@ -104,14 +119,17 @@ describe("detailed generation protocol", () => {
   it("allows a detailed response past two minutes without changing the problem-analysis timeout", async () => {
     vi.useFakeTimers();
     try {
-      const h = harness(() => new Promise(resolve => setTimeout(() => resolve(response()), 150000)));
+      // Every call takes 150 s: the outline, then the three parallel step calls. The stage budget is raised to fit both.
+      const h = harness(() => new Promise(resolve => setTimeout(() => resolve(response()), 150000)), () => 1000, undefined, { AI_STAGE_BUDGET_SECONDS: "600" });
       let settled = false;
       const pending = h.generate(fixture()).finally(() => { settled = true; });
       await vi.waitFor(() => expect(h.sent).toHaveLength(1));
       await vi.advanceTimersByTimeAsync(120000);
       expect(settled).toBe(false);
       await vi.advanceTimersByTimeAsync(30000);
-      expect((await pending).payload.design).toEqual(rentalDraft);
+      await vi.waitFor(() => expect(h.sent).toHaveLength(4));
+      await vi.advanceTimersByTimeAsync(150000);
+      expect((await pending).payload.design).toEqual(rentalDraftV3);
     } finally { vi.useRealTimers(); }
   });
   it.each(["call", "job"])("enforces the %s deadline for detailed generation", async boundary => {
@@ -185,21 +203,35 @@ describe("trusted SAP references in generation", () => {
     const h = harness(() => response(designCiting("STANDARD")), () => 1000, dir);
     const result = await h.generate(withRelease());
     const sent = JSON.parse(h.sent[0]!.messages[0]!.content);
-    expect(sent.references).toEqual([expect.objectContaining({ id: "REF-SYN", status: "VERIFIED", fitType: "STANDARD", objects: ["Synthetic object"] })]);
+    // The outline sees the compact slice only: no evidence quotes or limitations (the step call receives the full entry).
+    expect(sent.references).toEqual([{ id: "REF-SYN", fitType: "STANDARD", capability: "Synthetic capability", objects: ["Synthetic object"] }]);
+    expect(JSON.parse(h.sent[1]!.messages[0]!.content).references).toEqual([expect.objectContaining({ id: "REF-SYN", status: "VERIFIED", evidence: expect.any(String) })]);
     expect(sent.approvedDecisions).toEqual([]);
-    expect(h.sent).toHaveLength(1);
+    expect(h.sent).toHaveLength(4); // outline + 3 steps
     expect(result.payload.evaluation.errors).toEqual([]);
   });
-  it("rejects a STANDARD claim whose only citation is not a standard capability, after bounded repair", async () => {
-    const extension = structuredClone(catalog); extension.references[0]!.fitType = "EXTENSION";
+  const withFit = async (fitType: string, run: (dir: string) => Promise<void>) => {
+    const changed = structuredClone(catalog); changed.references[0]!.fitType = fitType;
     const other = await mkdtemp(join(tmpdir(), "to-be-sap-ext-"));
     try {
       await mkdir(join(other, "s4hana-2023"), { recursive: true });
-      await writeFile(join(other, "s4hana-2023", "reference-catalog.json"), JSON.stringify(extension));
-      const h = harness(() => response(designCiting("STANDARD")), () => 1000, other);
-      await expect(h.generate(withRelease())).rejects.toMatchObject({ code: "AI_INVALID_OUTPUT", metrics: { attempts: 2 } });
-      expect(h.sent[1]!.messages[0]!.content).toContain("SAP_FIT_MISMATCH");
+      await writeFile(join(other, "s4hana-2023", "reference-catalog.json"), JSON.stringify(changed));
+      await run(other);
     } finally { await rm(other, { recursive: true, force: true }); }
+  };
+  it("rejects a STANDARD claim whose only citation has a fit type the server cannot rank, after bounded repair", async () => {
+    await withFit("MANUAL", async other => {
+      const h = harness(() => response(designCiting("STANDARD")), () => 1000, other);
+      await expect(h.generate(withRelease())).rejects.toMatchObject({ code: "AI_INVALID_OUTPUT", metrics: { attempts: 3 } });
+      expect(h.sent[1]!.messages[0]!.content).toContain("SAP_FIT_MISMATCH");
+    });
+  });
+  it("raises a STANDARD claim over an EXTENSION citation to EXTENSION instead of failing it", async () => {
+    await withFit("EXTENSION", async other => {
+      const h = harness(() => response(designCiting("STANDARD")), () => 1000, other);
+      const result = await h.generate(withRelease());
+      expect(JSON.stringify(result.payload)).toContain('"kind":"EXTENSION"');
+    });
   });
   it("keeps the model-claimed reference untrusted when no catalog exists", async () => {
     const h = harness(() => response(designCiting("STANDARD")), () => 1000, join(dir, "missing"));
@@ -263,7 +295,7 @@ describe("authorized snapshot generator", () => {
     const s = setup(); s.get.mockResolvedValueOnce({ snapshot: s.snapshot, canEdit: true })
       .mockResolvedValueOnce({ snapshot: s.snapshot, canEdit: false });
     await expect(s.run("session", s.request)).rejects.toMatchObject({ code: "FORBIDDEN" });
-    expect(s.h.sent).toHaveLength(1);
+    expect(s.h.sent).toHaveLength(4);
   });
   it("recomputes quality instead of trusting a runner-supplied approval", async () => {
     const s = setup(); const parsed = validateToBeOutput(parseToBeInput(fixture()), rentalDraft);
@@ -314,7 +346,7 @@ describe.skipIf(process.env.RUN_DB_TESTS !== "1")("generation from tenant-author
     expect(JSON.parse(h.sent[0]!.messages[0]!.content).input.discovery.variantName).toBe("Fictional equipment hire");
     await pool.query("UPDATE project_memberships SET project_role='PROCESS_OWNER' WHERE project_id=$1 AND user_id=$2", [project.id, owner.user.id]);
     await expect(generate(owner.token, request)).rejects.toMatchObject({ status: 403 });
-    expect(h.sent).toHaveLength(1);
+    expect(h.sent).toHaveLength(4);
   });
 });
 

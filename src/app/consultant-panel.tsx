@@ -4,11 +4,14 @@ import { useCallback, useEffect, useRef, useState, type FormEvent, type Keyboard
 import { ApiError, api, isActive, isUncertain, variantCodeFor, type Command, type JobView, type VariantSummary, type Workspace } from "./consultant-api";
 import { ConsultantChat } from "./consultant-chat";
 import { ConsultantSummary } from "./consultant-summary";
+import { ReleaseSelect } from "./discovery-fields";
 import styles from "./consultant.module.css";
 
 type Tab = "chat" | "summary";
 const DEFAULT_CODE = "MAIN";
 const POLL_MS = 1500;
+/** How long to keep refreshing for the background extraction of the latest message (it normally takes seconds). */
+const EXTRACTION_WAIT_MS = 90000;
 const withJob = (jobs: JobView[], job: JobView) => [job, ...jobs.filter(item => item.id !== job.id)];
 const messageOf = (error: unknown) => error instanceof Error ? error.message : "Something went wrong. Try again.";
 
@@ -62,6 +65,19 @@ export function ConsultantPanel({ projectId }: { projectId: string }) {
     }, POLL_MS);
     return () => clearTimeout(timer);
   }, [busy, jobs, code, base, load, pollFailures]);
+
+  // The reply arrives first; the proposals read out of the same message arrive from a background job that has no job row to poll,
+  // so keep refreshing the workspace until the latest message is recorded as extracted (or the wait runs out).
+  const lastUserId = workspace?.state?.messages.findLast(message => message.role === "user")?.id;
+  const extractionPending = Boolean(lastUserId) && !workspace?.state?.extractedMessageIds?.includes(lastUserId!);
+  const extractionStarted = useRef<{ id: string; at: number } | null>(null);
+  useEffect(() => {
+    if (busy || !extractionPending || !lastUserId) return;
+    if (extractionStarted.current?.id !== lastUserId) extractionStarted.current = { id: lastUserId, at: Date.now() };
+    if (Date.now() - extractionStarted.current.at > EXTRACTION_WAIT_MS) return;
+    const timer = setTimeout(() => { load(code).catch(() => setPollFailures(count => count + 1)); }, POLL_MS);
+    return () => clearTimeout(timer);
+  }, [busy, extractionPending, lastUserId, workspace, code, load, pollFailures]);
 
   const keyFor = (intent: string) => {
     let key = keys.current.get(intent);
@@ -202,8 +218,7 @@ function StartForm({ canEdit, pending, error, onStart, onCancel }: { canEdit: bo
     <p className={styles.muted}>Describe the business problem in your own words. The consultant will ask a few focused questions at a time and build the current-process summary with you.</p>
     <label htmlFor="variant-name">Which process are we discussing?</label>
     <input id="variant-name" value={name} onChange={(e) => setName(e.target.value)} maxLength={200} required placeholder="For example: Equipment hire" />
-    <label htmlFor="target-release">Target SAP release (optional)</label>
-    <input id="target-release" value={release} onChange={(e) => setRelease(e.target.value)} maxLength={200} placeholder="Leave blank if not decided" />
+    <ReleaseSelect id="target-release" value={release || null} change={(next) => setRelease(next ?? "")} />
     {error && <div role="alert" className={styles.alert}><p>{error}</p></div>}
     <div className={styles.row}>
       <button type="submit" className={styles.primary} disabled={pending || !name.trim()}>{pending ? "Starting…" : "Start the conversation"}</button>

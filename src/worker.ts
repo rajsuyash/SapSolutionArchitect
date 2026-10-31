@@ -3,7 +3,7 @@
 import { ensureDevelopmentBucket } from "./lib/infrastructure";
 import { getRuntime, HEALTH_QUEUE } from "./lib/runtime";
 import { ANALYSIS_QUEUE } from "./lib/jobs";
-import { CONSULTANT_QUEUE } from "./lib/consultant-jobs";
+import { workConsultantQueues } from "./lib/consultant-workers";
 import { createStageRunner } from "./lib/ai/runStage";
 import { logSapCatalogs } from "./lib/ai/sap-catalog-startup";
 
@@ -26,12 +26,9 @@ async function run() {
       if (!job || job.data.jobId !== job.id) return;
       await jobs.execute(job.id, AbortSignal.any([job.signal, shutdown.signal]), runStage);
     });
-    await services.queue.work<{ jobId: string }>(CONSULTANT_QUEUE, {
-      batchSize: 1, localConcurrency: config.AI_MAX_CONCURRENCY, pollingIntervalSeconds: 0.5,
-    }, async ([job]) => {
-      if (!job || job.data.jobId !== job.id) return;
-      await consultantJobs.execute(job.id, AbortSignal.any([job.signal, shutdown.signal]), runStage, { baseDir: catalogs.baseDir });
-    });
+    await workConsultantQueues(services.queue, consultantJobs, runStage, { chatConcurrency: config.AI_CHAT_CONCURRENCY,
+      batchConcurrency: config.AI_MAX_CONCURRENCY, shutdown: shutdown.signal, catalog: { baseDir: catalogs.baseDir },
+      extract: { pool: services.pool, concurrency: config.AI_CHAT_CONCURRENCY, maxWaitSeconds: config.AI_STAGE_BUDGET_SECONDS } });
     recoveryTimer = setInterval(() => {
       recovery ??= Promise.all([jobs.recover(), consultantJobs.recover()]).then(() => {})
         .catch(() => { console.error("Job recovery check failed"); })

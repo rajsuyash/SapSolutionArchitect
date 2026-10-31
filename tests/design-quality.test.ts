@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { rentalContext, rentalDraft } from "../fixtures/ai/to-be/rental-benchmark";
 import { evaluateDesign, materializeComparison } from "../src/lib/ai/design-quality";
+import { FIXABLE_BLOCKERS, blockerPart, explainBlocker } from "../src/lib/ai/to-be-fix";
 
 const fixture = () => ({ input: structuredClone(rentalContext), draft: structuredClone(rentalDraft) });
 const codes = (input: unknown, draft: unknown) => evaluateDesign(input, draft).errors.map(error => error.code);
@@ -56,6 +57,48 @@ describe("detailed design quality contract", () => {
   it("requires tests for critical requirements, not merely tests somewhere in the document", () => {
     const { input, draft } = fixture(); draft.steps[1]!.acceptanceTests[1]!.requirementIds = ["R-3"];
     expect(codes(input, draft)).toContain("CRITICAL_REQUIREMENT_UNTESTED");
+  });
+
+  describe("critical requirement traced to a variant step", () => {
+    // R-1 is critical and tested by TB-1; TB-2 becomes a variant that traces it too.
+    const traced = () => {
+      const f = fixture();
+      f.draft.steps[1]!.requirementIds = [...f.draft.steps[1]!.requirementIds, "R-1"];
+      f.draft.coverage[0]!.stepIds = ["TB-1", "TB-2"];
+      return f;
+    };
+    const evaluate = (f: ReturnType<typeof fixture>) => evaluateDesign(f.input, f.draft);
+    const partly = (f: ReturnType<typeof fixture>) => evaluate(f).blockers.filter(item => item.code === "CRITICAL_REQUIREMENT_PARTLY_TESTED");
+
+    it("warns, not fails, when at least one traced step tests it, naming the untested step", () => {
+      const f = traced();
+      expect(codes(f.input, f.draft)).not.toContain("CRITICAL_REQUIREMENT_UNTESTED");
+      expect(partly(f)).toEqual([{ code: "CRITICAL_REQUIREMENT_PARTLY_TESTED", path: "draft.steps.1", detail: "R-1" }]);
+    });
+
+    it("still fails when no traced step tests it", () => {
+      const f = traced();
+      f.draft.steps[0]!.acceptanceTests.forEach(test => { test.requirementIds = test.requirementIds.filter(id => id !== "R-1"); });
+      expect(codes(f.input, f.draft)).toContain("CRITICAL_REQUIREMENT_UNTESTED");
+      expect(partly(f)).toEqual([]);
+    });
+
+    it("raises neither when every traced step tests it", () => {
+      const f = traced();
+      f.draft.steps[1]!.acceptanceTests[0]!.requirementIds = [...f.draft.steps[1]!.acceptanceTests[0]!.requirementIds, "R-1"];
+      expect(codes(f.input, f.draft)).not.toContain("CRITICAL_REQUIREMENT_UNTESTED");
+      expect(partly(f)).toEqual([]);
+    });
+
+    it("is a fixable blocker routed to the untested step, whose note names the requirement", () => {
+      const f = traced();
+      const [hit] = partly(f);
+      expect(FIXABLE_BLOCKERS.has("CRITICAL_REQUIREMENT_PARTLY_TESTED")).toBe(true);
+      expect(blockerPart(hit!, f.draft)).toEqual({ type: "step", stepId: "TB-2" });
+      const note = explainBlocker(hit!, f.draft, { discovery: { requirements: [] } } as never);
+      expect(note).toContain("TB-2");
+      expect(note).toContain("R-1");
+    });
   });
 
   it("requires exception-path tests and explicit reasons when exceptions are not applicable", () => {
@@ -164,13 +207,24 @@ describe("actionable draft errors", () => {
     (draft as Record<string, unknown>)["x".repeat(500) + " <script>"] = 1;
     const errors = draftErrors(input, draft);
     expect(errors.length).toBeLessThanOrEqual(20);
-    expect(errors).toContainEqual({ code: "INVALID_DRAFT", path: "draft.steps.0.sequence", detail: "invalid_type: expected number" });
+    expect(errors).toContainEqual({ code: "INVALID_DRAFT", path: "draft.steps.0.sequence", detail: "invalid_type: expected number, received string" });
     expect(errors.every(item => item.path.length <= 200 && (item.detail?.length ?? 0) <= 200)).toBe(true);
     expect(JSON.stringify(errors)).not.toContain("<script>");
   });
 
+  it("names the kind of each strict-parse failure (type, bound, enum) without echoing any value", () => {
+    const { input, draft } = fixture();
+    const step = draft.steps[0] as Record<string, unknown>;
+    step.requirementIds = "SECRET-VALUE-1"; step.actions = []; step.implementation = { kind: "SECRET-KIND", detail: "d", referenceIds: [] };
+    const errors = draftErrors(input, draft);
+    expect(errors).toContainEqual({ code: "INVALID_DRAFT", path: "draft.steps.0.requirementIds", detail: "invalid_type: expected array, received string" });
+    expect(errors).toContainEqual({ code: "INVALID_DRAFT", path: "draft.steps.0.actions", detail: "too_small: array at least 1" });
+    expect(errors.some(item => item.path === "draft.steps.0.implementation.kind" && item.detail?.startsWith("invalid_value: one of"))).toBe(true);
+    expect(JSON.stringify(errors)).not.toContain("SECRET");
+  });
+
   it("keeps a bare INVALID_DRAFT error for a non-object draft", () => {
-    expect(draftErrors(rentalContext, "nope")).toEqual([{ code: "INVALID_DRAFT", path: "draft", detail: "invalid_type: expected object" }]);
+    expect(draftErrors(rentalContext, "nope")).toEqual([{ code: "INVALID_DRAFT", path: "draft", detail: "invalid_type: expected object, received string" }]);
   });
 });
 
@@ -194,7 +248,7 @@ describe("trusted SAP reference applicability", () => {
   }
 
   it("accepts a step citing a verified, release-matching reference with consistent fit", () => {
-    for (const [kind, ids] of [["STANDARD", ["REF-STD"]], ["STANDARD", ["REF-STD", "REF-CFG"]], ["CONFIGURATION", ["REF-CFG"]],
+    for (const [kind, ids] of [["STANDARD", ["REF-STD"]], ["CONFIGURATION", ["REF-STD"]], ["CONFIGURATION", ["REF-CFG"]],
       ["CONFIGURATION", ["REF-STD", "REF-CFG"]], ["EXTENSION", ["REF-STD", "REF-EXT"]], ["INTEGRATION", ["REF-INT"]]] as const) {
       const result = setup(kind, [...ids]);
       expect(result.stepErrors, `${kind} ${ids}`).toEqual([]);
@@ -208,7 +262,10 @@ describe("trusted SAP reference applicability", () => {
     expect(setup("STANDARD", ["REF-EXT"]).stepErrors).toContain("SAP_FIT_MISMATCH");
     expect(setup("STANDARD", ["REF-LIC"]).stepErrors).toContain("SAP_FIT_MISMATCH");
     expect(setup("STANDARD", ["REF-STD", "REF-EXT"]).stepErrors).toContain("SAP_FIT_MISMATCH");
-    expect(setup("CONFIGURATION", ["REF-STD"]).stepErrors).toContain("SAP_FIT_MISMATCH");
+    expect(setup("STANDARD", ["REF-STD", "REF-CFG"]).stepErrors).toContain("SAP_FIT_MISMATCH");
+    expect(setup("STANDARD", ["REF-CFG"]).stepErrors).toContain("SAP_FIT_MISMATCH");
+    expect(setup("CONFIGURATION", ["REF-STD", "REF-INT"]).stepErrors).toContain("SAP_FIT_MISMATCH");
+    expect(setup("CONFIGURATION", ["REF-CFG", "REF-LIC"]).stepErrors).toContain("SAP_FIT_MISMATCH");
     expect(setup("EXTENSION", ["REF-STD"]).stepErrors).toContain("SAP_FIT_MISMATCH");
   });
   it("rejects a release or product mismatch and an unverified entry", () => {
@@ -316,5 +373,62 @@ describe("open decisions and conditional coverage", () => {
     const { input, draft } = withRegister();
     draft.coverage[0] = { ...draft.coverage[0]!, decisionIds: ["DR-FAKE"] };
     expect(codes(input, draft)).toContain("UNKNOWN_DECISION");
+  });
+});
+
+describe("enabling steps (no requirement of their own)", () => {
+  type Step = ReturnType<typeof fixture>["draft"]["steps"][number] & { enablesStepIds?: string[] };
+  /** Project/master-data set-up inserted first; its tests cite nothing because it implements no client requirement. */
+  function withEnabling(mutate: (step: Step) => void = () => undefined) {
+    const { input, draft } = fixture();
+    const step: Step = structuredClone(draft.steps[0]!);
+    step.id = "TB-0"; step.title = "Set up project structure and master data";
+    step.asIsStepIds = []; step.requirementIds = []; step.enablesStepIds = ["TB-1"];
+    step.businessRules = step.businessRules.map(rule => ({ ...rule, id: `TB-0-${rule.id}` }));
+    step.acceptanceTests = step.acceptanceTests.map(test => ({ ...test, id: `TB-0-${test.id}`, requirementIds: [] }));
+    mutate(step);
+    const steps = [step, ...draft.steps].map((item, i) => ({ ...item, sequence: i + 1 }));
+    return { input, draft: { ...draft, steps } };
+  }
+
+  it("accepts a step with no requirementIds when it names the steps it enables", () => {
+    const { input, draft } = withEnabling();
+    expect(evaluateDesign(input, draft).errors).toEqual([]);
+  });
+
+  it("rejects an empty-requirement step that enables nothing (a v1 rule that still holds)", () => {
+    const { input, draft } = withEnabling(step => { step.enablesStepIds = []; });
+    expect(codes(input, draft)).toContain("ENABLING_STEP_UNLINKED");
+    const omitted = withEnabling(step => { delete step.enablesStepIds; });
+    expect(codes(omitted.input, omitted.draft)).toContain("ENABLING_STEP_UNLINKED");
+  });
+
+  it("rejects unknown, self, duplicate and non-requirement-bearing enabled steps", () => {
+    for (const ids of [["TB-FAKE"], ["TB-0"], ["TB-1", "TB-1"]]) {
+      const { input, draft } = withEnabling(step => { step.enablesStepIds = ids; });
+      expect(codes(input, draft)).toEqual(expect.arrayContaining([expect.stringMatching(/^(UNKNOWN_STEP|ENABLING_TARGET_INVALID|DUPLICATE_TRACE)$/)]));
+    }
+  });
+
+  it("does not let an enabling step satisfy requirement coverage or critical testing", () => {
+    const { input, draft } = withEnabling();
+    draft.coverage = draft.coverage.map(item => item.requirementId === "R-1" ? { ...item, stepIds: ["TB-0", "TB-1"] } : item);
+    expect(codes(input, draft)).toContain("COVERAGE_TRACE_MISMATCH");
+    const dropped = withEnabling();
+    dropped.draft.steps = dropped.draft.steps.map(step => step.id === "TB-1" ? { ...step, requirementIds: [], enablesStepIds: [] } : step);
+    expect(codes(dropped.input, dropped.draft)).toEqual(expect.arrayContaining(["ENABLING_STEP_UNLINKED", "COVERAGE_TRACE_MISMATCH"]));
+  });
+
+  it("an enabling step's tests may cite only its own (empty) requirements; a requirement-bearing step still needs cited tests", () => {
+    const cites = withEnabling(step => { step.acceptanceTests[0]!.requirementIds = ["R-1"]; });
+    expect(codes(cites.input, cites.draft)).toContain("TEST_TRACE_MISMATCH");
+    const { input, draft } = fixture();
+    draft.steps[0]!.acceptanceTests[0]!.requirementIds = [];
+    expect(codes(input, draft)).toContain("TEST_TRACE_MISSING");
+  });
+
+  it("still rejects an empty requirementIds step when no step declares what it enables in a version 1 style draft", () => {
+    const { input, draft } = fixture(); draft.steps[0]!.requirementIds = [];
+    expect(codes(input, draft)).toContain("ENABLING_STEP_UNLINKED");
   });
 });

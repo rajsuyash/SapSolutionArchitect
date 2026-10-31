@@ -1,0 +1,54 @@
+[
+ {
+  "id": "rq_5c636e1d-ebc3-4cfc-9b1a-fa5c0513a310",
+  "statement": "Aurora PLM stays as the engineering design system and must be integrated with SAP for the bill of materials and changes, not replaced."
+ },
+ {
+  "id": "rq_cf36b424-85ad-4bfb-8fd5-56434698cde5",
+  "statement": "Engineering changes after release are emailed to planning and the old parts list stays in use, so the shop builds to outdated revisions."
+ },
+ {
+  "id": "rq_5a66eaae-c5cc-4866-b9fc-f15f29a4602d",
+  "statement": "The manufacturing bill of materials and routings are built by hand in Excel and on printed sheets, and parts are missing from the export."
+ },
+ {
+  "id": "rq_f25ca0c8-c242-4e8d-a133-9664b90b72b3",
+  "statement": "Material requirements are netted by hand and stock reserved for one project is used for another, so projects stop for missing parts."
+ },
+ {
+  "id": "rq_5af63f1d-af5b-4122-868b-ebb5b6f74a13",
+  "statement": "Material shortages that stop production must be cut by half through automatic requirements planning per project."
+ },
+ {
+  "id": "rq_91cccae8-e481-45cc-8809-daf708e45d46",
+  "statement": "Supplier delivery dates sit in the buyer's own spreadsheet and the production schedule is not updated when castings or drives are late."
+ },
+ {
+  "id": "rq_6490847d-97f0-4fc0-82e1-bc009324bafd",
+  "statement": "Purchases above £20,000 must be approved by the Operations Director in the system."
+ },
+ {
+  "id": "rq_fc162d02-72d1-4a7c-a907-b05fd81d6339",
+  "statement": "Capacity per work centre is checked by experience, and urgent jobs are slotted in without updating the schedule."
+ },
+ {
+  "id": "rq_4f32a572-05e8-46f6-b33c-2e28347058a5",
+  "statement": "Inspection results and non-conformances are on paper and certificates are written in Word, with no link to the project cost."
+ },
+ {
+  "id": "rq_1c5d8d64-2728-4152-8a64-a0e840180e76",
+  "statement": "Project costs are allocated by hand and margin is known only after delivery, with work in progress estimated quarterly."
+ },
+ {
+  "id": "rq_ef5967d0-20a4-4e5b-92b5-d7e40a3fc64c",
+  "statement": "Project cost variance must stay under 5% against budget with margin visible during the project."
+ },
+ {
+  "id": "rq_a89a4321-f6c0-43c6-b5ad-9530e0bd1688",
+  "statement": "Staged invoices are raised by hand from the contract, so milestones are billed late and scope extras are missed."
+ },
+ {
+  "id": "rq_97212776-dfc8-4894-820a-4529cde8439b",
+  "statement": "On-time delivery must reach at least 92%, up from 71%."
+ }
+]

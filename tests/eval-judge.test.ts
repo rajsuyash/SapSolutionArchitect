@@ -1,15 +1,24 @@
-import { readFileSync } from "node:fs";
-import { describe, expect, it } from "vitest";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { describe, expect, it, vi } from "vitest";
+import Anthropic from "@anthropic-ai/sdk";
+import { classifyProviderError, createProviderClient } from "../src/lib/ai/provider";
+import { messageEvents, sseResponse } from "./support/sse";
 import pharma from "../fixtures/eval/pharma-p2p.json";
 import services from "../fixtures/eval/services-r2r.json";
 import engineering from "../fixtures/eval/engineering-mto.json";
 import pump from "../fixtures/eval/pump-o2c.json";
 import strongControl from "../fixtures/eval/controls/pump-o2c.strong.json";
 import { DetailedDesignSchema } from "../src/lib/ai/design-quality";
+import { rentalDraftV3 } from "../fixtures/ai/to-be/rental-registers";
+import { deriveSections } from "../src/lib/to-be-derived";
+import { fixture as rentalInput } from "./support/to-be-input";
 import { ScoringCaseSchema } from "../src/lib/eval-score";
 import { STEP_KEYS, WORKSPACE_FIELDS } from "../src/lib/workspace-fields";
 import {
-  aggregateRuns, buildCaseBrief, calibrate, CHECKLIST_TEXT, costUsd, degradeDesign, gradeRun, isGrounded, JUDGE_TOOL, JudgeError, judgeOnce,
+  aggregateRuns, assessIndependence, assessJudgements, DEFAULT_JUDGE_CALL_TIMEOUT_MS, DEFAULT_MIN_RUNS, defaultConcurrency, defaultDeadlineSeconds, judgeCreditHint, runLimited, buildCaseBrief, buildSystemPrompt, buildUserPrompt, calibrate, citableIds, CHECKLIST_TEXT, costUsd, defaultJudgeModel, degradeDesign, gradeRun, independenceLine, modelFamily, isGrounded, JUDGE_TOOL, JudgeError, judgeOnce,
   loadToBe, median, parseRubric, RUBRIC, scoreGraded, validateJudgeOutput, type Criterion, type Graded, type JudgeClient, type JudgeMessage, type ToBe,
 } from "../src/lib/eval-judge";
 
@@ -149,6 +158,7 @@ describe("loadToBe", () => {
   });
   it("rejects input with no design", () => {
     expect(() => loadToBe({ transcript: { toBe: null } })).toThrow(/No To-Be design/);
+    expect(() => loadToBe({ transcript: { toBe: { errorCode: "AI_INVALID_OUTPUT", design: null, structurallyValid: false } } })).toThrow("the run's To-Be was not valid (AI_INVALID_OUTPUT)");
     expect(() => loadToBe({ steps: [] })).toThrow(/No To-Be design/);
   });
 });
@@ -339,12 +349,45 @@ describe("judgeOnce", () => {
   });
 
   it("throws JudgeError carrying the spent usage when output stays malformed or no tool is called", async () => {
-    const bad = mockClient([msg([call({ verdicts: "no" })]), msg([call({ nope: 1 })])]);
-    await expect(judgeOnce(bad.client, tiny, brief, tobe)).rejects.toMatchObject({ name: "JudgeError", code: "JUDGE_INVALID_OUTPUT", usage: { calls: 2, inputTokens: 200 } });
+    const bad = mockClient([msg([call({ verdicts: "no" })]), msg([call({ nope: 1 })]), msg([call({})])]);
+    await expect(judgeOnce(bad.client, tiny, brief, tobe)).rejects.toMatchObject({ name: "JudgeError", code: "JUDGE_INVALID_OUTPUT", usage: { calls: 3, inputTokens: 300 } });
     const none = mockClient([msg([{ type: "text" }]), msg([{ type: "text" }])]);
     const error = await judgeOnce(none.client, tiny, brief, tobe).catch((e: unknown) => e);
     expect(error).toBeInstanceOf(JudgeError);
     expect((error as JudgeError).code).toBe("JUDGE_NO_TOOL_CALL");
+  });
+
+  describe("schema-invalid judgement", () => {
+    const missing = () => msg([call({})], 100, 10);
+    it("gets one fresh retry after the repair pass fails: same budget, no validationErrors, all three calls counted", async () => {
+      const { client, requests } = mockClient([missing(), missing(), msg([call(goodOutput)], 120, 20)]);
+      const result = await judgeOnce(client, tiny, brief, tobe);
+      expect(result.attempts).toBe(3);
+      expect(result.usage).toEqual({ inputTokens: 320, outputTokens: 40, calls: 3 });
+      const sent = requests.map(r => ({ tokens: r[0].max_tokens, errors: (JSON.parse((r[0].messages[0] as { content: string }).content) as { validationErrors: unknown[] }).validationErrors }));
+      expect(sent.map(x => x.tokens)).toEqual([20000, 20000, 20000]);
+      expect(sent.map(x => x.errors.length > 0)).toEqual([false, true, false]);
+    });
+    it("fails with JUDGE_INVALID_OUTPUT naming the missing path (no model text) after the fresh retry is also invalid", async () => {
+      const { client, requests } = mockClient([missing(), missing(), missing(), msg([call(goodOutput)])]);
+      const error = await judgeOnce(client, tiny, brief, tobe).catch((e: unknown) => e) as JudgeError;
+      expect(error).toMatchObject({ code: "JUDGE_INVALID_OUTPUT", usage: { calls: 3 } });
+      expect(error.message).toContain("invalid_type verdicts Invalid input: expected array, received undefined");
+      expect(requests).toHaveLength(3);
+    });
+    it("skips the fresh retry when canRetry says the cost cap is spent", async () => {
+      const seen: number[] = [];
+      const { client, requests } = mockClient([missing(), missing(), msg([call(goodOutput)])]);
+      await expect(judgeOnce(client, tiny, brief, tobe, { canRetry: u => { seen.push(u.calls); return false; } })).rejects.toMatchObject({ code: "JUDGE_INVALID_OUTPUT", usage: { calls: 2 } });
+      expect(seen).toEqual([2]);
+      expect(requests).toHaveLength(2);
+    });
+    it("a semantically invalid reply (missing criterion) is not retried fresh", async () => {
+      const partial = () => msg([call({ verdicts: [v("CL01", "PASS")] })]);
+      const { client, requests } = mockClient([partial(), partial(), msg([call(goodOutput)])]);
+      await expect(judgeOnce(client, tiny, brief, tobe)).rejects.toMatchObject({ code: "JUDGE_INVALID_OUTPUT", usage: { calls: 2 } });
+      expect(requests).toHaveLength(2);
+    });
   });
 
   it("scores an unjustified PASS as FAIL end to end", async () => {
@@ -352,5 +395,243 @@ describe("judgeOnce", () => {
     const result = await judgeOnce(client, tiny, brief, tobe);
     expect(result.graded[0]).toMatchObject({ verdict: "FAIL", flags: ["unjustified"] });
     expect(result.score.total).toBe(33.33);
+  });
+});
+
+describe("solution-design registers reach the judge", () => {
+  const v2 = loadToBe({ design: rentalDraftV3 });
+  it("sends the registers inside the design and the company context inside the case brief", () => {
+    const brief = buildCaseBrief(pump);
+    expect(brief.companyContext.map(item => item.fieldId)).toEqual(expect.arrayContaining(["operating_scale", "retained_systems", "kpi_baselines", "kpi_targets"]));
+    expect(brief.companyContext.find(item => item.fieldId === "kpi_targets")!.value).toBe((pump.answerBank.catalog as Record<string, string>).kpi_targets);
+    const sent = JSON.parse(buildUserPrompt(brief, v2));
+    expect(Object.keys(sent.toBeDesign)).toEqual(expect.arrayContaining(["keyDesignDecisions", "fitGap", "orgStructure", "masterDataPrerequisites", "interfaces", "kpis", "dataMigration", "cutover"]));
+    expect(sent.case.companyContext).toHaveLength(brief.companyContext.length);
+  });
+  it("puts the content of every register and of coverage and open questions in the judge user message, not just the keys", () => {
+    // The rental fixture leaves kpis and interfaces empty: add one row each so every register carries content.
+    const trace = { requirementIds: [], contextFieldIds: [], stepIds: ["TB-1"] }, basis = { referenceIds: [], needsValidation: false, validationReason: null };
+    const full = loadToBe({ design: { ...rentalDraftV3,
+      kpis: [{ id: "KPI-X", name: "OTIF", baseline: "80%", target: "92% by Q4", measuredFrom: "Delivery docs", ...basis, ...trace }],
+      interfaces: [{ id: "IF-X", counterpartSystem: "Salesforce", direction: "INBOUND", triggerFrequency: "On quote", payload: "Quote", errorOwner: "Sales ops", outOfScopeReason: null, ...basis, ...trace }] } });
+    const text = buildUserPrompt(buildCaseBrief(pump), full);
+    const d = full.design as unknown as Record<string, { id?: string; [k: string]: unknown }[]>;
+    for (const key of ["keyDesignDecisions", "orgStructure", "masterDataPrerequisites", "interfaces", "kpis", "dataMigration", "cutover"]) {
+      expect(d[key]!.length, key).toBeGreaterThan(0);
+      for (const row of d[key]!) expect(text, `${key}.${row.id}`).toContain(JSON.stringify(row));
+    }
+    for (const row of d.fitGap!) expect(text).toContain(JSON.stringify(row));
+    for (const row of d.coverage!) expect(text).toContain(JSON.stringify(row));
+    for (const row of d.openQuestions!) expect(text).toContain(JSON.stringify(row));
+  });
+  it("loadToBe keeps the whole design of a saved eval run file", () => {
+    const run = { transcript: { toBe: { design: rentalDraftV3, requirements: [] } } };
+    expect(loadToBe(run).design).toEqual(rentalDraftV3);
+  });
+  it("lets a verdict cite a register row, and tells the judge how to read the registers without touching the rubric", () => {
+    const ids = citableIds(v2);
+    for (const id of ["KDD-1", "ORG-1", "MD-1", "MIG-1", "CUT-1", "fitGap", "interfaces", "kpis"]) expect(isGrounded(`see ${id}`, ids)).toBe(true);
+    expect(buildSystemPrompt(RUBRIC)).toContain("schemaVersion 2");
+    expect(buildSystemPrompt(RUBRIC)).toContain("fitGap");
+    expect(RUBRIC).toHaveLength(43);
+  });
+  it("the weak control drops the registers of a version 2 plan; a version 1 plan is untouched", () => {
+    const weak = degradeDesign(v2.design);
+    for (const key of ["keyDesignDecisions", "fitGap", "orgStructure", "masterDataPrerequisites", "interfaces", "kpis", "dataMigration", "cutover"]) expect(weak).not.toHaveProperty(key);
+    expect(v2.design).toHaveProperty("fitGap");
+    expect(() => DetailedDesignSchema.parse(weak)).not.toThrow();
+  });
+});
+
+describe("server-built sections reach the judge", () => {
+  const derived = deriveSections({ design: rentalDraftV3, asIsSteps: rentalInput().discovery.asIsSteps, meta: { sourceRevision: 7, variantCode: "RENTAL", variantName: "Equipment hire",
+    snapshotId: "33333333-3333-4333-8333-333333333333", generatedAt: "2026-10-21T09:30:00.000Z", targetProduct: "S4HANA_CLOUD_PRIVATE", targetRelease: "2023",
+    sources: [{ id: "SRC-1", title: "Workshop 1", revision: "v1", digest: "cd".repeat(32) }] } });
+  const withDerived = loadToBe({ transcript: { toBe: { design: rentalDraftV3, requirements: [], derived } } });
+  it("loadToBe keeps the derived sections of a saved run, and a run without them still loads", () => {
+    expect(withDerived.derived).toEqual(JSON.parse(JSON.stringify(derived)));
+    expect(loadToBe({ design: rentalDraftV3 })).not.toHaveProperty("derived");
+  });
+  it("puts document control, the As-Is narratives and the RICEFW list in the judge user message, whole", () => {
+    const sent = JSON.parse(buildUserPrompt(buildCaseBrief(pump), withDerived)) as { derivedSections: typeof derived; toBeDesign: unknown };
+    expect(sent.derivedSections.documentControl.sourceRevision.snapshotId).toBe("33333333-3333-4333-8333-333333333333");
+    expect(sent.derivedSections.documentControl.signOff.every(item => item.status === "HUMAN_REVIEW_REQUIRED")).toBe(true);
+    expect(sent.derivedSections.asIsNarratives[0]!.asIs[0]!.description).toBe(rentalInput().discovery.asIsSteps[0]!.description);
+    expect(sent.derivedSections.ricefwList.map(item => item.id)).toEqual(["RICEFW-1", "RICEFW-2", "RICEFW-3", "RICEFW-4"]);
+    expect(buildUserPrompt(buildCaseBrief(pump), loadToBe({ design: rentalDraftV3 }))).not.toContain("derivedSections");
+  });
+  it("lets a verdict cite a derived item or a version 3 register row, and the system prompt explains both", () => {
+    const ids = citableIds(withDerived);
+    for (const id of ["RICEFW-2", "AS-1", "documentControl", "ricefwList", "OBJ-1", "ROLE-3", "DSM-1", "CFG-1", "SOD-1", "REP-1", "E2E-1", "roles", "reports"]) expect(isGrounded(`see ${id}`, ids), id).toBe(true);
+    expect(isGrounded("see RICEFW-2", citableIds(loadToBe({ design: rentalDraftV3 })))).toBe(false);
+    const prompt = buildSystemPrompt(RUBRIC);
+    for (const phrase of ["derivedSections", "schemaVersion 3", "documentStatusModels", "sodAssessments", "never approved"]) expect(prompt).toContain(phrase);
+  });
+  it("the weak control drops the version 3 registers too", () => {
+    const weak = degradeDesign(withDerived.design);
+    for (const key of ["objectives", "scopeStatements", "documentStatusModels", "configurationCatalogue", "roles", "sodAssessments", "controlMappings", "reports", "endToEndTests", "periodEndActivities"]) expect(weak, key).not.toHaveProperty(key);
+  });
+});
+
+describe("judge independence", () => {
+  it("derives the model family from ids of every provider spelling", () => {
+    const cases: [string, string][] = [["deepseek-ai/DeepSeek-V4.1-Flash", "deepseek"], ["deepseek/deepseek-v4.1-flash-1017", "deepseek"], ["Qwen/Qwen3.8-Max", "qwen"],
+      ["XiaomiMiMo/MiMo-V2.6-Flash", "xiaomi"], ["moonshotai/Kimi-K3", "moonshot"], ["zai-org/GLM-5", "zai"], ["z-ai/glm-5", "zai"], ["openai/gpt-5.2", "openai"],
+      ["claude-sonnet-5-5", "anthropic"], ["anthropic/claude-opus-5", "anthropic"], ["some-lab/unlisted-model", "unknown"], ["", "unknown"]];
+    for (const [id, family] of cases) expect(modelFamily(id), id).toBe(family);
+    expect(modelFamily(null)).toBe("unknown");
+  });
+  it("picks an independent default judge: Qwen for DeepSeek and others, DeepSeek for Qwen and MiMo", () => {
+    expect(defaultJudgeModel("deepseek-ai/DeepSeek-V4.1-Flash")).toBe("Qwen/Qwen3.8-Max");
+    expect(defaultJudgeModel("claude-sonnet-5-5")).toBe("Qwen/Qwen3.8-Max");
+    expect(defaultJudgeModel(undefined)).toBe("Qwen/Qwen3.8-Max");
+    expect(defaultJudgeModel("Qwen/Qwen3.8-Max")).toBe("deepseek-ai/DeepSeek-V4-Pro-0813");
+    expect(defaultJudgeModel("XiaomiMiMo/MiMo-V2.6-Flash")).toBe("deepseek-ai/DeepSeek-V4-Pro-0813");
+    for (const generator of ["deepseek-ai/DeepSeek-V4.1-Flash", "Qwen/Qwen3.8-Max", "XiaomiMiMo/MiMo-V2.6-Flash", "moonshotai/Kimi-K3", "zai-org/GLM-5", "openai/gpt-5.2", "claude-sonnet-5-5"]) {
+      expect(assessIndependence(defaultJudgeModel(generator), generator).status, generator).toBe("INDEPENDENT");
+    }
+  });
+  it("marks a same-family judge NOT_INDEPENDENT and an unknown family UNVERIFIED, with both families in the header line", () => {
+    const same = assessIndependence("deepseek-ai/DeepSeek-V4-Pro-0813", "deepseek-ai/DeepSeek-V4.1-Flash");
+    expect(same).toMatchObject({ status: "NOT_INDEPENDENT", judgeFamily: "deepseek", generatorFamily: "deepseek" });
+    expect(independenceLine("deepseek-ai/DeepSeek-V4-Pro-0813", same)).toMatch(/family deepseek\).*family deepseek\): \*\*NOT INDEPENDENT/);
+    expect(assessIndependence("Qwen/Qwen3.8-Max", null).status).toBe("UNVERIFIED");
+    expect(assessIndependence("Qwen/Qwen3.8-Max", "some-lab/unlisted-model").status).toBe("UNVERIFIED");
+    const ok = assessIndependence("Qwen/Qwen3.8-Max", "deepseek-ai/DeepSeek-V4.1-Flash");
+    expect(independenceLine("Qwen/Qwen3.8-Max", ok)).toContain("family qwen");
+    expect(independenceLine("Qwen/Qwen3.8-Max", ok)).toContain("family deepseek");
+    expect(independenceLine("Qwen/Qwen3.8-Max", ok)).not.toContain("NOT INDEPENDENT");
+  });
+  it("loadToBe reads the generator model from a run transcript", () => {
+    expect(loadToBe({ transcript: { provider: "deepinfra", model: "deepseek-ai/DeepSeek-V4.1-Flash", toBe: { design: rentalDraftV3, requirements: [] } } }).generator)
+      .toEqual({ provider: "deepinfra", model: "deepseek-ai/DeepSeek-V4.1-Flash" });
+    expect(loadToBe({ design: rentalDraftV3 })).not.toHaveProperty("generator");
+  });
+  describe("the script", () => {
+    const dir = mkdtempSync(join(tmpdir(), "judge-independence-"));
+    const run = join(dir, "run.json");
+    writeFileSync(run, JSON.stringify({ transcript: { provider: "deepinfra", model: "deepseek-ai/DeepSeek-V4.1-Flash", toBe: { design: rentalDraftV3, requirements: [] } } }));
+    const script = (...args: string[]) => spawnSync(process.execPath, ["--import", "tsx", "scripts/eval-judge.ts", ...args], { encoding: "utf8", env: { ...process.env, DEEPINFRA_API_KEY: "", OPENROUTER_API_KEY: "" } });
+    it("refuses a judge of the generator's family before it needs a key", () => {
+      const refused = script("--run", run, "--model", "deepseek-ai/DeepSeek-V4-Pro-0813");
+      expect(refused.status).toBe(2);
+      expect(refused.stderr).toContain("refusing a same-family judge");
+    });
+    it("with --allow-same-family gets past the guard (and then stops for want of a key) and warns", () => {
+      const allowed = script("--run", run, "--model", "deepseek-ai/DeepSeek-V4-Pro-0813", "--allow-same-family");
+      expect(allowed.stderr).toContain("DEEPINFRA_API_KEY is not set");
+      expect(allowed.stderr).toContain("NOT INDEPENDENT");
+    });
+    it("picks an independent judge by itself", () => {
+      const auto = script("--run", run);
+      expect(auto.stderr).not.toContain("refusing");
+      expect(auto.stderr).toContain("DEEPINFRA_API_KEY is not set");
+      rmSync(dir, { recursive: true, force: true });
+    });
+  });
+});
+
+describe("judge transport retry and run control", () => {
+  const streamError = (error: Error): JudgeClient => ({ messages: { stream: () => ({ finalMessage: () => Promise.reject(error) }) } });
+  it("retries a connection cut mid-stream ('terminated') with 2/6/18 s backoff, then succeeds", async () => {
+    vi.useFakeTimers(); vi.spyOn(Math, "random").mockReturnValue(0.5);
+    try {
+      const times: number[] = [];
+      const client: JudgeClient = { messages: { stream: () => { times.push(Date.now());
+        return { finalMessage: () => times.length <= 3 ? Promise.reject(new TypeError("terminated")) : Promise.resolve(msg([call(goodOutput)])) }; } } };
+      const retries: number[] = [];
+      const pending = judgeOnce(client, tiny, brief, tobe, { onRetry: retry => retries.push(retry) });
+      await vi.advanceTimersByTimeAsync(2000 + 6000 + 18000);
+      expect((await pending).score.total).toBe(83.33);
+      expect(times.slice(1).map((t, i) => t - times[i]!)).toEqual([2000, 6000, 18000]);
+      expect(retries).toEqual([1, 2, 3]);
+    } finally { vi.useRealTimers(); vi.restoreAllMocks(); }
+  });
+  it("gives up after three retries and does not retry a permanent error", async () => {
+    vi.useFakeTimers(); vi.spyOn(Math, "random").mockReturnValue(0.5);
+    try {
+      let calls = 0;
+      const client: JudgeClient = { messages: { stream: () => { calls++; return { finalMessage: () => Promise.reject(new TypeError("terminated")) }; } } };
+      const pending = judgeOnce(client, tiny, brief, tobe).catch((e: unknown) => e);
+      await vi.advanceTimersByTimeAsync(26000);
+      expect(await pending).toMatchObject({ message: "terminated" });
+      expect(calls).toBe(4);
+      await expect(judgeOnce(streamError(new Error("bad schema")), tiny, brief, tobe)).rejects.toThrow("bad schema");
+    } finally { vi.useRealTimers(); vi.restoreAllMocks(); }
+  });
+  it("starts no retry past the judge deadline", async () => {
+    let calls = 0;
+    const client: JudgeClient = { messages: { stream: () => { calls++; return { finalMessage: () => Promise.reject(new TypeError("terminated")) }; } } };
+    await expect(judgeOnce(client, tiny, brief, tobe, { deadlineAt: Date.now() + 1000 })).rejects.toThrow("terminated");
+    expect(calls).toBe(1);
+  });
+  it("a real SDK client over a stub fetch whose body is cut mid-stream is retried and recovers", async () => {
+    vi.useFakeTimers(); vi.spyOn(Math, "random").mockReturnValue(0.5);
+    try {
+      let calls = 0;
+      const cut = () => new Response(new ReadableStream({ start(c) { c.enqueue(new TextEncoder().encode("event: message_start\n")); c.error(new TypeError("terminated")); } }), { status: 200, headers: { "content-type": "text/event-stream" } });
+      const good = () => sseResponse(messageEvents({ content: [{ type: "tool_use", id: "t1", name: JUDGE_TOOL, input: goodOutput }], stop_reason: "tool_use", usage: { input_tokens: 10, output_tokens: 5 } }));
+      const fetchStub = vi.fn<typeof globalThis.fetch>(async () => (++calls === 1 ? cut() : good()));
+      const client = createProviderClient("openrouter", "k", 60_000, fetchStub) as unknown as JudgeClient;
+      const pending = judgeOnce(client, tiny, brief, tobe);
+      await vi.advanceTimersByTimeAsync(2000);
+      expect((await pending).attempts).toBe(1);
+      expect(calls).toBe(2);
+    } finally { vi.useRealTimers(); vi.restoreAllMocks(); }
+  });
+  it("the judge call timeout defaults to at least 15 minutes", () => { expect(DEFAULT_JUDGE_CALL_TIMEOUT_MS).toBeGreaterThanOrEqual(900_000); });
+  it("runLimited never exceeds the concurrency and settles every task, failures included", async () => {
+    let active = 0, peak = 0;
+    const results = await runLimited(5, 2, async i => { active++; peak = Math.max(peak, active); await new Promise(r => setTimeout(r, 5)); active--; if (i === 3) throw new Error("x"); return i; });
+    expect(peak).toBe(2);
+    expect(results.map(r => r.status)).toEqual(["fulfilled", "fulfilled", "fulfilled", "rejected", "fulfilled"]);
+  });
+  it("defaults to one judgement at a time on OpenRouter and three on DeepInfra", () => {
+    expect([defaultConcurrency("openrouter"), defaultConcurrency("deepinfra")]).toEqual([1, 3]);
+  });
+  it("1 of 3 judgements is NOT A MEASUREMENT at --min-runs 2, 2 of 3 is", () => {
+    const st = (...ok: boolean[]) => ok.map((o, run) => ({ run, ok: o, detail: o ? "total 90" : "terminated" }));
+    const one = assessJudgements(st(true, false, false), DEFAULT_MIN_RUNS);
+    expect(one.valid).toBe(false);
+    expect(one.banner).toMatch(/NOT A MEASUREMENT: only 1 of 3/);
+    expect(one.lines).toEqual(["  run 1: ok total 90", "  run 2: FAILED terminated", "  run 3: FAILED terminated"]);
+    expect(assessJudgements(st(true, true, false), DEFAULT_MIN_RUNS)).toMatchObject({ valid: true, banner: null });
+    expect(assessJudgements(st(true), 1).valid).toBe(true);
+  });
+});
+
+describe("judge truncation, deadline and credit", () => {
+  const cut = (outputTokens = 20000) => ({ ...msg([{ type: "text" }], 100, outputTokens), stop_reason: "max_tokens" });
+  it("a judgement that stops at max_tokens without a tool call is retried once with a larger output budget", async () => {
+    const { client, requests } = mockClient([cut(), msg([call(goodOutput)])]);
+    const result = await judgeOnce(client, tiny, brief, tobe);
+    expect(result.attempts).toBe(2);
+    expect(requests.map(r => r[0].max_tokens)).toEqual([20000, 40000]);
+  });
+  it("classifies two truncations as JUDGE_OUTPUT_TRUNCATED after exactly two calls, never a third", async () => {
+    const { client, requests } = mockClient([cut(), cut(40000), msg([call(goodOutput)])]);
+    const error = await judgeOnce(client, tiny, brief, tobe, { maxAttempts: 3 }).catch((e: unknown) => e);
+    expect(error).toMatchObject({ name: "JudgeError", code: "JUDGE_OUTPUT_TRUNCATED", usage: { calls: 2, outputTokens: 60000 } });
+    expect(requests.map(r => r[0].max_tokens)).toEqual([20000, 40000]);
+  });
+  it("a non-truncated reply without a tool call stays JUDGE_NO_TOOL_CALL and keeps the budget", async () => {
+    const { client, requests } = mockClient([msg([{ type: "text" }]), msg([{ type: "text" }])]);
+    await expect(judgeOnce(client, tiny, brief, tobe)).rejects.toMatchObject({ code: "JUDGE_NO_TOOL_CALL" });
+    expect(requests.map(r => r[0].max_tokens)).toEqual([20000, 20000]);
+  });
+  it("the default deadline covers every wave of judgements: 3 runs one at a time get 3 x 30 min, 3 at once 30 min", () => {
+    expect([defaultDeadlineSeconds(3, 1), defaultDeadlineSeconds(3, 3), defaultDeadlineSeconds(1, 1), defaultDeadlineSeconds(3, 2)]).toEqual([5400, 1800, 1800, 3600]);
+  });
+  it("OpenRouter's 402 'maximum cost exceeds your available credits' is a credit failure, is not retried, and the hint names max tokens and credit", async () => {
+    const body = { error: { code: 402, message: "This request's maximum cost exceeds your available credits", metadata: { reason: "weight_exceeds_budget" } } };
+    const error = Anthropic.APIError.generate(402, body, "402 This request's maximum cost exceeds your available credits", new Headers());
+    expect(classifyProviderError(error).category).toBe("credit");
+    let calls = 0;
+    const client: JudgeClient = { messages: { stream: () => { calls++; return { finalMessage: () => Promise.reject(error) }; } } };
+    await expect(judgeOnce(client, tiny, brief, tobe)).rejects.toBe(error);
+    expect(calls).toBe(1);
+    expect(judgeCreditHint("openrouter")).toMatch(/--max-tokens/);
+    expect(judgeCreditHint("openrouter")).toMatch(/credit/i);
+    expect(judgeCreditHint("deepinfra")).toContain("DeepInfra");
   });
 });

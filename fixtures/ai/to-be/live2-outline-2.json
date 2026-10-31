@@ -1,0 +1,538 @@
+{
+ "attempt": 2,
+ "payload": {
+  "schemaVersion": 1,
+  "processName": "Engineer-to-order to delivery: contract, engineering change, project cost and milestone billing at Halden Precision Engineering",
+  "steps": [
+   {
+    "id": "ETO-01",
+    "sequence": 1,
+    "title": "Set up Halden company code, plants, sales organisation and project/WBS structure",
+    "purpose": "Create company code 4000, plants 4100 Sheffield and 4200 Bristol, sales organisation 4000 and the WBS template every project number is opened from, so later steps have a project to post against.",
+    "asIsStepIds": [
+     "st_99c63224-5614-4e7b-87c5-81c0a2809f82"
+    ],
+    "requirementIds": [],
+    "enablesStepIds": [
+     "ETO-02",
+     "ETO-03",
+     "ETO-04",
+     "ETO-05",
+     "ETO-06",
+     "ETO-07",
+     "ETO-08",
+     "ETO-09",
+     "ETO-10",
+     "ETO-11",
+     "ETO-12"
+    ],
+    "implementation": {
+     "kind": "NEEDS_VALIDATION",
+     "referenceIds": []
+    }
+   },
+   {
+    "id": "ETO-02",
+    "sequence": 2,
+    "title": "Create the sales order and the project number with its WBS budget",
+    "purpose": "Replace the Excel budget and the project folder with a sales order created with reference to the quotation and a project/WBS budget held in SAP, and record the milestone billing plan agreed with finance on the contract.",
+    "asIsStepIds": [
+     "st_fec58581-8be1-4345-89ce-565c4a10844a",
+     "st_99c63224-5614-4e7b-87c5-81c0a2809f82"
+    ],
+    "requirementIds": [],
+    "implementation": {
+     "kind": "CONFIGURATION",
+     "referenceIds": [
+      "S4-2023-SD-QUOTE",
+      "S4-2023-SD-QUOTE-TO-ORDER",
+      "S4-2023-SD-PRICING",
+      "S4-2023-SD-RENTAL-BILLPLAN",
+      "S4-2023-SD-BILLPLAN-DATES-FINAL",
+      "S4-2023-SD-BILLPLAN-ITEM-CONTROL",
+      "S4-2023-SD-COPY-CONTROL"
+     ]
+    }
+   },
+   {
+    "id": "ETO-03",
+    "sequence": 3,
+    "title": "Integrate the Aurora PLM engineering bill of materials into SAP",
+    "purpose": "Replace the manual Excel export and re-keying of the engineering parts list with a controlled hand-off of the released engineering BOM and its revision from Aurora PLM into SAP, which stays the engineering design system.",
+    "asIsStepIds": [
+     "st_d0a569f2-7109-4e12-bea3-38051d100e7c"
+    ],
+    "requirementIds": [
+     "rq_5c636e1d-ebc3-4cfc-9b1a-fa5c0513a310"
+    ],
+    "implementation": {
+     "kind": "INTEGRATION",
+     "referenceIds": [
+      "S4-2023-INT-BTP-SIDE-BY-SIDE",
+      "S4-2023-INT-EVENT-ENABLEMENT"
+     ]
+    }
+   },
+   {
+    "id": "ETO-04",
+    "sequence": 4,
+    "title": "Build the manufacturing bill of materials and routings in SAP",
+    "purpose": "Turn the released engineering structure into a manufacturing BOM with make-or-buy decisions and routings carrying operations, work centres and standard hours, instead of an Excel structure and printed routing sheets.",
+    "asIsStepIds": [
+     "st_b87f53c2-1612-49ca-810a-6dcc3fc27a0d"
+    ],
+    "requirementIds": [
+     "rq_5a66eaae-c5cc-4866-b9fc-f15f29a4602d"
+    ],
+    "implementation": {
+     "kind": "NEEDS_VALIDATION",
+     "referenceIds": []
+    }
+   },
+   {
+    "id": "ETO-05",
+    "sequence": 5,
+    "title": "Control engineering changes and re-release the affected BOM and open production orders",
+    "purpose": "Route every post-release engineering change through the Chief Engineer's sign-off in the system and push the resulting BOM revision onto the open production orders, so the shop never builds to an outdated parts list.",
+    "asIsStepIds": [
+     "st_d0a569f2-7109-4e12-bea3-38051d100e7c"
+    ],
+    "requirementIds": [
+     "rq_cf36b424-85ad-4bfb-8fd5-56434698cde5"
+    ],
+    "implementation": {
+     "kind": "CONFIGURATION",
+     "referenceIds": [
+      "S4-2023-WF-FLEXIBLE",
+      "S4-2023-WF-MYINBOX",
+      "S4-2023-EXT-KEYUSER-SCOPE",
+      "S4-2023-SD-BLOCKS"
+     ]
+    }
+   },
+   {
+    "id": "ETO-06",
+    "sequence": 6,
+    "title": "Plan material requirements per project against project and sales order stock",
+    "purpose": "Replace hand netting in Excel with automatic requirements planning per WBS/project that respects stock reserved for other projects and no longer lets one project consume another's parts.",
+    "asIsStepIds": [
+     "st_7f87592e-e4cf-409f-8d20-e923312bf28a"
+    ],
+    "requirementIds": [
+     "rq_f25ca0c8-c242-4e8d-a133-9664b90b72b3",
+     "rq_5af63f1d-af5b-4122-868b-ebb5b6f74a13"
+    ],
+    "implementation": {
+     "kind": "CONFIGURATION",
+     "referenceIds": [
+      "S4-2023-SD-SALES-ORDER-STOCK-TRANSFER",
+      "S4-2023-ATP-ALLOCATION-RESERVATION",
+      "S4-2023-ATP-CHECK"
+     ]
+    }
+   },
+   {
+    "id": "ETO-07",
+    "sequence": 7,
+    "title": "Buy castings, drives and bought-in parts with in-system approval above £20,000",
+    "purpose": "Create purchase requisitions and purchase orders from the project requirement list in SAP, hold the Operations Director's approval above £20,000 in the system and keep supplier dates in SAP instead of the buyer's spreadsheet.",
+    "asIsStepIds": [
+     "st_0cd976ed-1c6e-493c-adf6-488533ee0112"
+    ],
+    "requirementIds": [
+     "rq_6490847d-97f0-4fc0-82e1-bc009324bafd",
+     "rq_91cccae8-e481-45cc-8809-daf708e45d46"
+    ],
+    "implementation": {
+     "kind": "CONFIGURATION",
+     "referenceIds": [
+      "S4-2023-PROC-PR-PO",
+      "S4-2023-WF-FLEXIBLE",
+      "S4-2023-WF-MYINBOX"
+     ]
+    }
+   },
+   {
+    "id": "ETO-08",
+    "sequence": 8,
+    "title": "Schedule and run production on work centres with recorded confirmations",
+    "purpose": "Replace the Excel schedule, printed job cards and the job-tracking tool with SAP production orders and routings, capacity load at each work centre, and shop-floor confirmations that post hours against the project.",
+    "asIsStepIds": [
+     "st_451f8c22-2410-464d-8e3e-18b27bf13e84"
+    ],
+    "requirementIds": [
+     "rq_fc162d02-72d1-4a7c-a907-b05fd81d6339"
+    ],
+    "implementation": {
+     "kind": "NEEDS_VALIDATION",
+     "referenceIds": []
+    }
+   },
+   {
+    "id": "ETO-09",
+    "sequence": 9,
+    "title": "Inspect fabricated parts and the assembled machine to the drawing and record non-conformances",
+    "purpose": "Hold inspection results and non-conformances in the system against the drawing and inspection plan instead of paper sheets, with a paper-free record of rework or scrap.",
+    "asIsStepIds": [
+     "st_fcccfeb1-6845-4289-a162-33e26ac6aac8"
+    ],
+    "requirementIds": [],
+    "implementation": {
+     "kind": "NEEDS_VALIDATION",
+     "referenceIds": []
+    },
+    "enablesStepIds": [
+     "ETO-10"
+    ]
+   },
+   {
+    "id": "ETO-10",
+    "sequence": 10,
+    "title": "Produce the inspection certificate from the system for the customer",
+    "purpose": "Issue the inspection certificate for final inspection and factory acceptance out of the system from the recorded inspection results, and keep the certificate available to the customer.",
+    "asIsStepIds": [
+     "st_fcccfeb1-6845-4289-a162-33e26ac6aac8"
+    ],
+    "requirementIds": [
+     "rq_4f32a572-05e8-46f6-b33c-2e28347058a5"
+    ],
+    "implementation": {
+     "kind": "NEEDS_VALIDATION",
+     "referenceIds": []
+    }
+   },
+   {
+    "id": "ETO-11",
+    "sequence": 11,
+    "title": "Collect project costs, work in progress and margin during the project",
+    "purpose": "Collect supplier invoices, goods movements and confirmed hours against the project automatically, so work in progress and margin are visible during the project instead of only after delivery.",
+    "asIsStepIds": [
+     "st_85b4058b-3be2-4f2b-a691-a21f7ee372d4"
+    ],
+    "requirementIds": [
+     "rq_1c5d8d64-2728-4152-8a64-a0e840180e76",
+     "rq_ef5967d0-20a4-4e5b-92b5-d7e40a3fc64c"
+    ],
+    "implementation": {
+     "kind": "NEEDS_VALIDATION",
+     "referenceIds": []
+    }
+   },
+   {
+    "id": "ETO-12",
+    "sequence": 12,
+    "title": "Bill each contract milestone from the billing plan and ship on a delivery schedule",
+    "purpose": "Replace the email-to-finance and hand-raised staged invoice with milestone billing driven from the project billing plan, backed by recorded acceptance and a delivery schedule for logistics.",
+    "asIsStepIds": [
+     "st_4f2a782c-df7b-48e7-84a8-7b7355aa48c7",
+     "st_fcccfeb1-6845-4289-a162-33e26ac6aac8"
+    ],
+    "requirementIds": [
+     "rq_a89a4321-f6c0-43c6-b5ad-9530e0bd1688",
+     "rq_97212776-dfc8-4894-820a-4529cde8439b"
+    ],
+    "implementation": {
+     "kind": "INTEGRATION",
+     "referenceIds": [
+      "S4-2023-SD-BILLING",
+      "S4-2023-SD-BILLPLAN-DATES-FINAL",
+      "S4-2023-SD-RESOURCE-BILLING",
+      "S4-2023-SD-BILLPLAN-ITEM-CONTROL",
+      "S4-2023-SD-BILLING-CANCEL-RERUN",
+      "S4-2023-FIN-CREDIT-CHECK",
+      "S4-2023-FIN-CREDIT-RELEASE",
+      "S4-2023-FIN-CREDIT-LIMIT-REQUEST",
+      "S4-2023-LOG-LETRA-SHIPMENT",
+      "S4-2023-INV-GOODS-ISSUE",
+      "S4-2023-LOG-POD-OUTBOUND",
+      "S4-2023-OUT-OUTPUT-MGMT",
+      "S4-2023-SERIAL-NUMBER",
+      "S4-2023-PM-EQUIPMENT",
+      "S4-2023-LOG-TM-FREIGHT-SETTLEMENT"
+     ]
+    }
+   }
+  ],
+  "eliminatedAsIsSteps": [
+   {
+    "asIsStepId": "st_fec58581-8be1-4345-89ce-565c4a10844a",
+    "reason": "The Excel estimate and experience-based delivery date are not carried forward as a separate step: the quotation is held in SAP (quotation document type QT) and the estimate is held in the project budget on the WBS created in ETO-02, so the estimate is the object of ETO-02 rather than a separate design step. The Operations Director's approval of quotes above £250,000 and the re-estimate on specification change are held on ETO-02; the specification-change re-estimate rule is an open question because no approved decision or evidenced mechanism specifies it."
+   }
+  ],
+  "coverage": [
+   {
+    "requirementId": "rq_5c636e1d-ebc3-4cfc-9b1a-fa5c0513a310",
+    "disposition": "IMPLEMENTED",
+    "stepIds": [
+     "ETO-03"
+    ],
+    "decisionId": null,
+    "rationale": "Aurora PLM is not replaced; the released engineering BOM and its revision are handed to SAP through a side-by-side integration using SAP-released APIs and events, so the BOM in SAP carries the engineering revision it was released from."
+   },
+   {
+    "requirementId": "rq_cf36b424-85ad-4bfb-8fd5-56434698cde5",
+    "disposition": "IMPLEMENTED",
+    "stepIds": [
+     "ETO-05"
+    ],
+    "decisionId": null,
+    "rationale": "Post-release engineering changes are routed through a condition-based approval workflow to the Chief Engineer in My Inbox and only the approved change updates the BOM and re-releases the open production orders, so the old parts list cannot stay quietly in use.",
+    "decisionIds": [
+     "D-1"
+    ]
+   },
+   {
+    "requirementId": "rq_5a66eaae-c5cc-4866-b9fc-f15f29a4602d",
+    "disposition": "CONDITIONAL",
+    "stepIds": [
+     "ETO-04"
+    ],
+    "decisionId": null,
+    "rationale": "The intended behaviour is a manufacturing BOM and routings built in SAP from the released engineering structure; no supplied reference evidences BOM/routing creation or the completeness check on the incoming parts list, so the mechanism is not yet designed and is held pending the consultant and open question ETO-OQ-1.",
+    "questionIds": [
+     "ETO-OQ-1"
+    ]
+   },
+   {
+    "requirementId": "rq_f25ca0c8-c242-4e8d-a133-9664b90b72b3",
+    "disposition": "IMPLEMENTED",
+    "stepIds": [
+     "ETO-06"
+    ],
+    "decisionId": null,
+    "rationale": "Requirements are planned automatically per project against sales order stock (special stock E) and reservations, so stock committed to one project cannot be consumed by another and projects no longer stop for missing parts."
+   },
+   {
+    "requirementId": "rq_5af63f1d-af5b-4122-868b-ebb5b6f74a13",
+    "disposition": "IMPLEMENTED",
+    "stepIds": [
+     "ETO-06"
+    ],
+    "decisionId": null,
+    "rationale": "Automatic per-project requirements planning with project/sales order stock and allocation of quantities per time period and characteristic combination is the designed behaviour that halves shortage-driven stoppages; the measured baseline-to-target reduction is reported from the shortage and stock data and is not itself a design parameter.",
+    "decisionIds": [
+     "D-1"
+    ]
+   },
+   {
+    "requirementId": "rq_91cccae8-e481-45cc-8809-daf708e45d46",
+    "disposition": "IMPLEMENTED",
+    "stepIds": [
+     "ETO-07"
+    ],
+    "decisionId": null,
+    "rationale": "Supplier dates live on the SAP purchase order and its schedule lines, and are the basis for adjusting the project schedule instead of the buyer's own spreadsheet."
+   },
+   {
+    "requirementId": "rq_6490847d-97f0-4fc0-82e1-bc009324bafd",
+    "disposition": "IMPLEMENTED",
+    "stepIds": [
+     "ETO-07"
+    ],
+    "decisionId": null,
+    "rationale": "Purchase requisitions and purchase orders above £20,000 are routed through the flexible workflow and approved by the Operations Director in My Inbox, so the approval is recorded in the system rather than on paper.",
+    "decisionIds": [
+     "D-1"
+    ]
+   },
+   {
+    "requirementId": "rq_fc162d02-72d1-4a7c-a907-b05fd81d6339",
+    "disposition": "CONDITIONAL",
+    "stepIds": [
+     "ETO-08"
+    ],
+    "decisionId": null,
+    "rationale": "Capacity load per work centre and shop-floor confirmation within SAP is the intended behaviour that replaces checking by experience and slotting in urgent jobs off-plan; no supplied reference evidences production orders, routing operations, work centre capacity or confirmations, so the mechanism is only partly designed and is held pending consultant validation and open question ETO-OQ-2.",
+    "questionIds": [
+     "ETO-OQ-2"
+    ]
+   },
+   {
+    "requirementId": "rq_4f32a572-05e8-46f6-b33c-2e28347058a5",
+    "disposition": "CONDITIONAL",
+    "stepIds": [
+     "ETO-09",
+     "ETO-10"
+    ],
+    "decisionId": null,
+    "rationale": "The intended behaviour is that inspection results and non-conformances are stored against the project and the certificate is produced from the system; no supplied reference evidences QM inspection lots, results recording, usage decisions, non-conformance records or certificate output, so the mechanism is not yet designed and is held pending consultant validation and open question ETO-OQ-3. The link of non-conformance cost to the project is held separately as the design control ETO-C-1 and open question ETO-OQ-4.",
+    "questionIds": [
+     "ETO-OQ-3",
+     "ETO-OQ-4"
+    ]
+   },
+   {
+    "requirementId": "rq_1c5d8d64-2728-4152-8a64-a0e840180e76",
+    "disposition": "CONDITIONAL",
+    "stepIds": [
+     "ETO-11"
+    ],
+    "decisionId": null,
+    "rationale": "The intended behaviour is that costs and hours collect against the project automatically with work in progress and margin visible during the project; no supplied reference evidences project/WBS cost collection, WIP calculation or project settlement, so the mechanism is not yet designed and is held pending consultant validation and open question ETO-OQ-5.",
+    "questionIds": [
+     "ETO-OQ-5"
+    ]
+   },
+   {
+    "requirementId": "rq_ef5967d0-20a4-4e5b-92b5-d7e40a3fc64c",
+    "disposition": "IMPLEMENTED",
+    "stepIds": [
+     "ETO-11"
+    ],
+    "decisionId": null,
+    "rationale": "The project cost and margin view is proposed to be available during the project against the WBS budget so variance can be held under 5%; the reporting object that produces the view, and with it the achievability of the 5% and the definition of the variance, are held on open question ETO-OQ-5 and are not stated unconditionally here.",
+    "questionIds": [
+     "ETO-OQ-5"
+    ]
+   },
+   {
+    "requirementId": "rq_a89a4321-f6c0-43c6-b5ad-9530e0bd1688",
+    "disposition": "IMPLEMENTED",
+    "stepIds": [
+     "ETO-12"
+    ],
+    "decisionId": null,
+    "rationale": "The contract milestone billing plan generates billing due list entries, so the 30/40/30 staged invoices are raised from the plan rather than by hand; scope extras are handled through the change/release path on ETO-5 and the accepted-change agreement on ETO-12, and the detailed extras policy is held on open question ETO-OQ-4."
+   },
+   {
+    "requirementId": "rq_97212776-dfc8-4894-820a-4529cde8439b",
+    "disposition": "IMPLEMENTED",
+    "stepIds": [
+     "ETO-12"
+    ],
+    "decisionId": null,
+    "rationale": "The delivery schedule is driven from SAP outbound deliveries with goods issue, serial numbers and proof of delivery, which is the designed lever for lifting on-time delivery from the 71% baseline to at least 92%; the figure itself is a KPI target measured from delivery dates and is not a design parameter. The transportation licence type is held on open question ETO-OQ-6 and the entitlement of the freight-settlement mode on ETO-OQ-7."
+   }
+  ],
+  "conflictDecisions": [],
+  "openQuestions": [
+   {
+    "id": "ETO-OQ-1",
+    "question": "No supplied reference evidences manufacturing BOM, routing, work centre or BOM revision/change-number creation in SAP. Which SAP capability realises the manufacturing BOM and routings and the check that the incoming Aurora parts list is complete, and is that mechanism available in this release and licence entitlement?",
+    "owner": "SAP PP consultant / Halden Production Engineering lead",
+    "affectedStepIds": [
+     "ETO-04",
+     "ETO-05"
+    ]
+   },
+   {
+    "id": "ETO-OQ-2",
+    "question": "No supplied reference evidences SAP production orders, routing operations, work centre capacity evaluation or shop-floor confirmations. Which mechanism replaces the Excel schedule, printed job cards and the job-tracking tool, and how is capacity per work centre evaluated in this release?",
+    "owner": "SAP PP consultant / Sheffield and Bristol production managers",
+    "affectedStepIds": [
+     "ETO-08"
+    ]
+   },
+   {
+    "id": "ETO-OQ-3",
+    "question": "No supplied reference evidences QM inspection lots, results recording, usage decision or certificate printing. Which SAP capability records inspection results and produces the customer inspection certificate from the system?",
+    "owner": "SAP QM consultant / Halden quality manager",
+    "affectedStepIds": [
+     "ETO-09",
+     "ETO-10"
+    ]
+   },
+   {
+    "id": "ETO-OQ-4",
+    "question": "How is the cost of rework or scrap from a non-conformance record and of customer-agreed scope extras required to reach the project and be billed, given that the source states the non-conformance note is not linked to project cost and that extras are sometimes not billed?",
+    "owner": "Halden Finance Controller / Chief Engineer",
+    "affectedStepIds": [
+     "ETO-09",
+     "ETO-11",
+     "ETO-12"
+    ]
+   },
+   {
+    "id": "ETO-OQ-5",
+    "question": "Which SAP project cost and margin reporting object shows project cost variance against budget and work in progress during the project, and is the under-5% variance target measured on the project/WBS budget with unbilled scope extras included or excluded?",
+    "owner": "Halden Finance Controller with the SAP CO/PS consultant",
+    "affectedStepIds": [
+     "ETO-11",
+     "ETO-02"
+    ]
+   },
+   {
+    "id": "ETO-OQ-6",
+    "question": "Is the retained transportation capability Logistics Execution basic shipping or Embedded Transportation Management, given both references are licence-dependent and the customer bills freight through the staged contract invoices?",
+    "owner": "SAP logistics consultant / Halden procurement lead",
+    "affectedStepIds": [
+     "ETO-12"
+    ]
+   },
+   {
+    "id": "ETO-OQ-7",
+    "question": "Do the licence entitlements of the cited job-tracking, transportation and freight-settlement references cover Halden's S/4HANA private-cloud contract, and must entitlement be confirmed before the integration kind of ETO-12 is accepted?",
+    "owner": "Halden SAP account manager / license consultant",
+    "affectedStepIds": [
+     "ETO-12"
+    ]
+   },
+   {
+    "id": "ETO-OQ-8",
+    "question": "Which SAP customer-returns and advance-returns capability realises the wording that a replacement unit is provided from the spare-assembly scope and that the returned serialised unit re-enters the flow, given the licence-dependent and inventory references cited on ETO-12?",
+    "owner": "SAP SD/QM consultant / Halden Operations Director",
+    "affectedStepIds": [
+     "ETO-12"
+    ]
+   },
+   {
+    "id": "ETO-OQ-9",
+    "question": "Which Aurora-to-SAP integration mechanism is used for the released engineering BOM — a side-by-side application on SAP BTP calling SAP-released APIs, or event enablement publishing Aurora release and change events — and is that side-by-side or event channel licence entitlement included?",
+    "owner": "Integration architect with the Halden Chief Engineer",
+    "affectedStepIds": [
+     "ETO-03",
+     "ETO-05"
+    ]
+   },
+   {
+    "id": "ETO-OQ-10",
+    "question": "Which unit reconciles Aurora PLM part and revision identity to the SAP material master for engineering BOM hand-off — part number, revision or change number — and which party maintains that mapping?",
+    "owner": "Halden Chief Engineer with the SAP MM/PP consultant and Aurora PLM administrator",
+    "affectedStepIds": [
+     "ETO-03",
+     "ETO-04",
+     "ETO-05"
+    ]
+   },
+   {
+    "id": "ETO-OQ-11",
+    "question": "Which mechanism records a confirmed engineering change to the engineering BOM and the manufacturing BOM with a single approval and revision in a system-agnostic way inside SAP, in addition to the BOM and open-production-order update established by ETO-5 design control ETO-C-2?",
+    "owner": "Halden Chief Engineer with the SAP PLM/PP consultant",
+    "affectedStepIds": [
+     "ETO-04",
+     "ETO-05"
+    ]
+   },
+   {
+    "id": "ETO-OQ-12",
+    "question": "Which SAP capability and workflow routes the Chief Engineer's engineering-change sign-off and the Operations Director's purchase approval for the Sheffield and Bristol plants once the paper form is retired, including the plant and company-code assignment of the originating project?",
+    "owner": "SAP workflow consultant / Halden Operations Director and Chief Engineer",
+    "affectedStepIds": [
+     "ETO-05",
+     "ETO-07",
+     "ETO-01"
+    ]
+   },
+   {
+    "id": "ETO-OQ-13",
+    "question": "What is the policy for scheduling and releasing a change to a production order that is already under way — the change window, the cut-over point in the shop and how material already issued is treated?",
+    "owner": "Halden Chief Engineer and Operations Director",
+    "affectedStepIds": [
+     "ETO-05",
+     "ETO-08"
+    ]
+   },
+   {
+    "id": "ETO-OQ-14",
+    "question": "How are the Sheffield and Bristol sites, the two plants and the single company code 4000 assigned to one project and to the sales organisation 4000 across the sales order, project and production steps?",
+    "owner": "SAP SD/PS consultant / Halden Operations Director",
+    "affectedStepIds": [
+     "ETO-02",
+     "ETO-05",
+     "ETO-08",
+     "ETO-12"
+    ]
+   }
+  ]
+ }
+}

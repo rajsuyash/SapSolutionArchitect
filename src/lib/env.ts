@@ -1,13 +1,22 @@
 import { z } from "zod";
 
 const required = z.string().trim().min(1);
+export const REASONING_EFFORTS = ["none", "low", "medium", "high", "max"] as const;
+/** Model every stage runs on when AI_PROVIDER=openrouter and AI_MODEL is unset (list price USD per MTok: 0.15 in, 0.60 out). */
+const OPENROUTER_DEFAULT_PRICES: [number, number] = [0.15, 0.6];
+/** Highest output-token ceiling (max_tokens) of a To-Be call, as configured or after a cut-off answer doubles it. */
+export const TO_BE_MAX_TOKENS_CAP = 64000;
+export const OPENROUTER_DEFAULT_MODEL = "deepseek/deepseek-v4.1-flash-1017";
+/** Model a fallback provider runs when AI_FALLBACK_MODEL is unset. */
+const FALLBACK_DEFAULT_MODELS = { anthropic: "claude-sonnet-5-5", deepinfra: "XiaomiMiMo/MiMo-V2.6-Flash", openrouter: OPENROUTER_DEFAULT_MODEL } as const;
 const httpUrl = z.url({ protocol: /^https?$/ });
 // A blank variable means "use the default", not zero.
 const price = (fallback: number) => z.preprocess((value) => (typeof value === "string" && !value.trim() ? undefined : value),
   z.coerce.number().min(0).default(fallback));
-// Whole seconds within [min, max]; a blank variable means "use the default".
-const seconds = (fallback: number, min: number, max: number) => z.preprocess((value) => (typeof value === "string" && !value.trim() ? undefined : value),
+// Whole number within [min, max]; a blank variable means "use the default".
+const whole = (fallback: number, min: number, max: number) => z.preprocess((value) => (typeof value === "string" && !value.trim() ? undefined : value),
   z.coerce.number().int().min(min).max(max).default(fallback));
+const seconds = whole;
 const blankToUndefined = (value: unknown) => (typeof value === "string" && !value.trim() ? undefined : value);
 // JSON object: model id -> [input USD/MTok, output USD/MTok]. Unparseable text is passed on as-is and fails the record check.
 const modelPrices = z.preprocess((value) => {
@@ -15,31 +24,71 @@ const modelPrices = z.preprocess((value) => {
   try { return JSON.parse(value); } catch { return value; }
 }, z.record(z.string().trim().min(1), z.tuple([z.number().positive().max(1000), z.number().positive().max(1000)])).default({}));
 /** The AI stages the runner knows; runStage derives its Stage type from this list. */
-export const STAGE_NAMES = ["problem_analysis", "to_be", "interview_turn"] as const;
-// Comma-separated stage names; blank or unset means none. Unknown names are rejected.
+export const STAGE_NAMES = ["problem_analysis", "to_be", "interview_turn", "extraction_turn"] as const;
+/** The To-Be stage runs as an outline call, one call per step, eight register calls and a consistency review of the finished design; each kind can have
+ * reasoning switched off on its own ("to_be" covers all). They are request kinds inside one stage, so they are not in STAGE_NAMES. */
+export const TO_BE_SUBSTAGES = ["to_be_outline", "to_be_step", "to_be_registers", "to_be_review", "to_be_fix"] as const;
+// Comma-separated stage or To-Be substage names; blank or unset means none. Unknown names are rejected.
 const stageList = z.preprocess((value) => typeof value === "string"
-  ? value.split(",").map((name) => name.trim()).filter(Boolean) : value, z.array(z.enum(STAGE_NAMES)).default([]));
+  ? value.split(",").map((name) => name.trim()).filter(Boolean) : value, z.array(z.enum([...STAGE_NAMES, ...TO_BE_SUBSTAGES])).default([]));
 const schema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
   DATABASE_URL: z.url({ protocol: /^postgres(ql)?$/ }),
   APP_URL: httpUrl,
   AUTH_SECRET: z.string().min(32),
-  AI_PROVIDER: z.enum(["anthropic", "deepinfra", "stub"]),
+  AI_PROVIDER: z.enum(["anthropic", "deepinfra", "openrouter", "stub"]),
   ANTHROPIC_API_KEY: z.string().optional(),
   DEEPINFRA_API_KEY: z.string().optional(),
-  // Model for every stage except design, for any provider: anthropic -> claude-sonnet-5-5, deepinfra -> XiaomiMiMo/MiMo-V2.6-Flash.
+  OPENROUTER_API_KEY: z.string().optional(),
+  // Model for every stage except design, for any provider: anthropic -> claude-sonnet-5-5, deepinfra -> XiaomiMiMo/MiMo-V2.6-Flash, openrouter -> deepseek/deepseek-v4.1-flash-1017 (applied below when unset).
   AI_MODEL: required.default("claude-sonnet-5-5"),
   // Optional stronger/slower model for the long To-Be design stage only; unset means AI_MODEL runs every stage.
   AI_MODEL_DESIGN: z.preprocess(blankToUndefined, required.optional()),
+  // Optional second provider: a call the primary refuses for credit (HTTP 402, exhausted balance or budget) is re-sent to it once, and later calls use it for a cooldown.
+  // Must differ from AI_PROVIDER and have its own key. AI_FALLBACK_MODEL / AI_FALLBACK_MODEL_DESIGN default to that provider's default model (design falls back to AI_FALLBACK_MODEL).
+  AI_FALLBACK_PROVIDER: z.preprocess(blankToUndefined, z.enum(["anthropic", "deepinfra", "openrouter"]).optional()),
+  AI_FALLBACK_MODEL: z.preprocess(blankToUndefined, required.optional()),
+  AI_FALLBACK_MODEL_DESIGN: z.preprocess(blankToUndefined, required.optional()),
   AI_MAX_INPUT_TOKENS: z.coerce.number().int().positive().default(60000),
   CONSULTANT_DAILY_JOB_LIMIT: z.coerce.number().int().min(1).max(100000).default(200),
   AI_MAX_CONCURRENCY: z.coerce.number().int().positive().default(4),
+  // Model-call slots reserved for interview (chat) turns, separate from AI_MAX_CONCURRENCY (To-Be, problem analysis),
+  // so a long batch stage never delays a chat turn.
+  AI_CHAT_CONCURRENCY: z.coerce.number().int().positive().default(3),
   // Time budgets. The defaults are sized for Claude; slower models need more (see README, "AI time budgets").
   AI_STAGE_BUDGET_SECONDS: seconds(300, 60, 1800),
   AI_CALL_TIMEOUT_SECONDS: seconds(120, 30, 1500),
   AI_DESIGN_CALL_TIMEOUT_SECONDS: seconds(240, 30, 1500),
-  // Stages run with model reasoning off (DeepInfra only; `thinking: {type: "disabled"}`). Empty = every stage keeps default reasoning.
+  // To-Be step calls in flight at once within one design stage (whole number, not seconds). Held under the stage's single AI_MAX_CONCURRENCY permit.
+  AI_DESIGN_PARALLELISM: seconds(4, 1, 16),
+  // Outline repair calls after the first outline answer (0-2). The second repair only runs while more than half of AI_STAGE_BUDGET_SECONDS remains.
+  AI_TO_BE_OUTLINE_REPAIRS: whole(2, 0, 2),
+  // Re-requests per To-Be step or register call after its first answer (0-2); the second only while more than half of the stage budget remains.
+  AI_TO_BE_PART_REPAIRS: whole(2, 0, 2),
+  // Consistency review: after a valid design is assembled, one call reads the whole of it and lists contradictions, missing links, unresolved codes and gaps; each finding that
+  // names a step or register group sends that part back once. "off" skips the call. It also runs only while more than a quarter of AI_STAGE_BUDGET_SECONDS remains.
+  AI_TO_BE_REVIEW: z.preprocess(blankToUndefined, z.enum(["on", "off"]).default("on")),
+  // Fix pass: after the review, every fixable heuristic blocker and unresolved review finding that names a step or register group sends that part back once (all findings for
+  // the part in one call), at most this many parts (0 = off). It only runs while more than a quarter of the stage budget remains; adding a step through an outline patch needs 40%.
+  AI_TO_BE_FIX_MAX_PARTS: whole(8, 0, 20),
+  // Review rounds (1-3): round 1 is the review plus the fix pass above; each further round reads the repaired design again and sends only its NEW findings back to the parts concerned for one more repair,
+  // while the stage budget allows another round (about as much as the first took). 1 = a single review.
+  AI_TO_BE_REVIEW_ROUNDS: whole(2, 1, 3),
+  // Output-token ceilings (max_tokens) of the three To-Be request kinds. Reasoning tokens count against them, so a model that
+  // thinks needs room above the visible JSON (outline ~5-6k for 14 steps and 35 requirements, step ~3k, register group ~3.5k tokens without reasoning).
+  // The outline thinks (effort max on OpenRouter) and measured 32k-64k tokens in total on that input, so it starts at 32000: 16000 always burned one truncated call.
+  // A call whose answer was cut off or empty is asked again with the ceiling doubled, up to TO_BE_MAX_TOKENS_CAP.
+  AI_TO_BE_OUTLINE_MAX_TOKENS: whole(32000, 1000, TO_BE_MAX_TOKENS_CAP),
+  AI_TO_BE_STEP_MAX_TOKENS: whole(8000, 1000, TO_BE_MAX_TOKENS_CAP),
+  AI_TO_BE_REGISTERS_MAX_TOKENS: whole(8000, 1000, TO_BE_MAX_TOKENS_CAP),
+  // Stages run with model reasoning off (DeepInfra and OpenRouter; `thinking: {type: "disabled"}`). Empty = every stage keeps default reasoning.
   AI_NO_THINKING_STAGES: stageList,
+  // OpenRouter only: reasoning effort sent as `output_config: {effort}` (OpenRouter maps it to its unified reasoning.effort); "none" sends
+  // thinking disabled. Unset = "max" (OpenRouter accepts max, xhigh, high, medium, low, minimal, none). Ignored by the other providers.
+  AI_REASONING_EFFORT: z.preprocess(blankToUndefined, z.enum(REASONING_EFFORTS).optional()),
+  // OpenRouter, and DeepInfra with a DeepSeek model (sent as thinking.budget_tokens: low 4000, medium 12000, high 24000, max 48000), optional: effort for the to_be_outline substage alone, used while AI_REASONING_EFFORT is unset (an explicit AI_REASONING_EFFORT
+  // wins for every call). Unset = "max". Reasoning tokens count against max_tokens, so a lower effort keeps the outline under its ceiling; "none" sends thinking disabled.
+  AI_OUTLINE_REASONING_EFFORT: z.preprocess(blankToUndefined, z.enum(REASONING_EFFORTS).optional()),
   AI_FAULT_INJECTION: z.string().regex(
     /^(problem_analysis|as_is|gap|to_be|change_doc|blueprint_narrative):(timeout|invalid|error)(:once)?$/,
   ).optional(),
@@ -66,6 +115,15 @@ const schema = z.object({
   const invalid = (name: string) => context.addIssue({ code: "custom", path: [name], message: "Invalid configuration" });
   if (config.AI_PROVIDER === "anthropic" && !config.ANTHROPIC_API_KEY?.trim()) invalid("ANTHROPIC_API_KEY");
   if (config.AI_PROVIDER === "deepinfra" && !config.DEEPINFRA_API_KEY?.trim()) invalid("DEEPINFRA_API_KEY");
+  if (config.AI_PROVIDER === "openrouter" && !config.OPENROUTER_API_KEY?.trim()) invalid("OPENROUTER_API_KEY");
+  if (config.AI_FALLBACK_PROVIDER) {
+    const fallbackKey = { anthropic: config.ANTHROPIC_API_KEY, deepinfra: config.DEEPINFRA_API_KEY, openrouter: config.OPENROUTER_API_KEY }[config.AI_FALLBACK_PROVIDER];
+    if (config.AI_FALLBACK_PROVIDER === config.AI_PROVIDER) invalid("AI_FALLBACK_PROVIDER");
+    else if (!fallbackKey?.trim()) invalid({ anthropic: "ANTHROPIC_API_KEY", deepinfra: "DEEPINFRA_API_KEY", openrouter: "OPENROUTER_API_KEY" }[config.AI_FALLBACK_PROVIDER]);
+  } else {
+    if (config.AI_FALLBACK_MODEL) invalid("AI_FALLBACK_MODEL");
+    if (config.AI_FALLBACK_MODEL_DESIGN) invalid("AI_FALLBACK_MODEL_DESIGN");
+  }
   // Claude rejects thinking: {type: "disabled"} with a 400, so the setting is refused rather than silently ignored.
   if (config.AI_PROVIDER === "anthropic" && config.AI_NO_THINKING_STAGES.length) invalid("AI_NO_THINKING_STAGES");
   // A single call can never outlive the stage that contains it.
@@ -89,14 +147,21 @@ export type Environment = Readonly<z.infer<typeof schema>>;
 /** Server-only configuration. Call once from each process's startup entry point. */
 export function parseEnvironment(input: Record<string, string | undefined> = process.env): Environment {
   // PRD §4: test hooks must have no effect in production, including invalid fault strings.
-  const effective = input.NODE_ENV === "production"
+  const effective: Record<string, string | undefined> = input.NODE_ENV === "production"
     ? { ...input, AI_PROVIDER: input.AI_PROVIDER === "stub" ? "anthropic" : input.AI_PROVIDER, AI_FAULT_INJECTION: undefined }
     : { ...input, AI_FAULT_INJECTION: input.AI_FAULT_INJECTION || undefined };
-  const result = schema.safeParse(effective);
+  const withModel = effective.AI_PROVIDER === "openrouter" && !effective.AI_MODEL?.trim()
+    ? { ...effective, AI_MODEL: OPENROUTER_DEFAULT_MODEL } : effective;
+  const result = schema.safeParse(withModel);
   if (!result.success) {
     // Zod messages and input values can contain secrets. Report variable names only.
     const names = [...new Set(result.error.issues.map((issue) => issue.path.join(".")))];
     throw new Error(`Invalid environment variables: ${names.join(", ")}`);
   }
-  return Object.freeze(result.data);
+  // Price the default OpenRouter model out of the box, as primary or as fallback (an explicit AI_MODEL_PRICES entry wins).
+  const usesOpenRouter = result.data.AI_PROVIDER === "openrouter" || result.data.AI_FALLBACK_PROVIDER === "openrouter";
+  const prices = usesOpenRouter ? { [OPENROUTER_DEFAULT_MODEL]: OPENROUTER_DEFAULT_PRICES, ...result.data.AI_MODEL_PRICES } : result.data.AI_MODEL_PRICES;
+  const fallbackModel = result.data.AI_FALLBACK_PROVIDER ? result.data.AI_FALLBACK_MODEL ?? FALLBACK_DEFAULT_MODELS[result.data.AI_FALLBACK_PROVIDER] : undefined;
+  return Object.freeze({ ...result.data, AI_MODEL_PRICES: prices, AI_FALLBACK_MODEL: fallbackModel,
+    AI_FALLBACK_MODEL_DESIGN: fallbackModel && (result.data.AI_FALLBACK_MODEL_DESIGN ?? fallbackModel) });
 }

@@ -1,0 +1,414 @@
+{
+ "attempt": 3,
+ "payload": {
+  "schemaVersion": 1,
+  "processName": "Engineer to order to delivery at Halden Precision Engineering",
+  "steps": [
+   {
+    "id": "TO-1",
+    "sequence": 1,
+    "title": "Set up project organisational units and master data",
+    "purpose": "Create company code 4000, plants 4100 and 4200, sales organisation 4000, work centres, materials and the project profile the rest of the process runs on.",
+    "asIsStepIds": [],
+    "requirementIds": [],
+    "enablesStepIds": [
+     "TO-2",
+     "TO-3",
+     "TO-4",
+     "TO-5",
+     "TO-6",
+     "TO-7",
+     "TO-8",
+     "TO-9",
+     "TO-10",
+     "TO-11"
+    ],
+    "implementation": {
+     "kind": "CONFIGURATION",
+     "referenceIds": [
+      "S4-2023-SD-BOM-ASSEMBLY",
+      "S4-2023-SD-PRICING"
+     ]
+    }
+   },
+   {
+    "id": "TO-2",
+    "sequence": 2,
+    "title": "Estimate and quote the machine",
+    "purpose": "Replace the Excel estimate with a SAP quotation priced from condition records and a sales BOM sketch from Aurora PLM, keeping the Operations Director approval above \u00a3250,000.",
+    "asIsStepIds": [
+     "st_990ff6ef-7d63-4519-8143-6f501d7fb000"
+    ],
+    "requirementIds": [],
+    "implementation": {
+     "kind": "CONFIGURATION",
+     "referenceIds": [
+      "S4-2023-SD-QUOTE",
+      "S4-2023-SD-PRICING",
+      "S4-2023-SD-BOM-ASSEMBLY"
+     ]
+    }
+   },
+   {
+    "id": "TO-3",
+    "sequence": 3,
+    "title": "Create contract, project and project budget",
+    "purpose": "Create the sales order with reference to the quotation, the project number and WBS budget by work package, and the milestone billing plan, replacing the budget spreadsheet and project folder.",
+    "asIsStepIds": [
+     "st_25f045a1-2912-4884-9cb3-2878ba1dd501"
+    ],
+    "requirementIds": [],
+    "implementation": {
+     "kind": "CONFIGURATION",
+     "referenceIds": [
+      "S4-2023-SD-QUOTE-TO-ORDER",
+      "S4-2023-SD-BILLPLAN-DATES-FINAL",
+      "S4-2023-SD-COPY-CONTROL"
+     ]
+    }
+   },
+   {
+    "id": "TO-4",
+    "sequence": 4,
+    "title": "Receive engineering BOM and changes from Aurora PLM",
+    "purpose": "Hold the engineering bill of materials and its revision history in SAP through the Aurora PLM integration, with the Chief Engineer sign-off recorded in the system instead of on paper.",
+    "asIsStepIds": [
+     "st_b126e734-3a03-447f-8dcc-7b9a20e159a6"
+    ],
+    "requirementIds": [
+     "rq_174cde99-4161-4114-bbb4-9c4c60004a90",
+     "rq_2d139382-51fe-4b16-8849-ad9789140c04"
+    ],
+    "implementation": {
+     "kind": "INTEGRATION",
+     "referenceIds": [
+      "S4-2023-INT-BTP-SIDE-BY-SIDE",
+      "S4-2023-INT-EVENT-ENABLEMENT"
+     ]
+    }
+   },
+   {
+    "id": "TO-5",
+    "sequence": 5,
+    "title": "Build manufacturing BOM and routings from the engineering BOM",
+    "purpose": "Derive the manufacturing structure, make-or-buy decisions and routings with operations, work centres and standard hours in SAP instead of Excel and printed sheets, and keep them aligned when the engineering BOM changes.",
+    "asIsStepIds": [
+     "st_ede38a9a-47ce-4ed8-b58e-9479b6af9fea",
+     "st_b126e734-3a03-447f-8dcc-7b9a20e159a6"
+    ],
+    "requirementIds": [
+     "rq_81596dde-940a-404b-878d-5a7889e2cc8a"
+    ],
+    "implementation": {
+     "kind": "EXTENSION",
+     "referenceIds": [
+      "S4-2023-SD-BOM-ASSEMBLY",
+      "S4-2023-EXT-KEYUSER",
+      "S4-2023-EXT-KEYUSER-SCOPE"
+     ]
+    }
+   },
+   {
+    "id": "TO-6",
+    "sequence": 6,
+    "title": "Plan material requirements per project with reserved project stock",
+    "purpose": "Net requirements against stock automatically per project with sales order special stock, so stock reserved for one project is not consumed by another.",
+    "asIsStepIds": [
+     "st_a54dcf58-d335-4982-849e-7f063c4158e4"
+    ],
+    "requirementIds": [
+     "rq_eb0f7be7-3b4a-4349-83d5-8c00c934287a",
+     "rq_05207ce7-aa65-4e78-95b8-18c71113bb73"
+    ],
+    "implementation": {
+     "kind": "STANDARD",
+     "referenceIds": [
+      "S4-2023-SD-SALES-ORDER-STOCK-TRANSFER",
+      "S4-2023-ATP-ALLOCATION-RESERVATION",
+      "S4-2023-PROC-PR-PO"
+     ]
+    }
+   },
+   {
+    "id": "TO-7",
+    "sequence": 7,
+    "title": "Buy long-lead and standard parts with in-system approval and supplier dates",
+    "purpose": "Raise purchase requisitions and orders in SAP with the \u00a320,000 Operations Director approval in the system and supplier delivery dates feeding the schedule instead of the buyer's spreadsheet.",
+    "asIsStepIds": [
+     "st_63bc8808-bd35-4682-848a-e7d46836d3bd"
+    ],
+    "requirementIds": [
+     "rq_fd84e522-b8f1-48b7-83dd-eaca2a4a1052",
+     "rq_72861776-409a-4ac0-8a10-b9927ab9c486"
+    ],
+    "implementation": {
+     "kind": "CONFIGURATION",
+     "referenceIds": [
+      "S4-2023-PROC-PR-PO",
+      "S4-2023-WF-FLEXIBLE",
+      "S4-2023-WF-MYINBOX"
+     ]
+    }
+   },
+   {
+    "id": "TO-8",
+    "sequence": 8,
+    "title": "Schedule and run production with capacity and confirmation",
+    "purpose": "Schedule production orders against real work-centre capacity, confirm operations in the system, and keep the schedule current when urgent jobs are slotted in, replacing the Excel schedule and job cards.",
+    "asIsStepIds": [
+     "st_59985b4a-54a4-47c2-870d-fd35a2db6972"
+    ],
+    "requirementIds": [
+     "rq_e028d631-2c9d-426e-8730-6678cb54af80"
+    ],
+    "implementation": {
+     "kind": "STANDARD",
+     "referenceIds": [
+      "S4-2023-INV-GOODS-ISSUE",
+      "S4-2023-SERIAL-NUMBER"
+     ]
+    }
+   },
+   {
+    "id": "TO-9",
+    "sequence": 9,
+    "title": "Inspect, certify and record non-conformances in the system",
+    "purpose": "Record inspection results, quality notifications and inspection certificates in SAP linked to the project, replacing paper sheets, Word certificates and unlinked non-conformance notes.",
+    "asIsStepIds": [
+     "st_f6f324f4-8818-4ae7-8149-8f855f42bb33"
+    ],
+    "requirementIds": [
+     "rq_097d9c20-958c-45f9-9bf2-518fc80494af"
+    ],
+    "implementation": {
+     "kind": "CONFIGURATION",
+     "referenceIds": [
+      "S4-2023-INV-STOCK-TYPES",
+      "S4-2023-INV-RETURNS-INSPECT-RELEASE"
+     ]
+    }
+   },
+   {
+    "id": "TO-10",
+    "sequence": 10,
+    "title": "Collect project costs, work in progress and margin during the project",
+    "purpose": "Collect actual project costs on WBS elements, settle and report work in progress and margin while the project runs instead of at close.",
+    "asIsStepIds": [
+     "st_c4b1018d-2c8d-42d7-b018-1445d92b3333"
+    ],
+    "requirementIds": [
+     "rq_d2a44d0b-5f34-4bf1-b5e4-adbb26aac6c8",
+     "rq_bf4c0daf-8dfd-461c-bc2a-984a0fe6591c"
+    ],
+    "implementation": {
+     "kind": "EXTENSION",
+     "referenceIds": [
+      "S4-2023-PM-ORDER-SETTLEMENT",
+      "S4-2023-SD-RESOURCE-BILLING",
+      "S4-2023-ANALYTICS-CDS"
+     ]
+    }
+   },
+   {
+    "id": "TO-11",
+    "sequence": 11,
+    "title": "Deliver and bill by contract milestone",
+    "purpose": "Post the outbound delivery and goods issue, then bill each contract milestone from the billing due list with the Finance Controller approval above \u00a3100,000, replacing hand-raised invoices.",
+    "asIsStepIds": [
+     "st_aaa39dd9-2e32-4599-b7bd-52c9f1759025"
+    ],
+    "requirementIds": [
+     "rq_e3923ada-d370-4c3f-a4ba-07107cce5462",
+     "rq_52edf8a2-842a-4675-8fcc-8a5235532f81"
+    ],
+    "implementation": {
+     "kind": "STANDARD",
+     "referenceIds": [
+      "S4-2023-INV-GOODS-ISSUE",
+      "S4-2023-SD-BILLING",
+      "S4-2023-SD-BILLPLAN-ITEM-CONTROL"
+     ]
+    }
+   },
+   {
+    "id": "TO-12",
+    "sequence": 12,
+    "title": "Close project and review cost variances",
+    "purpose": "Close the project, compare final cost with budget from the SAP project reports and record the lessons-learned variance review instead of rebuilding it in Excel.",
+    "asIsStepIds": [
+     "st_9aff051d-82ed-4db7-a818-3f713889474c"
+    ],
+    "requirementIds": [],
+    "implementation": {
+     "kind": "EXTENSION",
+     "referenceIds": [
+      "S4-2023-PM-ORDER-SETTLEMENT",
+      "S4-2023-ANALYTICS-CDS"
+     ]
+    }
+   }
+  ],
+  "eliminatedAsIsSteps": [
+   {
+    "asIsStepId": "st_b126e734-3a03-447f-8dcc-7b9a20e159a6",
+    "reason": "The manual Excel export of the engineering parts list is replaced by the Aurora PLM integration in TO-4; the design reference is retained but the As-Is export step itself disappears."
+   }
+  ],
+  "coverage": [
+   {
+    "requirementId": "rq_174cde99-4161-4114-bbb4-9c4c60004a90",
+    "disposition": "IMPLEMENTED",
+    "stepIds": [
+     "TO-4"
+    ],
+    "decisionId": null,
+    "rationale": "Aurora PLM remains the engineering system; its BOM and change data are brought into SAP through the retained-system integration rather than being re-keyed."
+   },
+   {
+    "requirementId": "rq_2d139382-51fe-4b16-8849-ad9789140c04",
+    "disposition": "IMPLEMENTED",
+    "stepIds": [
+     "TO-4"
+    ],
+    "decisionId": null,
+    "rationale": "Released engineering changes arrive through the integration and update the SAP BOM and the open production orders, so the shop is no longer emailed an outdated parts list."
+   },
+   {
+    "requirementId": "rq_81596dde-940a-404b-878d-5a7889e2cc8a",
+    "disposition": "IMPLEMENTED",
+    "stepIds": [
+     "TO-5"
+    ],
+    "decisionId": null,
+    "rationale": "The manufacturing BOM and routings are derived and maintained in SAP from the engineering BOM, removing the hand-built Excel structure, the printed routing sheets and the missing parts of the export."
+   },
+   {
+    "requirementId": "rq_eb0f7be7-3b4a-4349-83d5-8c00c934287a",
+    "disposition": "IMPLEMENTED",
+    "stepIds": [
+     "TO-6"
+    ],
+    "decisionId": null,
+    "rationale": "Requirements are netted automatically per project against sales order special stock, so stock reserved for one project is no longer consumed by another."
+   },
+   {
+    "requirementId": "rq_05207ce7-aa65-4e78-95b8-18c71113bb73",
+    "disposition": "IMPLEMENTED",
+    "stepIds": [
+     "TO-6"
+    ],
+    "decisionId": null,
+    "rationale": "Automatic per-project requirements planning replaces hand netting; the residual-shortage measurement that proves the halving is held on TO-OQ-1."
+   },
+   {
+    "requirementId": "rq_fd84e522-b8f1-48b7-83dd-eaca2a4a1052",
+    "disposition": "IMPLEMENTED",
+    "stepIds": [
+     "TO-7"
+    ],
+    "decisionId": null,
+    "rationale": "Supplier delivery dates live on the SAP purchase order and feed the production schedule, so a late casting or drive is visible without the buyer's private spreadsheet."
+   },
+   {
+    "requirementId": "rq_72861776-409a-4ac0-8a10-b9927ab9c486",
+    "disposition": "IMPLEMENTED",
+    "stepIds": [
+     "TO-7"
+    ],
+    "decisionId": null,
+    "rationale": "Purchase orders above \u00a320,000 route to the Operations Director through the in-system purchase-order approval workflow with a documented decision."
+   },
+   {
+    "requirementId": "rq_e028d631-2c9d-426e-8730-6678cb54af80",
+    "disposition": "IMPLEMENTED",
+    "stepIds": [
+     "TO-8"
+    ],
+    "decisionId": null,
+    "rationale": "Work-centre capacity and operation confirmations are held in SAP, so an urgent job inserted into the schedule updates the plan instead of bypassing it."
+   },
+   {
+    "requirementId": "rq_097d9c20-958c-45f9-9bf2-518fc80494af",
+    "disposition": "IMPLEMENTED",
+    "stepIds": [
+     "TO-9"
+    ],
+    "decisionId": null,
+    "rationale": "Inspection results, quality notifications and certificates are system records tied to the inspection lot and the project; the certificate layout is a form-development detail held on TO-OQ-2."
+   },
+   {
+    "requirementId": "rq_d2a44d0b-5f34-4bf1-b5e4-adbb26aac6c8",
+    "disposition": "IMPLEMENTED",
+    "stepIds": [
+     "TO-10"
+    ],
+    "decisionId": null,
+    "rationale": "Costs collect automatically on the project WBS elements and work in progress and margin are reported during the project, replacing hand allocation and quarterly estimation."
+   },
+   {
+    "requirementId": "rq_bf4c0daf-8dfd-461c-bc2a-984a0fe6591c",
+    "disposition": "IMPLEMENTED",
+    "stepIds": [
+     "TO-10"
+    ],
+    "decisionId": null,
+    "rationale": "Project cost and margin reporting during the project supports steering to a variance under 5%; the tolerance and escalation policy for breaching it is held on TO-OQ-1."
+   },
+   {
+    "requirementId": "rq_e3923ada-d370-4c3f-a4ba-07107cce5462",
+    "disposition": "IMPLEMENTED",
+    "stepIds": [
+     "TO-11"
+    ],
+    "decisionId": null,
+    "rationale": "The billing due list generates the milestone invoice from the sales order billing plan for each reached acceptance or delivery milestone, so invoices are no longer raised by hand and scope extras flow into the same plan."
+   },
+   {
+    "requirementId": "rq_52edf8a2-842a-4675-8fcc-8a5235532f81",
+    "disposition": "IMPLEMENTED",
+    "stepIds": [
+     "TO-11"
+    ],
+    "decisionId": null,
+    "rationale": "On-time delivery is measured and driven by the delivery-date and milestone flow across TO-11; whether 92% is measured to the promised date or the contract milestone is held on TO-OQ-3."
+   }
+  ],
+  "conflictDecisions": [],
+  "openQuestions": [
+   {
+    "id": "TO-OQ-1",
+    "question": "What variance tolerance, review cadence and escalation rule applies when a project's cost variance approaches the 5% limit, and how is the reduction in shortages that stop production measured?",
+    "owner": "Finance Controller and Operations Director",
+    "affectedStepIds": [
+     "TO-6",
+     "TO-10"
+    ]
+   },
+   {
+    "id": "TO-OQ-2",
+    "question": "Which customer-required inspection certificate layout is the contractual one, and is an SAP form template or an output-management form sufficient for the certificate that Aurora PLM does not produce?",
+    "owner": "Quality manager",
+    "affectedStepIds": [
+     "TO-9"
+    ]
+   },
+   {
+    "id": "TO-OQ-3",
+    "question": "Is on-time delivery measured from the sales order promised delivery date or from the contract milestone date, and which source sets the date the 92% target is reported against?",
+    "owner": "Operations Director",
+    "affectedStepIds": [
+     "TO-11"
+    ]
+   },
+   {
+    "id": "TO-OQ-4",
+    "question": "Which fields and change objects does the Aurora PLM to SAP interface carry, including the change number, revision level and the trigger for updating open production orders, and how are interface failures handled?",
+    "owner": "Chief Engineer and IT integration lead",
+    "affectedStepIds": [
+     "TO-4",
+     "TO-5"
+    ]
+   }
+  ]
+ }
+}

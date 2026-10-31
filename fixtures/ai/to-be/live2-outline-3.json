@@ -1,0 +1,456 @@
+{
+ "attempt": 3,
+ "payload": {
+  "schemaVersion": 1,
+  "processName": "Engineer to order to delivery: enquiry, project, engineering, production, quality and project settlement",
+  "steps": [
+   {
+    "id": "ETO-01",
+    "sequence": 1,
+    "title": "Estimate and quote the engineered machine",
+    "purpose": "Replace the Excel estimate with a SAP-created quotation whose price, margin and promised date are visible and can be copied into the contract.",
+    "asIsStepIds": [
+     "st_fec58581-8be1-4345-89ce-565c4a10844a"
+    ],
+    "requirementIds": [],
+    "implementation": {
+     "kind": "STANDARD",
+     "referenceIds": [
+      "S4-2023-SD-QUOTE"
+     ]
+    }
+   },
+   {
+    "id": "ETO-02",
+    "sequence": 2,
+    "title": "Create contract, project, WBS budget and milestone billing plan",
+    "purpose": "Give every contract a project number, a cost budget by work package and a milestone billing plan that drives billing automatically.",
+    "asIsStepIds": [
+     "st_99c63224-5614-4e7b-87c5-81c0a2809f82"
+    ],
+    "requirementIds": [],
+    "implementation": {
+     "kind": "STANDARD",
+     "referenceIds": [
+      "S4-2023-SD-QUOTE-TO-ORDER"
+     ]
+    }
+   },
+   {
+    "id": "ETO-03",
+    "sequence": 3,
+    "title": "Release EPLM design and engineering bill of materials into SAP",
+    "purpose": "Move the approved engineering structure and revision history from Aurora PLM into SAP material masters and the engineering bill of materials.",
+    "asIsStepIds": [
+     "st_d0a569f2-7109-4e12-bea3-38051d100e7c"
+    ],
+    "requirementIds": [],
+    "implementation": {
+     "kind": "INTEGRATION",
+     "referenceIds": [
+      "S4-2023-INT-BTP-SIDE-BY-SIDE"
+     ]
+    }
+   },
+   {
+    "id": "ETO-04",
+    "sequence": 4,
+    "title": "Control engineering changes across BOM, routings and open orders",
+    "purpose": "Stop the shop building to superseded revisions by routing every post-release change through an approved change record that updates the bill of materials and open production orders.",
+    "asIsStepIds": [
+     "st_d0a569f2-7109-4e12-bea3-38051d100e7c"
+    ],
+    "requirementIds": [
+     "rq_5c636e1d-ebc3-4cfc-9b1a-fa5c0513a310",
+     "rq_cf36b424-85ad-4bfb-8fd5-56434698cde5"
+    ],
+    "implementation": {
+     "kind": "EXTENSION",
+     "referenceIds": [
+      "S4-2023-EXT-DEV-ABAP-CLOUD",
+      "S4-2023-EXT-RAP"
+     ]
+    }
+   },
+   {
+    "id": "ETO-05",
+    "sequence": 5,
+    "title": "Build the manufacturing bill of materials and routings in SAP",
+    "purpose": "Convert the released engineering structure into a SAP manufacturing bill of materials with make-or-buy decisions, routings, work centres and standard hours.",
+    "asIsStepIds": [
+     "st_b87f53c2-1612-49ca-810a-6dcc3fc27a0d"
+    ],
+    "requirementIds": [
+     "rq_5a66eaae-c5cc-4866-b9fc-f15f29a4602d"
+    ],
+    "implementation": {
+     "kind": "CONFIGURATION",
+     "referenceIds": [
+      "S4-2023-SD-BOM-ASSEMBLY",
+      "S4-2023-ATP-CHECK"
+     ]
+    }
+   },
+   {
+    "id": "ETO-06",
+    "sequence": 6,
+    "title": "Plan project material requirements and reserve project stock",
+    "purpose": "Let MRP net requirements automatically against SAP stock while keeping each project's reserved stock separate so a shortage in one project cannot steal another project's material.",
+    "asIsStepIds": [
+     "st_7f87592e-e4cf-409f-8d20-e923312bf28a"
+    ],
+    "requirementIds": [
+     "rq_f25ca0c8-c242-4e8d-a133-9664b90b72b3",
+     "rq_5af63f1d-af5b-4122-868b-ebb5b6f74a13"
+    ],
+    "implementation": {
+     "kind": "CONFIGURATION",
+     "referenceIds": [
+      "S4-2023-SD-SALES-ORDER-STOCK-TRANSFER",
+      "S4-2023-ATP-ALLOCATION-RESERVATION",
+      "S4-2023-PROC-PR-PO"
+     ]
+    }
+   },
+   {
+    "id": "ETO-07",
+    "sequence": 7,
+    "title": "Approve and place purchase requisitions and orders",
+    "purpose": "Replace email buying and buyer spreadsheets with SAP requisitions, a system approval above £20,000 and purchase orders carrying the confirmed delivery date.",
+    "asIsStepIds": [
+     "st_0cd976ed-1c6e-493c-adf6-488533ee0112"
+    ],
+    "requirementIds": [
+     "rq_91cccae8-e481-45cc-8809-daf708e45d46",
+     "rq_6490847d-97f0-4fc0-82e1-bc009324bafd"
+    ],
+    "implementation": {
+     "kind": "CONFIGURATION",
+     "referenceIds": [
+      "S4-2023-PROC-PR-PO",
+      "S4-2023-WF-FLEXIBLE"
+     ]
+    }
+   },
+   {
+    "id": "ETO-08",
+    "sequence": 8,
+    "title": "Receive, store and issue material to the project",
+    "purpose": "Book long-lead castings, drives and bought-in parts into SAP stock on receipt and issue them to the project with quantity and value visible.",
+    "asIsStepIds": [
+     "st_7f87592e-e4cf-409f-8d20-e923312bf28a",
+     "st_0cd976ed-1c6e-493c-adf6-488533ee0112"
+    ],
+    "requirementIds": [
+     "rq_5af63f1d-af5b-4122-868b-ebb5b6f74a13"
+    ],
+    "implementation": {
+     "kind": "STANDARD",
+     "referenceIds": [
+      "S4-2023-INV-STOCK-TYPES",
+      "S4-2023-INV-GOODS-ISSUE"
+     ]
+    }
+   },
+   {
+    "id": "ETO-09",
+    "sequence": 9,
+    "title": "Schedule production and run shop-floor operations",
+    "purpose": "Replace the Excel schedule and job-tracking tool with capacity-checked production orders, operations and confirmations on the shop floor.",
+    "asIsStepIds": [
+     "st_451f8c22-2410-464d-8e3e-18b27bf13e84"
+    ],
+    "requirementIds": [
+     "rq_fc162d02-72d1-4a7c-a907-b05fd81d6339"
+    ],
+    "implementation": {
+     "kind": "STANDARD",
+     "referenceIds": [
+      "S4-2023-INV-STOCK-TYPES",
+      "S4-2023-INV-GOODS-ISSUE"
+     ]
+    }
+   },
+   {
+    "id": "ETO-10",
+    "sequence": 10,
+    "title": "Inspect, record non-conformances and issue certificates",
+    "purpose": "Move inspection results, non-conformance records and customer inspection certificates from paper into SAP, valued and linked to the project.",
+    "asIsStepIds": [
+     "st_fcccfeb1-6845-4289-a162-33e26ac6aac8"
+    ],
+    "requirementIds": [
+     "rq_4f32a572-05e8-46f6-b33c-2e28347058a5"
+    ],
+    "implementation": {
+     "kind": "STANDARD",
+     "referenceIds": [
+      "S4-2023-INV-STOCK-TYPES",
+      "S4-2023-SERIAL-NUMBER"
+     ]
+    }
+   },
+   {
+    "id": "ETO-11",
+    "sequence": 11,
+    "title": "Collect project costs, work in progress and settlement",
+    "purpose": "Collect material, labour and supplier costs on the project and settle work in progress so margin is visible during the project rather than after delivery.",
+    "asIsStepIds": [
+     "st_85b4058b-3be2-4f2b-a691-a21f7ee372d4"
+    ],
+    "requirementIds": [
+     "rq_1c5d8d64-2728-4152-8a64-a0e840180e76",
+     "rq_ef5967d0-20a4-4e5b-92b5-d7e40a3fc64c"
+    ],
+    "implementation": {
+     "kind": "STANDARD",
+     "referenceIds": [
+      "S4-2023-PM-ORDER-SETTLEMENT"
+     ]
+    }
+   },
+   {
+    "id": "ETO-12",
+    "sequence": 12,
+    "title": "Deliver the machine and bill the contract milestones",
+    "purpose": "Post the goods issue and delivery, then let the milestone billing plan generate the staged invoices including the 30/40/30 contract split.",
+    "asIsStepIds": [
+     "st_4f2a782c-df7b-48e7-84a8-7b7355aa48c7"
+    ],
+    "requirementIds": [
+     "rq_a89a4321-f6c0-43c6-b5ad-9530e0bd1688",
+     "rq_97212776-dfc8-4894-820a-4529cde8439b"
+    ],
+    "implementation": {
+     "kind": "STANDARD",
+     "referenceIds": [
+      "S4-2023-SD-BILLING",
+      "S4-2023-INV-GOODS-ISSUE"
+     ]
+    }
+   },
+   {
+    "id": "ETO-13",
+    "sequence": 13,
+    "title": "Close the project and review the cost variance",
+    "purpose": "Settle the completed project so final cost, margin and variance against budget are reported from SAP and the variance review is recorded.",
+    "asIsStepIds": [
+     "st_bb0535e0-a809-40ac-9a3b-54ef1d4eae5c"
+    ],
+    "requirementIds": [],
+    "implementation": {
+     "kind": "STANDARD",
+     "referenceIds": [
+      "S4-2023-PM-ORDER-SETTLEMENT"
+     ]
+    }
+   }
+  ],
+  "eliminatedAsIsSteps": [],
+  "coverage": [
+   {
+    "requirementId": "rq_5c636e1d-ebc3-4cfc-9b1a-fa5c0513a310",
+    "disposition": "IMPLEMENTED",
+    "stepIds": [
+     "ETO-03",
+     "ETO-04"
+    ],
+    "decisionId": null,
+    "rationale": "Aurora PLM remains the engineering design system and its approved design and revision data is brought into SAP; engineering changes are held as a controlled change record that updates the SAP bill of materials and the open production orders, so SAP is never the design master and PLM is never replaced."
+   },
+   {
+    "requirementId": "rq_cf36b424-85ad-4bfb-8fd5-56434698cde5",
+    "disposition": "IMPLEMENTED",
+    "stepIds": [
+     "ETO-04"
+    ],
+    "decisionId": null,
+    "rationale": "Post-release changes no longer travel by email: the change is captured in a change record with the Chief Engineer's sign-off and the resulting bill of materials revision is what planning and the shop floor read, and open production orders are updated with it.",
+    "decisionIds": [
+     "OQ-DR-1"
+    ]
+   },
+   {
+    "requirementId": "rq_5a66eaae-c5cc-4866-b9fc-f15f29a4602d",
+    "disposition": "IMPLEMENTED",
+    "stepIds": [
+     "ETO-05"
+    ],
+    "decisionId": null,
+    "rationale": "The manufacturing structure and routings are built and maintained in SAP from the released engineering bill of materials, with make-or-buy decisions and operations, work centres and standard hours in the system, so the hand-built Excel structure and printed routing sheets disappear."
+   },
+   {
+    "requirementId": "rq_f25ca0c8-c242-4e8d-a133-9664b90b72b3",
+    "disposition": "IMPLEMENTED",
+    "stepIds": [
+     "ETO-06"
+    ],
+    "decisionId": null,
+    "rationale": "Requirements are netted automatically by SAP planning against the project's own stock, and stock reserved for one project is held as that project's special stock so it is no longer consumed by another project.",
+    "decisionIds": [
+     "OQ-DR-2"
+    ]
+   },
+   {
+    "requirementId": "rq_5af63f1d-af5b-4122-868b-ebb5b6f74a13",
+    "disposition": "IMPLEMENTED",
+    "stepIds": [
+     "ETO-06",
+     "ETO-08"
+    ],
+    "decisionId": null,
+    "rationale": "Automatic MRP per project creates the requirements and receipt proposals, and the goods receipt into and issue from project-held stock keep the project supplied from its own stock, which is the mechanism by which stoppages from missing parts are halved; the reduction is measured against the current baseline.",
+    "decisionIds": [
+     "OQ-DR-2"
+    ]
+   },
+   {
+    "requirementId": "rq_91cccae8-e481-45cc-8809-daf708e45d46",
+    "disposition": "IMPLEMENTED",
+    "stepIds": [
+     "ETO-07",
+     "ETO-08"
+    ],
+    "decisionId": null,
+    "rationale": "Supplier dates live on the SAP purchase order and its schedule lines rather than in the buyer's spreadsheet, and receipts and late deliveries feed the material and production picture so the schedule reflects the actual confirmed date. Planned delivery time sources remain held on OQ-DR-2."
+   },
+   {
+    "requirementId": "rq_6490847d-97f0-4fc0-82e1-bc009324bafd",
+    "disposition": "IMPLEMENTED",
+    "stepIds": [
+     "ETO-07"
+    ],
+    "decisionId": null,
+    "rationale": "Requisitions and purchase orders above £20,000 are released through the configured approval workflow for purchasing documents, so the Operations Director's approval is recorded in the system instead of on paper."
+   },
+   {
+    "requirementId": "rq_fc162d02-72d1-4a7c-a907-b05fd81d6339",
+    "disposition": "IMPLEMENTED",
+    "stepIds": [
+     "ETO-09"
+    ],
+    "decisionId": null,
+    "rationale": "Work is scheduled as production orders with operations on work centres, so capacity is loaded and shown rather than judged by experience, and an urgent job is inserted as a change to the order and schedule so the plan stays current."
+   },
+   {
+    "requirementId": "rq_4f32a572-05e8-46f6-b33c-2e28347058a5",
+    "disposition": "IMPLEMENTED",
+    "stepIds": [
+     "ETO-10"
+    ],
+    "decisionId": null,
+    "rationale": "Inspection results and non-conformances are recorded in SAP against the inspection lot and the machine's serial number, and the inspection certificate is produced from the system; scrapped or reworked material carries its value so the quality outcome reaches project cost.",
+    "decisionIds": [
+     "OQ-DR-1"
+    ]
+   },
+   {
+    "requirementId": "rq_1c5d8d64-2728-4152-8a64-a0e840180e76",
+    "disposition": "IMPLEMENTED",
+    "stepIds": [
+     "ETO-11"
+    ],
+    "decisionId": null,
+    "rationale": "Project costs are collected on the project and its orders from SAP material, activity and supplier documents instead of manual allocation, and work in progress is settled on the project so cost and margin are visible during the project, not only after delivery.",
+    "decisionIds": [
+     "OQ-DR-3"
+    ]
+   },
+   {
+    "requirementId": "rq_ef5967d0-20a4-4e5b-92b5-d7e40a3fc64c",
+    "disposition": "IMPLEMENTED",
+    "stepIds": [
+     "ETO-11",
+     "ETO-13"
+    ],
+    "decisionId": null,
+    "rationale": "The project budget is held in SAP against the WBS and actual and committed costs settle to it, so planned versus actual variance and the margin can be reported during the project and closed out at project close; the variance policy and reporting granularity are held on OQ-DR-3.",
+    "decisionIds": [
+     "OQ-DR-3"
+    ]
+   },
+   {
+    "requirementId": "rq_a89a4321-f6c0-43c6-b5ad-9530e0bd1688",
+    "disposition": "IMPLEMENTED",
+    "stepIds": [
+     "ETO-12"
+    ],
+    "decisionId": null,
+    "rationale": "The contract milestone billing plan is held on the sales order and its dates create billing due list entries, so the staged invoices are generated from the contract schedule rather than raised by hand and the agreed scope lines are billed from the order.",
+    "questionIds": [
+     "OQ-1"
+    ]
+   },
+   {
+    "requirementId": "rq_97212776-dfc8-4894-820a-4529cde8439b",
+    "disposition": "IMPLEMENTED",
+    "stepIds": [
+     "ETO-12"
+    ],
+    "decisionId": null,
+    "rationale": "Delivery is planned and posted against the contracted delivery date with availability checked from project stock, which is the operating mechanism behind the 92% on-time target measured against the 71% baseline.",
+    "questionIds": [
+     "OQ-1",
+     "OQ-2"
+    ]
+   }
+  ],
+  "conflictDecisions": [],
+  "openQuestions": [
+   {
+    "id": "OQ-1",
+    "question": "The contract milestone split (30% on order, 40% at factory acceptance, 30% on delivery) is agreed in the contract, but the quote is issued before the contract exists: at which point does the milestone billing plan become binding, and how is a milestone date changed if factory acceptance slips?",
+    "owner": "Finance Controller",
+    "affectedStepIds": [
+     "ETO-02",
+     "ETO-11",
+     "ETO-12"
+    ],
+    "decisionIds": [
+     "OQ-DR-1"
+    ]
+   },
+   {
+    "id": "OQ-2",
+    "question": "Which SAP date is the on-time delivery KPI measured against: the contractual delivery date on the sales order, the planned goods issue date of the outbound delivery, or the actual goods issue date, and who owns the result each month?",
+    "owner": "Operations Director",
+    "affectedStepIds": [
+     "ETO-09",
+     "ETO-12"
+    ],
+    "decisionIds": []
+   },
+   {
+    "id": "OQ-DR-1",
+    "question": "Open design decision: the owner of the engineering change approval and the project cost and variance treatment is not yet approved. Confirm the Chief Engineer's sign-off is the mandatory gate on every post-release change and how the cost and accounting effect of a change is carried; until then the change record and the quality-driven cost effect are held and no alternative approval route is operated.",
+    "owner": "Chief Engineer",
+    "affectedStepIds": [
+     "ETO-04",
+     "ETO-10"
+    ],
+    "decisionIds": []
+   },
+   {
+    "id": "OQ-DR-2",
+    "question": "Open design decision: the material planning and stock policy is not yet approved. Confirm that project stock is held as project-specific special stock, what is reserved at which planning run, and where supplier planned delivery times come from; until then requirements are netted against project-specific stock and no plant-wide substitution of another project's stock is operated.",
+    "owner": "Material planning lead",
+    "affectedStepIds": [
+     "ETO-06",
+     "ETO-07",
+     "ETO-08"
+    ],
+    "decisionIds": []
+   },
+   {
+    "id": "OQ-DR-3",
+    "question": "Open design decision: the project cost and work-in-progress policy is not yet approved. Confirm the costing sheet, the work-in-progress and settlement rule and the reporting granularity that make the under-5% variance and in-project margin measurable; until then costs are collected on the project and the WBS budget and work in progress is settled, and no alternative valuation method is operated.",
+    "owner": "Finance Controller",
+    "affectedStepIds": [
+     "ETO-11",
+     "ETO-13"
+    ],
+    "decisionIds": []
+   }
+  ]
+ }
+}

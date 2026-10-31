@@ -105,7 +105,12 @@ for (const scenario of scenarios) test(`synthetic ${scenario.scenario}: browser 
     expect((await db.query("SELECT id FROM projects WHERE id=$1 AND name=$2", [projectId, project.name])).rowCount).toBe(1);
     worker = spawn(process.execPath, ["--import", "tsx", "src/worker.ts"], { stdio: ["ignore", "pipe", "pipe"],
       env: { PATH: process.env.PATH, ...local, NODE_ENV: "test", DATABASE_URL: databaseUrl, APP_URL: origin,
-        AI_PROVIDER: "stub", AI_FAULT_INJECTION: scenario.fault ?? "" } });
+        AI_PROVIDER: "stub", AI_FAULT_INJECTION: scenario.fault ?? "",
+        // Set by scripts/test-browser.ts (real MinIO or the S3 stub); absent when run directly.
+        ...(process.env.BROWSER_TEST_S3_ENDPOINT ? { S3_ENDPOINT: process.env.BROWSER_TEST_S3_ENDPOINT } : {}),
+        ...(process.env.BROWSER_TEST_S3_BUCKET ? { S3_BUCKET: process.env.BROWSER_TEST_S3_BUCKET } : {}),
+        ...(process.env.BROWSER_TEST_S3_ACCESS_KEY_ID ? { S3_ACCESS_KEY_ID: process.env.BROWSER_TEST_S3_ACCESS_KEY_ID } : {}),
+        ...(process.env.BROWSER_TEST_S3_SECRET_ACCESS_KEY ? { S3_SECRET_ACCESS_KEY: process.env.BROWSER_TEST_S3_SECRET_ACCESS_KEY } : {}) } });
     worker.stdout?.on("data", (data) => workerLogs.push(String(data)));
     worker.stderr?.on("data", (data) => workerLogs.push(String(data)));
     worker.on("error", (error) => { workerError = error; });

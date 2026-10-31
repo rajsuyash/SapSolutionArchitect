@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, type ReactNode } from "react";
-import { REQUIREMENT_KIND_LABELS, STEP_KEYS, STEP_LABELS, WORKSPACE_FIELDS, describeBlocker, describeField,
+import { REQUIREMENT_KIND_LABELS, STEP_KEYS, STEP_LABELS, WORKSPACE_FIELDS, carriedGaps, describeBlocker, describeField, describeProposal,
   requirementLabel, stepLabel } from "../lib/workspace-fields";
 import { isActive, type Command, type Fact, type JobView, type Workspace, type WorkspaceView } from "./consultant-api";
 import { FieldRow, type FactUpdate } from "./consultant-field";
@@ -66,6 +66,9 @@ export function ConsultantSummary({ workspace, jobs, locked, run, onGenerate, re
       <dl className={styles.fieldList}>{fields.map(field => fieldRow(field.id, field.fact, undefined, true))}</dl>
     </EditableGroup>;
   };
+  const softBlockers = readiness?.blockers.filter(blocker => blocker.soft) ?? [];
+  const carried = carriedGaps(state, readiness?.blockers ?? []);
+  const canConfirmDraft = !readiness?.ready && !!readiness?.draftReady && !confirmed;
   const unresolved = [...state.facts, ...state.stepDrafts.flatMap(draft => draft.fields), ...state.requirementDrafts.map(draft => draft.statement)]
     .filter(fact => fact.status === "UNKNOWN" || fact.status === "OWNER_PENDING");
 
@@ -74,15 +77,22 @@ export function ConsultantSummary({ workspace, jobs, locked, run, onGenerate, re
       {readiness?.ready
         ? <p role="status" className={styles.ok}>Everything required is answered. {confirmed ? "You have confirmed this understanding." : "Review it once more, then confirm."}</p>
         : <><p role="status">{readiness?.blockers.length ?? 0} thing{readiness?.blockers.length === 1 ? "" : "s"} still needed before this can be confirmed:</p>
-          <ul data-testid="blockers">{readiness?.blockers.map((blocker, index) => <li key={index}>{describeBlocker(state, blocker)}</li>)}</ul></>}
+          <ul data-testid="blockers">{readiness?.blockers.map((blocker, index) => <li key={index}>{describeBlocker(state, blocker)}</li>)}</ul>
+          {canConfirmDraft && workspace.canConfirm && <>
+            <p id="draft-gaps-note" className={styles.muted}>Nothing else blocks a draft. You can confirm now and the To-Be will carry these as &lsquo;to confirm&rsquo; or open questions:</p>
+            <ul data-testid="draft-gaps">{softBlockers.map((blocker, index) => <li key={index}>{describeBlocker(state, blocker)}</li>)}</ul></>}</>}
       {workspace.canConfirm
         ? <div className={styles.row}>
           <button type="button" className={styles.primary} disabled={!editable || !readiness?.ready || confirmed}
             onClick={() => void run({ type: "CONFIRM" })}>{confirmed ? "Confirmed" : "Confirm current process"}</button>
+          {canConfirmDraft && <button type="button" className={styles.small} data-testid="confirm-draft" aria-describedby="draft-gaps-note"
+            disabled={!editable} onClick={() => void run({ type: "CONFIRM", allowGaps: true })}>Confirm as draft with gaps</button>}
           {confirmed && <button type="button" className={styles.primary} disabled={!editable || isActive(toBe)} onClick={() => void onGenerate()}>
             {toBe?.status === "FAILED" ? "Retry To-Be generation" : toBe ? "Generate a new To-Be draft" : "Generate To-Be design"}</button>}
         </div>
         : <p className={styles.muted}>Only project leads and consultants can confirm. You can still answer questions and add details.</p>}
+      {confirmed && state.confirmation?.withGaps && <p className={styles.muted} data-testid="draft-confirmed">
+        Confirmed as a draft with gaps: {carried.total ? `${carried.parts} ${carried.total === 1 ? "is" : "are"}` : "some open items are"} carried into the To-Be as open questions.</p>}
       {confirmed && <p className={styles.muted}>Any change to the answers will require confirming again.</p>}
       {toBe && <p id="to-be-status" role="status" data-testid="to-be-status" data-state={toBe.result?.status ?? toBe.status}>
         {resultCopy(toBe, toBe.result?.sourceRevision === state.confirmation?.revision)}</p>}
@@ -91,13 +101,20 @@ export function ConsultantSummary({ workspace, jobs, locked, run, onGenerate, re
     </Section>
 
     {pending.length > 0 && <Section id="proposals-heading" title="Proposed answers to review" hint="Nothing becomes part of the record until you accept it.">
+      {editable && pending.length > 1 && <div className={styles.row}>
+        <button type="button" className={styles.primary} data-testid="accept-all"
+          onClick={() => void run({ type: "DECIDE_PROPOSALS", ids: pending.map(proposal => proposal.id), decision: "ACCEPT" })}>
+          Accept all {pending.length}</button>
+        <span className={styles.muted}>Anything that no longer fits your current answers stays here for you to check.</span>
+      </div>}
       <ul className={styles.list}>{pending.map(proposal => {
-        const label = describeField(state, proposal.fieldId).label;
+        const label = describeProposal(state, proposal);
+        const isField = proposal.operation === "PROPOSE_SET" || proposal.operation === "PROPOSE_REPLACE";
         return <ProposalCard key={proposal.id} label={label} proposal={proposal} disabled={!editable}
           onAccept={() => run({ type: "DECIDE_PROPOSAL", proposalId: proposal.id, decision: "ACCEPT" })}
           onReject={() => run({ type: "DECIDE_PROPOSAL", proposalId: proposal.id, decision: "REJECT" })}
-          onEdit={(value) => run([setFact(state, proposal.fieldId, { status: "KNOWN", value, rationale: null, owner: null }),
-            { type: "DECIDE_PROPOSAL", proposalId: proposal.id, decision: "REJECT" }])} />;
+          onEdit={isField ? (value) => run([setFact(state, proposal.fieldId, { status: "KNOWN", value, rationale: null, owner: null }),
+            { type: "DECIDE_PROPOSAL", proposalId: proposal.id, decision: "REJECT" }]) : undefined} />;
       })}</ul>
     </Section>}
 

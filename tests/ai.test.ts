@@ -144,8 +144,8 @@ describe("real SDK protocol with an intercepted transport", () => {
     expect(harness.bodies[0]!.messages[0]!.content).toContain("{{validationErrors}} {{input}}");
   });
 
-  it.each([429, 500, "network"])("retries %s exactly twice at 2s and 8s", async (status) => {
-    vi.useFakeTimers();
+  it.each([429, 500, "network"])("retries %s with a 2s then 6s backoff until it succeeds", async (status) => {
+    vi.useFakeTimers(); vi.spyOn(Math, "random").mockReturnValue(0.5);
     const times: number[] = [];
     const harness = providerHarness((_body, _init, attempt) => {
       times.push(Date.now());
@@ -158,7 +158,7 @@ describe("real SDK protocol with an intercepted transport", () => {
     await vi.advanceTimersByTimeAsync(10000);
     expect((await pending).metrics.attempts).toBe(3);
     expect(times[1]! - times[0]!).toBe(2000);
-    expect(times[2]! - times[1]!).toBe(8000);
+    expect(times[2]! - times[1]!).toBe(6000);
   });
 
   it("fails permanent provider errors without leaking provider messages or retrying", async () => {
@@ -168,13 +168,13 @@ describe("real SDK protocol with an intercepted transport", () => {
     expect(JSON.stringify(failure)).not.toContain("private"); expect(harness.bodies).toHaveLength(1);
   });
 
-  it("exhausts transient failures after three calls", async () => {
-    vi.useFakeTimers();
+  it("exhausts transient failures after the first call and three retries", async () => {
+    vi.useFakeTimers(); vi.spyOn(Math, "random").mockReturnValue(0.5); vi.spyOn(console, "error").mockImplementation(() => {});
     const harness = providerHarness(() => new Response("{}", { status: 503 }));
     const pending = createStageRunner(harness.settings(), { fetch: harness.fetch })("problem_analysis", input).catch((error) => error);
     await vi.waitFor(() => expect(harness.bodies).toHaveLength(1));
-    await vi.advanceTimersByTimeAsync(10000);
-    expect(await pending).toMatchObject({ code: "AI_PROVIDER_ERROR", metrics: { attempts: 3 } });
+    await vi.advanceTimersByTimeAsync(26000);
+    expect(await pending).toMatchObject({ code: "AI_PROVIDER_ERROR", metrics: { attempts: 4, providerRetries: 3 } });
   });
 
   it("rejects truncated tool output even if the partial payload happens to validate", async () => {

@@ -1,3 +1,4 @@
+import { CONTEXT_FIELD_IDS } from "./support/context-fields";
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
@@ -107,7 +108,8 @@ describe.skipIf(process.env.RUN_DB_TESTS !== "1")("durable discovery workspace",
     const messageId = message.state.messages[0]!.id;
     const args = { orgId: owner.user.orgId, projectId: project.id, variantCode: "HIRE",
       requestedBy: owner.user.id, expectedRevision: 2, currentMessageId: messageId, requestKey: randomUUID() };
-    const turn = { schemaVersion: 1, contextRevision: 2, reply: "Thank you for that context.", questions: [],
+    const turn = { schemaVersion: 1, contextRevision: 2, reply: "Thank you for that context.",
+      questions: [{ gapKey: "g_process_owner", question: "Who owns this process day to day?", whyItMatters: "They confirm the rules." }],
       proposedUpdates: [{ fieldId: "current_systems", operation: "PROPOSE_SET", previousValue: null,
         value: "in a spreadsheet", sourceId: messageId, quote: "in a spreadsheet" }], observations: [] };
     const saved = await transaction(pool, client => persistWorkspaceTurn(client, { ...args, turn }));
@@ -118,6 +120,74 @@ describe.skipIf(process.env.RUN_DB_TESTS !== "1")("durable discovery workspace",
     const loaded = await transaction(pool, client => loadWorkspaceForWorker(client, args));
     expect(loaded.state.revision).toBe(3);
     expect(loaded.canConfirm).toBe(true);
+  });
+
+  it("never saves a chat turn without a question while gaps remain, even when extraction closed the asked gap first", async () => {
+    const { owner, project } = await fixture();
+    await workspaces.create(owner.token, project.id, "RACE", { variantName: "Race" }, randomUUID());
+    const sent = await workspaces.command(owner.token, project.id, "RACE", 1, randomUUID(),
+      { type: "SEND_MESSAGE", text: "Priya Nair owns the process and signs off every change." });
+    const messageId = sent.state.messages[0]!.id;
+    const args = { orgId: owner.user.orgId, projectId: project.id, variantCode: "RACE", requestedBy: owner.user.id,
+      expectedRevision: 2, currentMessageId: messageId };
+    const chat = { schemaVersion: 1, contextRevision: 2, reply: "Thank you for that context.",
+      questions: [{ gapKey: "g_process_owner", question: "Who owns this process day to day?", whyItMatters: "They confirm the rules." }] };
+    // Extraction finishes first and proposes an answer to the very gap the chat is about to ask.
+    const quote = "Priya Nair owns the process";
+    await transaction(pool, client => persistWorkspaceTurn(client, { ...args, requestKey: randomUUID(), scope: "extraction", turn: {
+      proposedUpdates: [{ fieldId: "process_owner", operation: "PROPOSE_SET", previousValue: null, value: quote, sourceId: messageId, quote }],
+      observations: [] } }));
+    const saved = await transaction(pool, client => persistWorkspaceTurn(client, { ...args, requestKey: randomUUID(), scope: "chat", turn: chat }));
+    const asked = saved.state.questions.map(q => q.gapKey);
+    expect(asked.length).toBeGreaterThan(0);
+    expect(asked).not.toContain("g_process_owner");
+    expect(saved.state.messages.at(-1)!.text).toContain(saved.state.questions[0]!.question);
+  });
+
+  it("seeds a new variant's modules and org units from the project as KNOWN facts quoting Project details, org units in a stable order", async () => {
+    const owner = await auth.signup({ name: "Synthetic lead", email: `workspace-${randomUUID()}@test.local`,
+      password: "Password123!", orgName: "Synthetic workspace" });
+    // Units are supplied out of order; the seeded text must follow type, then code.
+    const project = await projects.create(owner.token, { ...projectInput, modules: ["SD", "MM"], orgUnits: [
+      { type: "PLANT", code: "P200", name: "North depot" }, { type: "PLANT", code: "P100", name: "Main depot" },
+      { type: "COMPANY_CODE", code: "1000", name: "Hire Ltd" }] }, randomUUID());
+    const { state } = await workspaces.create(owner.token, project.id, "SEEDED", { variantName: "Seeded" }, randomUUID());
+    const details = state.sources.find(source => source.title === "Project details");
+    expect(details).toBeDefined();
+    const modules = state.facts.find(f => f.id === "modules_in_scope")!;
+    const units = state.facts.find(f => f.id === "target_org_units")!;
+    expect(modules).toMatchObject({ status: "KNOWN", value: "MM, SD", evidence: { sourceId: details!.id, quote: "MM, SD" } });
+    expect(units).toMatchObject({ status: "KNOWN",
+      value: "Company code 1000 Hire Ltd; Plant P100 Main depot; Plant P200 North depot",
+      evidence: { sourceId: details!.id, quote: units.value } });
+    expect(details!.text).toContain(units.value!);
+  });
+
+  it("loads a workspace saved before the company-context fields existed and backfills them EMPTY", async () => {
+    const { owner, project } = await fixture();
+    const created = await workspaces.create(owner.token, project.id, "OLD", { variantName: "Old" }, randomUUID());
+    const original = ["business_problem", "process_owner", "scope_boundary", "current_trigger", "current_systems", "current_rules",
+      "current_exceptions", "current_financial", "desired_outcome", "desired_controls"];
+    // Rewrite the stored JSON the way an older build saved it. Revisions are immutable, so this test-only edit lifts the guard trigger.
+    const client = await pool.connect();
+    let done;
+    try {
+      await client.query("BEGIN");
+      await client.query("ALTER TABLE discovery_workspace_revisions DISABLE TRIGGER USER");
+      done = await client.query(`UPDATE discovery_workspace_revisions SET state=jsonb_set(state,'{facts}',
+        (SELECT jsonb_agg(f) FROM jsonb_array_elements(state->'facts') f WHERE f->>'id' = ANY($1))) WHERE id=$2`, [original, created.id]);
+      await client.query("ALTER TABLE discovery_workspace_revisions ENABLE TRIGGER USER");
+      await client.query("COMMIT");
+    } catch (error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); }
+    expect(done.rowCount).toBe(1);
+    const loaded = await workspaces.get(owner.token, project.id, "OLD");
+    expect(loaded.state!.facts).toHaveLength(original.length + CONTEXT_FIELD_IDS.length);
+    expect(loaded.state!.facts.find(f => f.id === "operating_scale")).toMatchObject({ status: "EMPTY", value: null });
+    expect(loaded.readiness!.blockers.map(b => b.detail)).toContain("Operating scale and volumes");
+    const next = await workspaces.command(owner.token, project.id, "OLD", loaded.state!.revision, randomUUID(),
+      { type: "SET_FIELD", fieldId: "kpi_targets", status: "KNOWN", value: "OTIF above 90%", rationale: null, owner: null, sourceId: null, quote: null });
+    expect(next.state.facts.find(f => f.id === "kpi_targets")?.status).toBe("KNOWN");
+    expect(next.state.facts).toHaveLength(original.length + CONTEXT_FIELD_IDS.length);
   });
 
   it("atomically confirms a compiled discovery snapshot and pins its exact revision", async () => {
@@ -138,6 +208,7 @@ describe.skipIf(process.env.RUN_DB_TESTS !== "1")("durable discovery workspace",
       ["current_financial", "Billing adjusts the final invoice after return"],
       ["desired_controls", "Require a dated return record for audit"],
     ]) await set(fieldId!, value!);
+    for (const fieldId of CONTEXT_FIELD_IDS) await set(fieldId, `Synthetic answer for ${fieldId}`);
     current = await workspaces.command(owner.token, project.id, "BILLING", current.state.revision, randomUUID(),
       { type: "ADD_STEP", step: { name: "Record return", actor: "Stores clerk", system: "Spreadsheet",
         trigger: "Asset physically returned", description: "Record the return date in the spreadsheet.",

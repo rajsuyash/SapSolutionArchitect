@@ -1,3 +1,4 @@
+import { CONTEXT_FIELD_IDS } from "./support/context-fields";
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
@@ -88,7 +89,7 @@ describe.skipIf(process.env.RUN_DB_TESTS !== "1")("consultant HTTP boundary", ()
   const command = (f: Awaited<ReturnType<typeof started>>, revision: number, body: object, token = f.owner.token) =>
     call("POST", `${f.path}/commands`, { token, body: { expectedRevision: revision, command: body } });
   /** Drive a workspace to a confirmed state through the public HTTP commands only. */
-  async function confirmed() {
+  async function confirmed(withGaps = false) {
     const f = await started(); let revision = f.revision;
     const run = async (body: object) => {
       const response = await command(f, revision, body);
@@ -102,13 +103,20 @@ describe.skipIf(process.env.RUN_DB_TESTS !== "1")("consultant HTTP boundary", ()
       ["current_exceptions", "Missing return date is escalated to the stores lead"],
       ["current_financial", "Billing adjusts the final invoice after return"], ["desired_controls", "Require a dated return record for audit"],
     ] as const) await run({ type: "SET_FIELD", fieldId, status: "KNOWN", value, rationale: null, owner: null, sourceId: null, quote: null });
-    await run({ type: "ADD_STEP", step: { name: "Record return", actor: "Stores clerk", system: "Spreadsheet",
+    for (const fieldId of CONTEXT_FIELD_IDS) await run({ type: "SET_FIELD", fieldId, status: "KNOWN", value: `Synthetic answer for ${fieldId}`,
+      rationale: null, owner: null, sourceId: null, quote: null });
+    if (withGaps) await run({ type: "START_STEP_DRAFT" });
+    else await run({ type: "ADD_STEP", step: { name: "Record return", actor: "Stores clerk", system: "Spreadsheet",
       trigger: "Asset physically returned", description: "Record the return date in the spreadsheet.",
       inputs: ["Return note"], outputs: ["Return record"], controls: [], exceptions: [] } });
-    const state = (await call("GET", f.path, { token: f.owner.token })).body.data.state;
-    await run({ type: "ADD_REQUIREMENT", requirement: { asIsStepId: state.steps[0].id, kind: "TO_BE_REQUIREMENT",
+    let state = (await call("GET", f.path, { token: f.owner.token })).body.data.state;
+    // A draft step that is only named: every other detail stays a gap.
+    if (withGaps) await run({ type: "SET_STEP_DRAFT_FIELD", fieldId: `${state.stepDrafts[0].id}_name`, status: "KNOWN",
+      value: "Record return", rationale: null, owner: null, sourceId: null, quote: null });
+    state = (await call("GET", f.path, { token: f.owner.token })).body.data.state;
+    await run({ type: "ADD_REQUIREMENT", requirement: { asIsStepId: (withGaps ? state.stepDrafts : state.steps)[0].id, kind: "TO_BE_REQUIREMENT",
       statement: "Require a return date before invoicing.", critical: true } });
-    const done = await run({ type: "CONFIRM" });
+    const done = await run(withGaps ? { type: "CONFIRM", allowGaps: true } : { type: "CONFIRM" });
     return { ...f, revision, confirmation: done.body.data };
   }
 
@@ -235,6 +243,21 @@ describe.skipIf(process.env.RUN_DB_TESTS !== "1")("consultant HTTP boundary", ()
     expect([withdrawn.status, withdrawn.body.error.code]).toEqual([409, "DISCOVERY_NOT_CONFIRMED"]);
   });
 
+  it("confirms a draft with gaps: the snapshot carries each gap as an open question and a To-Be can be generated", async () => {
+    const f = await started();
+    const plain = await command(f, f.revision, { type: "CONFIRM", allowGaps: true });
+    expect([plain.status, plain.body.error.code]).toEqual([409, "WORKSPACE_NOT_READY"]);
+    const c = await confirmed(true);
+    expect(c.confirmation).toMatchObject({ canConfirm: true, readiness: { ready: false, draftReady: true },
+      state: { confirmation: { withGaps: true } } });
+    const snapshot = (await pool.query("SELECT payload FROM discovery_versions WHERE project_id=$1", [c.project.id])).rows[0].payload;
+    expect(snapshot.asIsSteps[0]).toMatchObject({ name: "Record return", actor: "To confirm", description: "To confirm" });
+    expect(snapshot.openQuestions).toContainEqual(expect.objectContaining({ id: expect.stringMatching(/^q_st_[^_]+$/),
+      question: expect.stringMatching(/^Record return: confirm who does it, .*what starts it, .*what happens/) }));
+    const queued = await call("POST", `${c.path}/to-be`, { token: c.owner.token, body: { expectedRevision: c.revision } });
+    expect([queued.status, queued.body.data.job]).toEqual([202, expect.objectContaining({ kind: "TO_BE", status: "QUEUED" })]);
+  }, 30000);
+
   it("generates only from the confirmed revision and returns a minimal, truthful result", async () => {
     const c = await confirmed();
     const stale = await call("POST", `${c.path}/to-be`, { token: c.owner.token, body: { expectedRevision: c.revision - 1 } });
@@ -303,10 +326,14 @@ describe.skipIf(process.env.RUN_DB_TESTS !== "1")("consultant HTTP boundary", ()
     expect(ok.status, JSON.stringify(ok.body)).toBe(200);
     expect(ok.headers.get("cache-control")).toContain("no-store");
     const report = ok.body.data.report;
-    expect(Object.keys(report).sort()).toEqual(["blockers", "design", "discovery", "generatedAt", "jobId", "project", "references",
-      "sourceRevision", "targetProduct", "targetRelease", "unresolvedInputQuestions", "variant"]);
+    expect(Object.keys(report).sort()).toEqual(["blockers", "catalogReferenceCount", "design", "discovery", "generatedAt", "jobId", "project", "references",
+      "snapshotId", "sourceRevision", "targetProduct", "targetRelease", "unresolvedInputQuestions", "variant"]);
     expect(report).toMatchObject({ jobId: r.jobId, project: { name: "Hire returns" }, variant: { code: "RENTAL", name: "Equipment hire" },
       sourceRevision: r.revision, design: { schemaVersion: 1 } });
+    expect(report.snapshotId).toMatch(/^[0-9a-f-]{36}$/);
+    // Document control carries each frozen source's digest, never its text.
+    expect(report.discovery.sources.length).toBeGreaterThan(0);
+    for (const source of report.discovery.sources) { expect(source.digest).toMatch(/^[a-f0-9]{64}$/); expect(source).not.toHaveProperty("text"); }
     expect(report.design.steps.length).toBeGreaterThan(0);
     expect(report.discovery.asIsSteps[0].name).toBe("Record return");
     const wire = JSON.stringify(ok.body);

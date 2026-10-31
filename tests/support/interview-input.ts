@@ -15,7 +15,7 @@ export const fixture = (): InterviewInput => ({
     { key: "return-action-gap", fieldId: "return-action", detail: "How is return recorded?", priority: "IMPORTANT" },
     { key: "return-date-gap", fieldId: "return-date", detail: "What date stops charging?", priority: "CRITICAL" },
   ],
-  closedGapKeys: ["known-actor-gap"],
+  closedGapKeys: ["known-actor-gap"], steps: [], requirements: [], unextractedMessageIds: [],
   history: [{ role: "assistant", text: "Which clerk records the return?" },
     { role: "user", text: "The stores clerk." }],
 });

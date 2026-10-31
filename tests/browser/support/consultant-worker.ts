@@ -1,13 +1,13 @@
 // Browser-test worker: the real queue, job fencing, validation and persistence, with a scripted
 // model in place of the provider. It proves the application path, not the quality of any AI output.
-import { CONSULTANT_QUEUE } from "../../../src/lib/consultant-jobs";
+import { workConsultantQueues } from "../../../src/lib/consultant-workers";
 import { getRuntime } from "../../../src/lib/runtime";
 import type { createStageRunner } from "../../../src/lib/ai/runStage";
 import type { InterviewInput } from "../../../src/lib/ai/discovery-interview";
 import type { ToBeInput } from "../../../src/lib/ai/to-be";
 import { rentalDraft } from "../../../fixtures/ai/to-be/rental-benchmark";
 
-const metrics = (stage: "interview_turn" | "to_be") => ({ stage, provider: "stub" as const, model: "scripted-browser-double",
+const metrics = (stage: "interview_turn" | "extraction_turn" | "to_be") => ({ stage, provider: "stub" as const, model: "scripted-browser-double",
   inputTokens: 1, outputTokens: 1, latencyMs: 1, attempts: 1, validationErrors: [] });
 
 function interviewTurn(input: InterviewInput) {
@@ -15,6 +15,10 @@ function interviewTurn(input: InterviewInput) {
   const quote = message.text.split(/(?<=\.)\s/)[0]!.trim();
   const first = input.history.length === 0;
   const open = input.fields.find(field => field.id === "current_systems" && field.status === "EMPTY");
+  // A walkthrough message (marked by its first sentence) also yields an interviewer-proposed step and requirement:
+  // the 2nd sentence becomes the step, the 3rd a pain point on it. `new_0` is that step within this turn.
+  const sentences = message.text.split(/(?<=\.)\s/).map(sentence => sentence.trim());
+  const walkthrough = sentences[0] === "Dispatch books the truck by phone." && sentences.length >= 3;
   return {
     schemaVersion: 1 as const, contextRevision: input.contextRevision,
     reply: "Thank you for that context." as const,
@@ -23,6 +27,9 @@ function interviewTurn(input: InterviewInput) {
       whyItMatters: "This lets me describe the current process accurately before we design anything." })),
     proposedUpdates: first && open ? [{ fieldId: open.id, operation: "PROPOSE_SET" as const, previousValue: null,
       value: quote, sourceId: message.id, quote }] : [],
+    proposedSteps: walkthrough ? [{ sourceId: message.id, quote: sentences[1]!, value: sentences[1]!, nameHint: "logs the return" }] : [],
+    proposedRequirements: walkthrough ? [{ stepRef: "new_0", kind: "PAIN_POINT" as const, critical: false,
+      sourceId: message.id, quote: sentences[2]!, value: sentences[2]! }] : [],
     observations: first && open ? [{ kind: "FOLLOW_UP_SUGGESTION" as const, fieldIds: [open.id],
       detail: "Check whether late returns are logged anywhere other than the spreadsheet." }] : [],
   };
@@ -37,16 +44,24 @@ function design(input: ToBeInput) {
     rationale: "Covered by the proposed hire step." }], conflictDecisions: [], openQuestions: [] };
 }
 
+// A message starting "Slow extraction." holds its extraction back so the browser can see chat answer first.
+async function slowExtraction(input: InterviewInput) {
+  if (input.currentMessage.text.startsWith("Slow extraction.")) await new Promise(resolve => setTimeout(resolve, 2500));
+  return { payload: interviewTurn(input), metrics: metrics("extraction_turn") };
+}
+
 const runStage = (async (stage: string, raw: unknown) => stage === "interview_turn"
   ? { payload: interviewTurn(raw as InterviewInput), metrics: metrics("interview_turn") }
+  : stage === "extraction_turn" ? await slowExtraction(raw as InterviewInput)
   : { payload: { design: design(raw as ToBeInput) }, metrics: metrics("to_be") }) as ReturnType<typeof createStageRunner>;
 
 const { services, consultantJobs, startQueue } = getRuntime();
 await startQueue();
 await consultantJobs.recover();
-await services.queue.work<{ jobId: string }>(CONSULTANT_QUEUE, { batchSize: 1, localConcurrency: 2, pollingIntervalSeconds: 0.5 },
-  async ([job]) => { if (job && job.data.jobId === job.id) await consultantJobs.execute(job.id, job.signal, runStage); });
+const shutdown = new AbortController();
+await workConsultantQueues(services.queue, consultantJobs, runStage, { chatConcurrency: 2, batchConcurrency: 2, shutdown: shutdown.signal,
+  extract: { pool: services.pool, concurrency: 2, maxWaitSeconds: 60 } });
 console.info("Consultant test worker ready");
-const stop = async () => { try { await services.close(); } finally { process.exit(0); } };
+const stop = async () => { shutdown.abort(); try { await services.close(); } finally { process.exit(0); } };
 process.once("SIGTERM", () => void stop());
 process.once("SIGINT", () => void stop());

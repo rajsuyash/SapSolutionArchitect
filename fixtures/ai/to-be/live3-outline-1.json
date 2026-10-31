@@ -1,0 +1,442 @@
+{
+ "attempt": 1,
+ "payload": {
+  "schemaVersion": 1,
+  "processName": "Engineer-to-order to delivery: contract to project close at Halden Precision Engineering",
+  "steps": [
+   {
+    "id": "S1",
+    "sequence": 1,
+    "title": "Estimate and quote the engineered machine from Aurora PLM design",
+    "purpose": "Turn the Aurora PLM sketch into a SAP sales quotation with material, labour and test-hour estimates, a quoted delivery date and Operations Director approval above the quote threshold.",
+    "asIsStepIds": [
+     "st_d3496293-2e1d-4b0a-a9c2-ad3ba510ecbe"
+    ],
+    "requirementIds": [],
+    "implementation": {
+     "kind": "STANDARD",
+     "referenceIds": [
+      "S4-2023-SD-QUOTE",
+      "S4-2023-SD-QUOTE-TO-ORDER"
+     ]
+    }
+   },
+   {
+    "id": "S2",
+    "sequence": 2,
+    "title": "Create the project, WBS budget and milestone billing plan from the signed contract",
+    "purpose": "Give every order a project number, a work-package WBS budget released for cost collection and a contract milestone billing plan, with Finance Controller review above the budget threshold.",
+    "asIsStepIds": [
+     "st_1047bacd-00a0-4f98-b195-0e5bc02e8418"
+    ],
+    "requirementIds": [],
+    "implementation": {
+     "kind": "NEEDS_VALIDATION",
+     "referenceIds": []
+    }
+   },
+   {
+    "id": "S3",
+    "sequence": 3,
+    "title": "Release the engineering bill of materials and route engineering changes into SAP",
+    "purpose": "Transfer the released Aurora PLM engineering BOM into SAP as the single valid revision and carry each post-release engineering change through Chief Engineer approval so the BOM and open production orders are updated instead of emailed.",
+    "asIsStepIds": [
+     "st_ddd6cd9c-f850-4ff9-a35d-cf1f14045fe7"
+    ],
+    "requirementIds": [
+     "rq_65ff97da-a5e3-4c0c-a270-74b20b53ed1d",
+     "rq_3b57d773-0837-4838-80cb-0c9a337cdcfc"
+    ],
+    "implementation": {
+     "kind": "INTEGRATION",
+     "referenceIds": [
+      "S4-2023-INT-BTP-SIDE-BY-SIDE",
+      "S4-2023-EXT-KEYUSER",
+      "S4-2023-WF-SD-APPROVAL",
+      "S4-2023-WF-MYINBOX"
+     ]
+    }
+   },
+   {
+    "id": "S4",
+    "sequence": 4,
+    "title": "Build the manufacturing BOM, routing and project material master in SAP",
+    "purpose": "Replace Excel structures and printed routings with a SAP manufacturing BOM, project-relevant routings with operations, work centres and standard hours, and make-or-buy decisions, reviewed by the production manager for large projects.",
+    "asIsStepIds": [
+     "st_6221298e-c4cc-4008-bfb2-aa06c40a1981"
+    ],
+    "requirementIds": [
+     "rq_cc5021d3-a961-4134-b817-f8e81326aed8"
+    ],
+    "implementation": {
+     "kind": "NEEDS_VALIDATION",
+     "referenceIds": []
+    }
+   },
+   {
+    "id": "S5",
+    "sequence": 5,
+    "title": "Run MRP per project against project stock",
+    "purpose": "Net requirements automatically per project, respecting stock reserved for other projects, so shortages that stop production are halved.",
+    "asIsStepIds": [
+     "st_40f85d48-f556-4957-abb5-a7c4f9de6e8f"
+    ],
+    "requirementIds": [
+     "rq_6b11068d-4872-4102-9d83-140c2f236212",
+     "rq_903f2a2b-41d5-41cb-8f77-7ccccbd1256e"
+    ],
+    "implementation": {
+     "kind": "CONFIGURATION",
+     "referenceIds": [
+      "S4-2023-SD-SALES-ORDER-STOCK-TRANSFER",
+      "S4-2023-ATP-ALLOCATION-RESERVATION"
+     ]
+    }
+   },
+   {
+    "id": "S6",
+    "sequence": 6,
+    "title": "Buy long-lead and standard parts with system approval and live delivery dates",
+    "purpose": "Convert project requirements into purchase requisitions and purchase orders, withhold orders above £20,000 until the Operations Director approves in the system, and keep supplier dates visible to the schedule instead of in a buyer's spreadsheet.",
+    "asIsStepIds": [
+     "st_1b2ce168-764c-4f45-ba55-df2438816cd4"
+    ],
+    "requirementIds": [
+     "rq_42488f20-7ae0-4631-af48-e634c94de20d",
+     "rq_7352dc00-cde8-4aa3-8dc3-a28ec3ed9171"
+    ],
+    "implementation": {
+     "kind": "CONFIGURATION",
+     "referenceIds": [
+      "S4-2023-PROC-PR-PO",
+      "S4-2023-WF-FLEXIBLE"
+     ]
+    }
+   },
+   {
+    "id": "S7",
+    "sequence": 7,
+    "title": "Schedule, release and run production with capacity and material control",
+    "purpose": "Schedule and release shop-floor work from SAP with capacity checked per work centre, material issued against the project, and unscheduled urgent jobs no longer invisible to the plan.",
+    "asIsStepIds": [
+     "st_5764da61-63eb-4858-9263-0b455c8889f9"
+    ],
+    "requirementIds": [
+     "rq_cc6ec5ca-2d29-4ae3-ba09-76ad1dbea272"
+    ],
+    "implementation": {
+     "kind": "NEEDS_VALIDATION",
+     "referenceIds": []
+    }
+   },
+   {
+    "id": "S8",
+    "sequence": 8,
+    "title": "Inspect parts and the machine and issue certificates and non-conformance records from SAP",
+    "purpose": "Record in-process and final inspection results and inspection certificates in SAP for the customer, and raise non-conformance records in SAP so rework or scrap is charged to the project.",
+    "asIsStepIds": [
+     "st_f7de16bc-c102-41e0-b39a-261061543319"
+    ],
+    "requirementIds": [
+     "rq_13286331-0309-441d-9ccd-062a6ad2751b"
+    ],
+    "implementation": {
+     "kind": "STANDARD",
+     "referenceIds": [
+      "S4-2023-INV-STOCK-TYPES"
+     ]
+    }
+   },
+   {
+    "id": "S9",
+    "sequence": 9,
+    "title": "Collect project costs, work in progress and margin during the project",
+    "purpose": "Collect supplier invoices, timesheet and production hours and quality charges on the project automatically, so WIP and margin are visible during the project rather than at delivery.",
+    "asIsStepIds": [
+     "st_16ca359b-ac9a-48ef-9c95-59f21a282033"
+    ],
+    "requirementIds": [
+     "rq_58b06e6c-e8c1-40c1-aebf-30685e5b5613",
+     "rq_4a9cda6e-57e9-4dbd-ad3a-8f5de823a0eb"
+    ],
+    "implementation": {
+     "kind": "NEEDS_VALIDATION",
+     "referenceIds": []
+    }
+   },
+   {
+    "id": "S10",
+    "sequence": 10,
+    "title": "Deliver by milestone, obtain proof of delivery and bill the staged contract invoice",
+    "purpose": "Trigger factory acceptance and delivery milestones in SAP, book the transport with the transport provider, capture customer sign-off as proof of delivery and raise the staged contract invoice including agreed scope extras.",
+    "asIsStepIds": [
+     "st_75150f09-bdf0-44d1-b5bd-99659eaa7143"
+    ],
+    "requirementIds": [
+     "rq_16f376c3-bb42-4269-a796-673948db5a9f",
+     "rq_d2629d05-572e-4405-aab2-4a20127af4e8"
+    ],
+    "implementation": {
+     "kind": "CONFIGURATION",
+     "referenceIds": [
+      "S4-2023-SD-BILLPLAN-ITEM-CONTROL",
+      "S4-2023-LOG-POD-OUTBOUND",
+      "S4-2023-INV-GOODS-ISSUE",
+      "S4-2023-LOG-LETRA-SHIPMENT"
+     ]
+    }
+   },
+   {
+    "id": "S11",
+    "sequence": 11,
+    "title": "Close the project with final settlement, cost variance and margin review",
+    "purpose": "Settle the project, compare final cost with budget in the project cost and margin report, record the variance review and feed actual results back into estimating.",
+    "asIsStepIds": [
+     "st_fb420949-e7b4-486c-858b-3afb99ab3f3a"
+    ],
+    "requirementIds": [],
+    "implementation": {
+     "kind": "NEEDS_VALIDATION",
+     "referenceIds": []
+    }
+   },
+   {
+    "id": "S12",
+    "sequence": 12,
+    "title": "Set up Halden organisational units, project profiles and controlling structures in SAP",
+    "purpose": "Create the organisational, project and controlling structures every other step works with, including company code 4000, plants 4100 Sheffield and 4200 Bristol, sales organisation 4000 Halden Sales UK, project profiles and WBS budget and settlement rules.",
+    "asIsStepIds": [],
+    "requirementIds": [],
+    "enablesStepIds": [
+     "S2",
+     "S4",
+     "S5",
+     "S7",
+     "S9",
+     "S11"
+    ],
+    "implementation": {
+     "kind": "NEEDS_VALIDATION",
+     "referenceIds": []
+    }
+   }
+  ],
+  "eliminatedAsIsSteps": [
+   {
+    "asIsStepId": "st_d3496293-2e1d-4b0a-a9c2-ad3ba510ecbe",
+    "reason": "Not eliminated: the estimate-and-quote work is retained as step S1; only the Excel estimate template and experience-based delivery date are replaced, by the SAP sales quotation and its copy into the contract's sales document."
+   }
+  ],
+  "coverage": [
+   {
+    "requirementId": "rq_65ff97da-a5e3-4c0c-a270-74b20b53ed1d",
+    "disposition": "IMPLEMENTED",
+    "stepIds": [
+     "S3"
+    ],
+    "decisionId": null,
+    "rationale": "Aurora PLM remains the engineering design system; its released engineering BOM and change information are brought into SAP through a released-API and event based side-by-side integration, with the BOM in SAP as the valid revision. The exact interface objects, revision and change-status handover and the integration direction are the outstanding policy of OQ-1 and gate the step."
+   },
+   {
+    "requirementId": "rq_3b57d773-0837-4838-80cb-0c9a337cdcfc",
+    "disposition": "IMPLEMENTED",
+    "stepIds": [
+     "S3"
+    ],
+    "decisionId": null,
+    "rationale": "A post-release change is no longer emailed to planning: it enters SAP, is held until the Chief Engineer's approval task in My Inbox is completed, and then updates the BOM and the open production order. Which document objects the release control covers and where the approval task sits are OQ-2."
+   },
+   {
+    "requirementId": "rq_cc5021d3-a961-4134-b817-f8e81326aed8",
+    "disposition": "IMPLEMENTED",
+    "stepIds": [
+     "S4"
+    ],
+    "decisionId": null,
+    "rationale": "The manufacturing BOM and routing are maintained in SAP rather than in Excel and on printed sheets, with operations, work centres, standard hours and make-or-buy decisions, and the production manager's review for large projects as a released control. The SAP objects that carry the project-specific BOM and routing are the outstanding validation of the step."
+   },
+   {
+    "requirementId": "rq_6b11068d-4872-4102-9d83-140c2f236212",
+    "disposition": "IMPLEMENTED",
+    "stepIds": [
+     "S5"
+    ],
+    "decisionId": null,
+    "rationale": "MRP nets each project separately against project stock, so stock reserved for one project is not consumed by another and the project no longer stops for parts used elsewhere. The type of project stock and segmentation policy is OQ-3."
+   },
+   {
+    "requirementId": "rq_903f2a2b-41d5-41cb-8f77-7ccccbd1256e",
+    "disposition": "IMPLEMENTED",
+    "stepIds": [
+     "S5"
+    ],
+    "decisionId": null,
+    "rationale": "Automatic per-project requirements planning replaces hand netting, which is the mechanism by which the reduction of material shortages that stop production is expected; the step holds OQ-3 on how project stock is separated and the measured reduction is monitored against the 71% baseline."
+   },
+   {
+    "requirementId": "rq_42488f20-7ae0-4631-af48-e634c94de20d",
+    "disposition": "IMPLEMENTED",
+    "stepIds": [
+     "S6"
+    ],
+    "decisionId": null,
+    "rationale": "Supplier delivery dates live on the SAP purchase order instead of the buyer's spreadsheet, so a late casting or drive is visible in the ordering and scheduling steps rather than chased by phone. The schedule-update mechanism for a delayed line is OQ-4."
+   },
+   {
+    "requirementId": "rq_7352dc00-cde8-4aa3-8dc3-a28ec3ed9171",
+    "disposition": "IMPLEMENTED",
+    "stepIds": [
+     "S6"
+    ],
+    "decisionId": null,
+    "rationale": "A purchase order above £20,000 is stopped by a condition-based flexible workflow approval and proceeds only after the Operations Director approves it in the system."
+   },
+   {
+    "requirementId": "rq_cc6ec5ca-2d29-4ae3-ba09-76ad1dbea272",
+    "disposition": "IMPLEMENTED",
+    "stepIds": [
+     "S7"
+    ],
+    "decisionId": null,
+    "rationale": "Capacity per work centre is evaluated in SAP before work is released and every job, including an urgent one, is scheduled in SAP so it appears in the plan rather than being slotted in silently. The apps and objects used for capacity evaluation and order release are the outstanding validation of the step."
+   },
+   {
+    "requirementId": "rq_13286331-0309-441d-9ccd-062a6ad2751b",
+    "disposition": "IMPLEMENTED",
+    "stepIds": [
+     "S8"
+    ],
+    "decisionId": null,
+    "rationale": "Inspection results, inspection certificates and non-conformance records are kept in SAP instead of on paper and in Word, replacing the paper sheet and certificate, and a failed part held in quality-inspection stock is reworked or scrapped through SAP so the cost reaches the project. Which SAP objects carry the results, certificates and non-conformance records and the cost link of rework and scrap are OQ-5."
+   },
+   {
+    "requirementId": "rq_58b06e6c-e8c1-40c1-aebf-30685e5b5613",
+    "disposition": "IMPLEMENTED",
+    "stepIds": [
+     "S9"
+    ],
+    "decisionId": null,
+    "rationale": "Supplier invoices, hours and quality charges are collected on the project from the transactional steps rather than allocated by hand, and WIP and margin are read during the project instead of after delivery. The SAP objects that collect project costs and the WIP method are the outstanding validation of the step and OQ-6."
+   },
+   {
+    "requirementId": "rq_4a9cda6e-57e9-4dbd-ad3a-8f5de823a0eb",
+    "disposition": "IMPLEMENTED",
+    "stepIds": [
+     "S9"
+    ],
+    "decisionId": null,
+    "rationale": "The project cost and margin report compares actual project cost with the released WBS budget during the project so the variance can be kept under 5%; the cost collector, WIP determination and variance arithmetic are validated in the steps and OQ-6."
+   },
+   {
+    "requirementId": "rq_16f376c3-bb42-4269-a796-673948db5a9f",
+    "disposition": "IMPLEMENTED",
+    "stepIds": [
+     "S10"
+    ],
+    "decisionId": null,
+    "rationale": "The staged contract invoice is created from billing-plan dates in the billing due list on the reached milestone rather than raised by hand, and agreed scope extras are added to the billing plan and the sales document so they are billed. The approval threshold and handling of the acceptance certificate are OQ-7."
+   },
+   {
+    "requirementId": "rq_d2629d05-572e-4405-aab2-4a20127af4e8",
+    "disposition": "IMPLEMENTED",
+    "stepIds": [
+     "S10"
+    ],
+    "decisionId": null,
+    "rationale": "Delivery and its on-time measurement are recorded in SAP on the delivery and goods issue with proof of delivery, and the plan dates on the order are fixed when S2 releases the project, so on-time delivery is measured against the 92% target instead of 71%. The measured actual-date source, the late-delivery reporting and the transport booking decision are OQ-4, OQ-7 and OQ-8."
+   },
+   {
+    "requirementId": "rq_65ff97da-a5e3-4c0c-a270-74b20b53ed1d_NA",
+    "disposition": "IMPLEMENTED",
+    "stepIds": [],
+    "decisionId": null,
+    "rationale": "placeholder"
+   }
+  ],
+  "conflictDecisions": [],
+  "openQuestions": [
+   {
+    "id": "OQ-1",
+    "question": "Which released Aurora PLM interface transfers which engineering objects (engineering BOM, revision, change status) to SAP, in which direction, with what identifiers and with what timing (event-driven or batch), so that one valid revision is maintained in SAP per requirement rq_65ff97da-a5e3-4c0c-a270-74b20b53ed1d?",
+    "owner": "Chief Engineer with the SAP integration architect",
+    "affectedStepIds": [
+     "S3"
+    ]
+   },
+   {
+    "id": "OQ-2",
+    "question": "Which engineering change and release objects and revision states does the Chief Engineer's approval control cover (engineering BOM only, or also the manufacturing BOM, routing and open production orders), and in which SAP object is the approval task hosted?",
+    "owner": "Chief Engineer",
+    "affectedStepIds": [
+     "S3",
+     "S4"
+    ]
+   },
+   {
+    "id": "OQ-3",
+    "question": "How is project stock separated so that planning nets each project separately (sales order stock per sales order item, project-specific storage location and batch, or another rule), and to which service or contract item is each project's spare assembly stock assigned?",
+    "owner": "Material planning lead with the Finance Controller",
+    "affectedStepIds": [
+     "S5",
+     "S7"
+    ]
+   },
+   {
+    "id": "OQ-4",
+    "question": "How does a late supplier delivery on a purchase order line reschedule the affected production orders and the delivery date promised to the customer — which rescheduling or scheduling objects apply, and what tolerance defines 'late' for shortage and on-time reporting?",
+    "owner": "Production planning lead",
+    "affectedStepIds": [
+     "S6",
+     "S7",
+     "S10"
+    ]
+   },
+   {
+    "id": "OQ-5",
+    "question": "Which SAP objects carry the inspection results, the inspection certificate issued to the customer and the non-conformance record; is inspection triggered by the material's quality-inspection stock determination with results recorded and a usage decision; and how is the cost of rework or scrap charged to the project?",
+    "owner": "Quality manager",
+    "affectedStepIds": [
+     "S8",
+     "S9"
+    ]
+   },
+   {
+    "id": "OQ-6",
+    "question": "Which WBS elements collect cost, how is work in progress determined and settled, and on what accounting policy is project margin recognised and reported during the project, including the treatment of scrapped or reworked material?",
+    "owner": "Finance Controller",
+    "affectedStepIds": [
+     "S9",
+     "S11"
+    ]
+   },
+   {
+    "id": "OQ-7",
+    "question": "Where is the threshold and the approver list for the in-system approval of staged contract invoices above £100,000 held, and what is the accepted evidence of factory acceptance and customer sign-off (proof of delivery, acceptance certificate attachment, or both) that releases the milestone invoice?",
+    "owner": "Finance Controller",
+    "affectedStepIds": [
+     "S10"
+    ]
+   },
+   {
+    "id": "OQ-8",
+    "question": "How is the transport provider engaged for a delivery — is the booking and freight cost handled in SAP transportation documents or outside SAP with the delivery only recorded in SAP — given that the transportation component is licence-dependent on this private cloud contract?",
+    "owner": "Operations Director",
+    "affectedStepIds": [
+     "S10"
+    ]
+   },
+   {
+    "id": "OQ-9",
+    "question": "What is the target SAP structure and project profile for the engineered-to-order process: which WBS levels and account-assignment elements are used, which confirmation method and routing objects capture shop-floor hours, and is a standard SAP scope the basis for these objects?",
+    "owner": "Operations Director",
+    "affectedStepIds": [
+     "S2",
+     "S4",
+     "S7",
+     "S9",
+     "S11"
+    ]
+   }
+  ]
+ }
+}

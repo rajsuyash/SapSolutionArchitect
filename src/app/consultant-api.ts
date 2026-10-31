@@ -3,9 +3,9 @@
 import type { WorkspaceCommand, WorkspaceState } from "../lib/discovery-workspace-model";
 
 export type WorkspaceView = Omit<WorkspaceState, "sources">;
-export type Blocker = { code: string; fieldId?: string; detail: string };
+export type Blocker = { code: string; fieldId?: string; detail: string; soft?: true };
 export type Workspace = { state: WorkspaceView | null; canEdit: boolean; canConfirm: boolean;
-  confirmedSnapshotId: string | null; readiness: { ready: boolean; blockers: Blocker[] } | null };
+  confirmedSnapshotId: string | null; readiness: { ready: boolean; draftReady: boolean; blockers: Blocker[] } | null };
 export type VariantSummary = { variantCode: string; variantName: string; revision: number; confirmedSnapshotId: string | null };
 export type JobView = { id: string; kind: "INTERVIEW" | "TO_BE"; status: string; inputRevision: number;
   error: { code: string; message: string } | null;

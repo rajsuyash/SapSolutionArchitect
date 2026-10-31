@@ -28,7 +28,7 @@ function step(i: number, title: string, detail: string, requirementKey: string, 
 const turn = (index: number, gapKeys: string[], extra: Partial<Transcript["turns"][number]> = {}): Transcript["turns"][number] => ({
   index, userMessage: `message ${index}`, gapsAvailable: 5,
   questions: gapKeys.map(k => ({ gapKey: k, fieldId: k.slice(2), question: `Distinct question about ${k.slice(2)} topic number ${index}` })),
-  proposals: 1, attempts: 1, validationErrors: 0, issues: [], stopReasons: ["tool_use"], warnings: [], error: null, inputTokens: 100, outputTokens: 50, latencyMs: 10, ...extra });
+  proposals: 1, attempts: 1, validationErrors: 0, issues: [], stopReasons: ["tool_use"], warnings: [], error: null, textFallbacks: 0, extraction: null, inputTokens: 100, outputTokens: 50, latencyMs: 10, ...extra });
 
 /** A passing run; each test mutates a private copy. */
 function goodTranscript(): Transcript {
@@ -115,6 +115,60 @@ describe("scoreRun", () => {
     expect(result.pass).toBe(false);
   });
 
+  it("flags the same topic asked again in a later turn at Jaccard 0.6, but not within one turn or for different topics", () => {
+    const t = goodTranscript();
+    t.turns[0]!.questions = [{ gapKey: "g_a", fieldId: "a", question: "Which approvals are needed for customer discounts above 10 percent?" }];
+    t.turns[1]!.questions = [{ gapKey: "g_b", fieldId: "b", question: "What approvals are needed for customer discounts over 10 percent?" }];
+    t.turns[2]!.questions = [{ gapKey: "g_c", fieldId: "c", question: "How are inter-plant transfers billed at month end?" }];
+    const result = score(t);
+    expect(result.semanticDuplicateCount).toBe(1);
+    expect(result.nearDuplicateCount).toBe(0); // 0.75: below the 0.8 near-duplicate bar, above the 0.6 semantic one
+    expect(result.semanticDuplicates[0]).toMatchObject({ a: { turn: 1 }, b: { turn: 2 } });
+    expect(check(t, "semanticDuplicates").pass).toBe(false);
+    // The same wording twice in one turn is the near-duplicate check's business, not a cross-turn repeat.
+    const same = goodTranscript();
+    same.turns[0]!.questions = [t.turns[0]!.questions[0]!, { ...t.turns[1]!.questions[0]!, gapKey: "g_d" }];
+    expect(score(same).semanticDuplicateCount).toBe(0);
+    expect(check(goodTranscript(), "semanticDuplicates").pass).toBe(true);
+  });
+
+  it("does not call questions duplicates just because a walkthrough template is shared by the whole run", () => {
+    const t = goodTranscript();
+    const steps = ["Raise customer quote", "Receive customer purchase order", "Enter sales order", "Check warehouse stock", "Request production run",
+      "Prepare dispatch documents", "Post customer invoice", "Match incoming payment"];
+    t.turns = steps.map((name, i) => turn(i + 1, [`gstep_${i}`], { questions: [{ gapKey: `gstep_${i}`, fieldId: "f",
+      question: `Walk me through what happens at ${name}: who does it, in which system, and what goes wrong?` }] }));
+    t.readiness.atTurn = 8;
+    expect(score(t).semanticDuplicateCount).toBe(0);
+    // A real repeat of one of them is still caught.
+    t.turns.push(turn(9, ["gstep_x"], { questions: [{ gapKey: "gstep_x", fieldId: "f",
+      question: "Walk me through what happens at Raise customer quote: who does it, in which system, and what goes wrong?" }] }));
+    expect(score(t).semanticDuplicateCount).toBe(1);
+  });
+
+  it("counts a turn as clean only when neither call needed a repair or the JSON-text fallback", () => {
+    const t = goodTranscript();
+    const clean = { attempts: 1, validationErrors: 0, textFallbacks: 0, warnings: [], inputTokens: 1, outputTokens: 1, latencyMs: 1, error: null };
+    t.turns.forEach(turn => { turn.extraction = { ...clean }; });
+    expect(score(t)).toMatchObject({ cleanFirstTryRate: 1, extractionRuns: 3, extractionFirstAttemptValidRate: 1, textFallbackTurns: 0 });
+    t.turns[0]!.textFallbacks = 1; // chat accepted from a text block: still valid, no longer clean
+    t.turns[1]!.extraction = { ...clean, warnings: [{ path: "proposedUpdates.0", code: "update_dropped" }] };
+    t.turns[2]!.extraction = { ...clean, attempts: 2, validationErrors: 1 };
+    const result = score(t);
+    expect(result.firstAttemptValidRate).toBe(1);
+    expect(result).toMatchObject({ cleanFirstTryRate: 0, extractionFirstAttemptValidRate: 0.667, textFallbackTurns: 1 });
+    expect(summarize(result)).toContain("clean first try");
+    expect(score(goodTranscript())).toMatchObject({ cleanFirstTryRate: 1, extractionRuns: 0, extractionFirstAttemptValidRate: null }); // older transcripts
+  });
+
+  it("reports the steps and requirements the interviewer created", () => {
+    const t = goodTranscript();
+    t.structure = { steps: 11, requirements: 16 };
+    expect(score(t).interviewerCreated).toEqual({ steps: 11, requirements: 16 });
+    expect(summarize(score(t))).toContain("created by the interviewer: 11 steps, 16 requirements");
+    expect(score(goodTranscript()).interviewerCreated).toBeNull();
+  });
+
   it("detects a gapKey asked twice, across turns or within one turn", () => {
     const t = goodTranscript();
     t.turns[1]!.questions[0]!.gapKey = "g_process_owner";
@@ -170,6 +224,53 @@ describe("scoreRun", () => {
     t.toBe!.design!.steps[10]!.acceptanceTests.pop();
     expect(score(t).kpis.find(k => k.id === "close")!.met).toBe(false);
     expect(check(t, "kpis").pass).toBe(false);
+  });
+});
+
+describe("--tobe-only runs (no interview)", () => {
+  const tobeOnly = () => { const t = goodTranscript(); t.toBeOnly = true; t.turns = []; t.readiness = { reached: false, atTurn: null, forcedCompletion: true, directEdits: 3, blockers: [] }; return t; };
+  const interviewChecks = ["readiness", "repeatedGapKeys", "nearDuplicates", "semanticDuplicates", "firstAttemptValid"];
+  it("reports the interview-only checks as n/a and passes on a valid To-Be", () => {
+    const result = score(tobeOnly());
+    for (const name of interviewChecks) expect(result.checks.find(c => c.name === name)).toMatchObject({ na: true, pass: false });
+    expect(result.pass).toBe(true);
+    const text = summarize(result);
+    expect(text).toContain("PASS");
+    expect(text).toContain("n/a  readiness");
+    expect(text).not.toMatch(/FAIL\s+(readiness|firstAttemptValid)/);
+  });
+  it("still gates on the To-Be checks", () => {
+    const t = tobeOnly();
+    t.toBe!.structurallyValid = false;
+    expect(score(t).pass).toBe(false);
+    const k = tobeOnly(); k.toBe!.design!.steps[10]!.acceptanceTests.pop();
+    expect(check(k, "kpis").pass).toBe(false);
+    expect(score(k).pass).toBe(false);
+  });
+  it("an interview run with zero turns is not n/a and never passes firstAttemptValid", () => {
+    const t = goodTranscript(); t.turns = [];
+    expect(check(t, "firstAttemptValid")).toMatchObject({ pass: false });
+    expect(check(t, "firstAttemptValid").na).toBeFalsy();
+    expect(score(t).pass).toBe(false);
+  });
+});
+
+describe("version 2 registers", () => {
+  it("counts a KPI stated only in the kpis register, and rejects it when the register does not state it", () => {
+    const t = goodTranscript();
+    t.toBe!.design!.steps[10]!.acceptanceTests.pop();
+    expect(score(t).kpis.find(k => k.id === "close")!.met).toBe(false);
+    t.toBe!.design!.kpis = [{ id: "KPI-3", name: "Month-end close", baseline: "8 days", target: "Close in 5 working days", measuredFrom: "Close calendar" }];
+    expect(score(t).kpis.find(k => k.id === "close")!.met).toBe(true);
+    t.toBe!.design!.kpis = [{ id: "KPI-3", name: "Month-end close", baseline: "8 days", target: "Close in 9 days", measuredFrom: "Close calendar" }];
+    expect(score(t).kpis.find(k => k.id === "close")!.met).toBe(false);
+  });
+  it("counts a Salesforce interface in the interfaces register as the integration", () => {
+    const t = goodTranscript();
+    t.toBe!.design!.steps[9]!.implementation.kind = "CONFIGURATION";
+    expect(score(t).salesforce.integration).toBe(false);
+    t.toBe!.design!.interfaces = [{ id: "IF-1", counterpartSystem: "Salesforce", direction: "INBOUND", payload: "Quotes" }];
+    expect(score(t).salesforce.integration).toBe(true);
   });
 });
 

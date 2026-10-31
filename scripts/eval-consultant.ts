@@ -1,11 +1,14 @@
 // Phase-0 evaluation harness for the discovery interviewer and To-Be generator.
 //
 //   node --import tsx --env-file-if-exists=.env scripts/eval-consultant.ts --replay <transcript.json> [--case fixtures/eval/pump-o2c.json]
-//   node --import tsx --env-file-if-exists=.env scripts/eval-consultant.ts --live --provider <anthropic|deepinfra> --model <id> [--runs N] [--max-turns 25] [--no-force-complete] [--no-tobe]
+//   node --import tsx --env-file-if-exists=.env scripts/eval-consultant.ts --live --provider <anthropic|deepinfra|openrouter> --model <id> [--runs N] [--max-turns 25] [--no-force-complete] [--no-tobe]
 //
 // --live --provider stub --model stub [--fake-model] is the offline dry run: plain stub stops at the first model call
 // (runStage has no stub interviewer); --fake-model swaps in a scripted model to exercise the whole driver at zero cost.
 //
+// --tobe-only skips the interview: the discovery is entered from the fixture (As-Is steps, requirements, company context), confirmed,
+// and the real To-Be stage runs; the run file has the same format, so eval-judge.ts --run accepts it. The interview-only checks
+// (readiness, repeated/near/semantic duplicates, firstAttemptValid) print n/a and stay out of the verdict and the exit code; the To-Be checks still gate.
 // --no-tobe makes the run interview-only: no forced completion, no CONFIRM, no To-Be (a diagnostic of the interviewer alone).
 //
 // --replay scores a saved transcript: no network, no database.
@@ -14,38 +17,36 @@
 // accepts every proposal and answers from the fixture's answerBank. It makes real model calls and costs money:
 // the run aborts once cumulative output tokens exceed OUTPUT_TOKEN_CAP. Transcripts land in the gitignored test-results/eval/.
 //
-// KNOWN LIMITATION BEING MEASURED: the current interviewer cannot create steps or requirements, so the driver adds all
-// steps and requirements through the workspace commands (START_STEP_DRAFT / START_REQUIREMENT_DRAFT) right after turn 1,
-// as a user clicking "add step" would. The interviewer then has to fill them in through questions.
+// The driver creates no steps or requirements: the interviewer proposes them from the conversation and the simulated user
+// accepts every proposal in one DECIDE_PROPOSALS call. A step walkthrough question is answered with one natural paragraph
+// built from that fixture step (what happens, who, system, controls, exceptions, pain points and wants).
 import { execFile } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { parseEnv, promisify } from "node:util";
 import { Client, Pool } from "pg";
+import { creditHint, type Provider } from "../src/lib/ai/provider";
 import { AIStageError, createStageRunner, runStage, type StageMetrics } from "../src/lib/ai/runStage";
-import { validateInterviewTurn } from "../src/lib/ai/discovery-interview";
 import { parseEnvironment } from "../src/lib/env";
+import { reviewBlockers, type ReviewOutcome } from "../src/lib/ai/to-be-review";
 import { loadToBeReferences, parseToBeInput, validateToBeOutput } from "../src/lib/ai/to-be";
 import { createAuthService, transaction } from "../src/lib/auth";
 import { createProjectRepository } from "../src/lib/tenant";
 import { createDiscoveryWorkspaceRepository, persistWorkspaceTurn } from "../src/lib/discovery-workspace";
+import { extractMessage } from "../src/lib/consultant-extraction";
 import { buildInterviewInput, type WorkspaceState } from "../src/lib/discovery-workspace-model";
 import { STEP_KEYS } from "../src/lib/workspace-fields";
-import { ScoringCaseSchema, scoreRun, summarize, TranscriptSchema, type ScoringCase, type Transcript } from "../src/lib/eval-score";
+import { answerFor, composeReply, factStatus, fieldCommand, firstSentence, planForcedCompletion, type Asked, type Command, type Fixture } from "../src/lib/eval-user";
+import { toBeRun, toBeSummary } from "../src/lib/eval-tobe";
+import { deriveSections } from "../src/lib/to-be-derived";
+import { REVIEW_FINDINGS } from "../src/lib/consultant-report";
+import { ScoringCaseSchema, scoreRun, summarize, TranscriptSchema, type Transcript } from "../src/lib/eval-score";
 
 const OUTPUT_TOKEN_CAP = 400_000;
 const DEFAULT_MAX_TURNS = 25;
 const MAX_CONSECUTIVE_FAILURES = 3;
 const DEFAULT_CASE = "fixtures/eval/pump-o2c.json";
-const PROVIDERS = ["anthropic", "deepinfra", "stub"] as const;
-
-type Fixture = ScoringCase & {
-  opening: string; project: Record<string, unknown> & { variantCode: string; variantName: string };
-  answerBank: { catalog: Record<string, string> };
-  steps: ({ n: number } & Record<(typeof STEP_KEYS)[number], string>)[];
-  requirements: { key: string; stepN: number; kind: "PAIN_POINT" | "TO_BE_REQUIREMENT" | "CONTROL"; critical: boolean; statement: string }[];
-};
-type Command = Record<string, unknown>;
+const PROVIDERS = ["anthropic", "deepinfra", "openrouter", "stub"] as const;
 
 function flag(name: string): string | undefined {
   const index = process.argv.indexOf(`--${name}`);
@@ -55,66 +56,14 @@ const has = (name: string) => process.argv.includes(`--${name}`);
 const loadFixture = (path: string) => JSON.parse(readFileSync(path, "utf8")) as Fixture;
 const message = (error: unknown) => error instanceof Error ? error.message : String(error);
 
-// --- simulated user ---------------------------------------------------------------------------------------------
-
-/** What the simulated user would say for a field the interviewer asked about, or null when the bank has no answer. */
-function answerFor(fixture: Fixture, state: WorkspaceState, fieldId: string): string | null {
-  const catalog = fixture.answerBank.catalog[fieldId];
-  if (catalog) return catalog;
-  const stepIndex = state.stepDrafts.findIndex(d => fieldId.startsWith(`${d.id}_`));
-  if (stepIndex >= 0) {
-    const key = fieldId.slice(state.stepDrafts[stepIndex]!.id.length + 1) as (typeof STEP_KEYS)[number];
-    return fixture.steps[stepIndex]?.[key] ?? null;
-  }
-  const requirementIndex = state.requirementDrafts.findIndex(d => `${d.id}_statement` === fieldId);
-  return requirementIndex >= 0 ? fixture.requirements[requirementIndex]?.statement ?? null : null;
-}
-const sentence = (text: string) => /[.!?]$/.test(text.trim()) ? text.trim() : `${text.trim()}.`;
-/** One step in the client's voice: asked about any field of a step, a real client describes the whole step. Deterministic. */
-function stepParagraph(step: Fixture["steps"][number]): string {
-  return [`For the "${step.name}" step, ${step.actor} does the work in ${step.system}.`, sentence(step.trigger), sentence(step.description),
-    `The inputs are ${sentence(step.inputs)}`, `The outputs are ${sentence(step.outputs)}`,
-    `The controls are ${sentence(step.controls)}`, sentence(step.exceptions)].join(" ");
-}
-/** The reply to an interviewer turn that asked about `asked`: one paragraph per asked step (all its fields), then the
- * catalog/requirement answers for the asked keys, as one message. `answered` are the asked fields the user spoke to. */
-function composeReply(fixture: Fixture, state: WorkspaceState, asked: string[]) {
-  const paragraphs: string[] = [], singles: string[] = [], answered: string[] = [], unknown: string[] = [];
-  const stepsDone = new Set<number>();
-  for (const fieldId of asked) {
-    const stepIndex = state.stepDrafts.findIndex(d => fieldId.startsWith(`${d.id}_`));
-    const step = stepIndex >= 0 ? fixture.steps[stepIndex] : undefined;
-    if (step) {
-      if (!stepsDone.has(stepIndex)) { stepsDone.add(stepIndex); paragraphs.push(stepParagraph(step)); }
-      answered.push(fieldId);
-      continue;
-    }
-    const answer = stepIndex >= 0 ? null : answerFor(fixture, state, fieldId);
-    if (answer) { singles.push(answer); answered.push(fieldId); } else unknown.push(fieldId);
-  }
-  const text = [...paragraphs, [...singles, ...(unknown.length ? ["I don't know the rest of that."] : [])].join(" ")]
-    .filter(Boolean).join("\n\n");
-  return { text: text || "I don't have anything more to add.", answered, unknown };
-}
-function fieldCommand(state: WorkspaceState, fieldId: string, value: string | null): Command {
-  const base = { status: value === null ? "UNKNOWN" : "KNOWN", value, rationale: null, owner: null, sourceId: null, quote: null };
-  if (state.facts.some(f => f.id === fieldId)) return { type: "SET_FIELD", fieldId, ...base };
-  const draft = state.requirementDrafts.find(d => `${d.id}_statement` === fieldId);
-  if (draft) return { type: "SET_REQUIREMENT_DRAFT_STATEMENT", requirementDraftId: draft.id, ...base };
-  return { type: "SET_STEP_DRAFT_FIELD", fieldId, ...base };
-}
-function factStatus(state: WorkspaceState, fieldId: string) {
-  return (state.facts.find(f => f.id === fieldId) ?? state.stepDrafts.flatMap(d => d.fields).find(f => f.id === fieldId)
-    ?? state.requirementDrafts.map(d => d.statement).find(d => d.id === fieldId))?.status;
-}
-
 // --- scripted model (driver self-test, --fake-model) -------------------------------------------------------------
 
 /** Offline stand-in for runStage so the driver loop can be exercised end to end without a provider or any cost.
- * It asks the first three open gaps and extracts a field only when the user's message contains the bank answer verbatim.
+ * It asks the first three open gaps (one per step) and extracts a field, step or requirement only when the user's message
+ * contains the bank text verbatim.
  * Its To-Be is the repository's one-step rental benchmark remapped onto the workspace ids: a plumbing check, never a quality score. */
 function scriptedStage(fixture: Fixture, getState: () => WorkspaceState): typeof runStage {
-  const metrics = (stage: "interview_turn" | "to_be") => ({ stage, provider: "stub" as const, model: "scripted", inputTokens: 1,
+  const metrics = (stage: "interview_turn" | "extraction_turn" | "to_be") => ({ stage, provider: "stub" as const, model: "scripted", inputTokens: 1,
     outputTokens: 1, latencyMs: 1, attempts: 1, validationErrors: [] });
   return (async (stage: string, raw: unknown) => {
     if (stage === "to_be") {
@@ -129,29 +78,46 @@ function scriptedStage(fixture: Fixture, getState: () => WorkspaceState): typeof
     }
     const input = raw as ReturnType<typeof buildInterviewInput>;
     const state = getState();
-    return { payload: { schemaVersion: 1, contextRevision: input.contextRevision, reply: "Thank you for that context.",
-      questions: input.activeGaps.slice(0, 3).map(g => ({ gapKey: g.key, question: `Scripted question about ${g.fieldId}`,
-        whyItMatters: "It decides how this step is designed." })),
+    const message = input.currentMessage.text;
+    const taken = new Set<string>();
+    const questions = input.activeGaps.filter(g => !g.stepId || !taken.has(g.stepId) && !!taken.add(g.stepId)).slice(0, 3);
+    // A stage of the process is proposed from the first sentence of a fixture step quoted in the user's message.
+    const known = (text: string) => input.steps.some(x => x.summary === text);
+    const proposedSteps = fixture.steps.filter(x => message.includes(firstSentence(x.description)) && !known(firstSentence(x.description)))
+      .map(x => ({ sourceId: input.currentMessage.id, quote: firstSentence(x.description), nameHint: message.includes(x.name) ? x.name : null }));
+    const draftFor = (n: number) => input.steps.find(x => x.status === "CURRENT" && x.summary?.startsWith(firstSentence(fixture.steps[n - 1]!.description)));
+    const proposedRequirements = fixture.requirements.flatMap(r => {
+      const target = draftFor(r.stepN), fresh = proposedSteps.findIndex(x => x.quote === firstSentence(fixture.steps[r.stepN - 1]!.description));
+      const stepRef = target?.id ?? (fresh >= 0 ? `new_${fresh}` : null);
+      return stepRef && message.includes(r.statement) && !input.requirements.some(x => x.statement === r.statement)
+        ? [{ stepRef, kind: r.kind, critical: r.critical, sourceId: input.currentMessage.id, quote: r.statement }] : [];
+    });
+    if (stage === "interview_turn") return { payload: { schemaVersion: 1, contextRevision: input.contextRevision, reply: "Thank you for that context.",
+      questions: questions.map(g => ({ gapKey: g.key, question: `Scripted question about ${g.fieldId}`,
+        whyItMatters: "It decides how this step is designed." })), proposedUpdates: [], proposedSteps: [], proposedRequirements: [], observations: [] },
+      metrics: metrics("interview_turn") };
+    return { payload: { schemaVersion: 1, contextRevision: input.contextRevision, reply: "Thank you for that context.", questions: [],
       proposedUpdates: input.fields.flatMap(f => {
         const answer = f.status === "EMPTY" ? answerFor(fixture, state, f.id) : null;
-        return answer && input.currentMessage.text.includes(answer) ? [{ fieldId: f.id, operation: "PROPOSE_SET" as const,
+        return answer && message.includes(answer) ? [{ fieldId: f.id, operation: "PROPOSE_SET" as const,
           previousValue: null, value: answer, sourceId: input.currentMessage.id, quote: answer }] : [];
-      }), observations: [] }, metrics: metrics("interview_turn") };
+      }), proposedSteps, proposedRequirements, observations: [] }, metrics: metrics("extraction_turn") };
   }) as unknown as typeof runStage;
 }
 
 /** Per-turn fields taken from runStage metrics; identical for the success and the AIStageError path. */
 function metricsRecord(m: StageMetrics) {
   const groups = m.attemptIssues ?? (m.validationErrors.length ? [m.validationErrors] : []);
-  return { model: m.model, attempts: m.attempts, validationErrors: m.validationErrors.length,
+  return { model: m.model, attempts: m.attempts, providerRetries: m.providerRetries ?? 0, validationErrors: m.validationErrors.length,
     issues: groups.flatMap((group, i) => group.map(issue => ({ attempt: i + 1, ...issue }))),
-    stopReasons: m.stopReasons ?? [], warnings: (m.warnings ?? []).map(({ path, code }) => ({ path, code })),
+    stopReasons: m.stopReasons ?? [], warnings: (m.warnings ?? []).map(({ path, code, detail }) => ({ path, code, ...(detail ? { detail } : {}) })),
+    textFallbacks: m.textFallbacks ?? 0,
     inputTokens: m.inputTokens, outputTokens: m.outputTokens, latencyMs: m.latencyMs };
 }
 
 // --- one live run -----------------------------------------------------------------------------------------------
 
-async function runOnce(fixture: Fixture, deps: { pool: Pool; provider: string; model: string; maxTurns: number; forceComplete: boolean; fake: boolean; toBe: boolean }) {
+async function runOnce(fixture: Fixture, deps: { pool: Pool; provider: string; model: string; maxTurns: number; forceComplete: boolean; fake: boolean; toBe: boolean; toBeOnly: boolean }) {
   const { pool, maxTurns } = deps;
   const auth = createAuthService(pool, { secret: process.env.AUTH_SECRET!, appUrl: process.env.APP_URL! });
   const workspaces = createDiscoveryWorkspaceRepository(pool, auth);
@@ -159,24 +125,65 @@ async function runOnce(fixture: Fixture, deps: { pool: Pool; provider: string; m
     password: "Password123!", orgName: `Eval ${fixture.caseId}` });
   const project = await createProjectRepository(pool, auth).create(owner.token, fixture.project, randomUUID());
   const variant = fixture.project.variantCode;
-  let current = await workspaces.create(owner.token, project.id, variant, { variantName: fixture.project.variantName }, randomUUID());
+  const worker = { orgId: owner.user.orgId, projectId: project.id, variantCode: variant, requestedBy: owner.user.id };
+  let current = await workspaces.create(owner.token, project.id, variant, { variantName: fixture.project.variantName, targetRelease: (fixture.project.targetRelease as string | undefined) ?? null }, randomUUID());
   let state = current.state;
   const run = async (command: Command) => {
     current = await workspaces.command(owner.token, project.id, variant, state.revision, randomUUID(), command);
     state = current.state;
   };
   // A private runner (not the production singleton) so issue messages are recorded in the eval transcript only.
-  const stage = deps.fake ? scriptedStage(fixture, () => state) : createStageRunner(parseEnvironment(), { issueDetail: true }) as typeof runStage;
+  const stage = deps.fake ? scriptedStage(fixture, () => state) : createStageRunner(parseEnvironment(), { issueDetail: true, captureRaw: true }) as typeof runStage;
 
   const transcript: Transcript = { schemaVersion: 1, caseId: fixture.caseId, provider: deps.provider, model: deps.model,
     startedAt: new Date().toISOString(), turns: [],
-    readiness: { reached: false, atTurn: null, forcedCompletion: false, directEdits: 0, blockers: [] }, toBe: null, aborted: null };
+    readiness: { reached: false, atTurn: null, forcedCompletion: false, directEdits: 0, blockers: [] }, toBe: null, aborted: null, ...(deps.toBeOnly && { toBeOnly: true }) };
+  if (deps.toBeOnly) {
+    // --tobe-only: no interview. The discovery is entered directly from the fixture's expected As-Is, through the same
+    // commands a person uses, confirmed, and handed to the real To-Be stage. Measures To-Be quality alone.
+    transcript.readiness.forcedCompletion = true;
+    try {
+      let edits = 0;
+      const set = async (fieldId: string, value: string) => { await run(fieldCommand(state, fieldId, value)); edits++; };
+      for (const [fieldId, value] of Object.entries(fixture.answerBank.catalog)) {
+        if (state.facts.some(f => f.id === fieldId && f.status !== "KNOWN")) await set(fieldId, value);
+      }
+      const draftOf = new Map<number, string>();
+      for (const step of fixture.steps) {
+        await run({ type: "START_STEP_DRAFT" });
+        const draft = state.stepDrafts.at(-1)!;
+        draftOf.set(step.n, draft.id);
+        for (const key of STEP_KEYS) await set(`${draft.id}_${key}`, step[key]);
+      }
+      for (const req of fixture.requirements) {
+        await run({ type: "START_REQUIREMENT_DRAFT", asIsStepId: draftOf.get(req.stepN)!, kind: req.kind, critical: req.critical });
+        await set(state.requirementDrafts.at(-1)!.statement.id, req.statement);
+      }
+      transcript.readiness.directEdits = edits;
+      transcript.structure = { steps: state.stepDrafts.length, requirements: state.requirementDrafts.length };
+      transcript.readiness.blockers = (current.readiness?.blockers ?? []).map(b => b.code);
+      if (!current.readiness?.ready) {
+        for (const b of current.readiness?.blockers ?? []) console.log(`tobe-only: blocker ${b.code} (${b.detail})`);
+        transcript.aborted = "fixture entry left readiness blockers";
+      } else {
+        await run({ type: "CONFIRM" });
+        transcript.toBe = await generateToBe(pool, current.confirmedSnapshotId!, stage);
+      }
+    } catch (error) { transcript.aborted = `driver error: ${message(error).slice(0, 200)}`; }
+    return TranscriptSchema.parse(transcript);
+  }
   let outputTokens = 0, failures = 0, directEdits = 0;
-  let structureAdded = false;
+  const told = new Set<number>(); // fixture steps already described to the interviewer
   const capExceeded = () => outputTokens > OUTPUT_TOKEN_CAP;
+  /** The simulated user accepts every proposal at once. One that no longer fits the answers is rejected, as a person would. */
   const resolvePending = async () => {
-    for (const proposal of state.proposals.filter(p => p.status === "PENDING")) {
-      await run({ type: "DECIDE_PROPOSAL", proposalId: proposal.id, decision: "ACCEPT" });
+    const pending = state.proposals.filter(p => p.status === "PENDING");
+    if (pending.length) {
+      try { await run({ type: "DECIDE_PROPOSALS", ids: pending.map(p => p.id), decision: "ACCEPT" }); }
+      catch (error) { if ((error as { code?: string }).code !== "STALE_PROPOSAL") throw error; }
+      for (const proposal of state.proposals.filter(p => p.status === "PENDING")) {
+        await run({ type: "DECIDE_PROPOSAL", proposalId: proposal.id, decision: "REJECT" });
+      }
     }
     for (const observation of state.observations.filter(o => o.status === "PENDING")) {
       await run({ type: "REVIEW_OBSERVATION", observationId: observation.id, decision: "RESOLVE", rationale: "Simulated user reviewed it." });
@@ -196,20 +203,40 @@ async function runOnce(fixture: Fixture, deps: { pool: Pool; provider: string; m
       const input = buildInterviewInput(state, messageId!);
       const record: Transcript["turns"][number] = { index, userMessage: state.messages.find(m => m.id === messageId)!.text,
         gapsAvailable: input.activeGaps.length, questions: [], proposals: 0, attempts: 0, validationErrors: 0, issues: [], stopReasons: [], warnings: [], error: null,
-        inputTokens: 0, outputTokens: 0, latencyMs: 0 };
+        textFallbacks: 0, extraction: null, inputTokens: 0, outputTokens: 0, latencyMs: 0 };
       transcript.turns.push(record);
+      // The reply (chat call) and the reading of the same message (extraction call) run together, as in production: the chat
+      // call sees the message's raw text, not its extraction. The driver waits for both before the simulated client answers,
+      // which keeps a run repeatable (the production worker does not wait; see awaitExtraction in consultant-extraction.ts).
+      const proposalsBefore = state.proposals.length, questionsBefore = state.questions.length;
+      const extracting = (async () => {
+        let last: unknown = null;
+        for (let attempt = 1; attempt <= 2; attempt++) { // the queue retries a failed extraction once
+          try { return { outcome: await extractMessage(pool, stage, worker, messageId!, randomUUID()), error: null }; }
+          catch (error) { last = error; }
+        }
+        return { outcome: null, error: last };
+      })();
       try {
-        const generated = await stage("interview_turn", input);
+        const generated = await stage("interview_turn", input).catch(async error => { await extracting; throw error; });
         Object.assign(record, metricsRecord(generated.metrics));
         outputTokens += generated.metrics.outputTokens;
-        if (!validateInterviewTurn(input, generated.payload).success) throw new Error("DRIVER_REVALIDATION_FAILED");
-        await transaction(pool, client => persistWorkspaceTurn(client, { orgId: owner.user.orgId, projectId: project.id,
-          variantCode: variant, requestedBy: owner.user.id, expectedRevision: state.revision, currentMessageId: messageId!,
-          turn: generated.payload, requestKey: randomUUID() }));
+        const extraction = await extracting;
+        const extractionMetrics = extraction.outcome?.status === "RECORDED" ? extraction.outcome.metrics
+          : extraction.error instanceof AIStageError ? extraction.error.metrics : null;
+        if (extractionMetrics) {
+          outputTokens += extractionMetrics.outputTokens;
+          record.extraction = { attempts: extractionMetrics.attempts, validationErrors: extractionMetrics.validationErrors.length,
+            textFallbacks: extractionMetrics.textFallbacks ?? 0, warnings: (extractionMetrics.warnings ?? []).map(({ path, code, detail }) => ({ path, code, ...(detail ? { detail } : {}) })),
+            inputTokens: extractionMetrics.inputTokens, outputTokens: extractionMetrics.outputTokens, latencyMs: extractionMetrics.latencyMs,
+            error: extraction.error ? (extraction.error instanceof AIStageError ? extraction.error.code : "DRIVER_ERROR") : null };
+        } else if (extraction.error) record.extraction = { attempts: 0, validationErrors: 0, textFallbacks: 0, warnings: [], inputTokens: 0,
+          outputTokens: 0, latencyMs: 0, error: `DRIVER_ERROR:${message(extraction.error).slice(0, 80)}` };
+        await transaction(pool, client => persistWorkspaceTurn(client, { ...worker, expectedRevision: state.revision, currentMessageId: messageId!,
+          turn: generated.payload, requestKey: randomUUID(), scope: "chat" }));
         state = (await workspaces.get(owner.token, project.id, variant)).state!;
-        record.questions = generated.payload.questions.map(q => ({ gapKey: q.gapKey,
-          fieldId: input.activeGaps.find(g => g.key === q.gapKey)!.fieldId, question: q.question }));
-        record.proposals = generated.payload.proposedUpdates.length;
+        record.questions = state.questions.slice(questionsBefore).map(q => ({ gapKey: q.gapKey, fieldId: q.fieldId, question: q.question }));
+        record.proposals = state.proposals.length - proposalsBefore;
         retryMessageId = null; failures = 0;
       } catch (error) {
         const stageError = error instanceof AIStageError ? error : null;
@@ -220,35 +247,30 @@ async function runOnce(fixture: Fixture, deps: { pool: Pool; provider: string; m
         retryMessageId = messageId; // the user's message stands; the interviewer failed to answer it
         if (++failures >= MAX_CONSECUTIVE_FAILURES) { transcript.aborted = `${failures} consecutive failed turns (${record.error})`; break; }
         if (capExceeded()) { transcript.aborted = `output token cap ${OUTPUT_TOKEN_CAP} exceeded`; break; }
+        console.log(`turn ${index}: FAILED ${record.error} (attempts ${record.attempts})`);
         continue;
       }
 
+      console.log(`turn ${index}: ${record.questions.length} questions, ${record.proposals} proposals, attempts ${record.attempts}, ${Math.round(record.latencyMs / 1000)}s, steps ${state.stepDrafts.length}, requirements ${state.requirementDrafts.length}`);
       await resolvePending();
       // The user fills a template field directly when the interviewer asked about it but did not capture the answer.
       for (const fieldId of answeredFields) {
         const value = answerFor(fixture, state, fieldId);
         if (value && factStatus(state, fieldId) === "EMPTY") { await run(fieldCommand(state, fieldId, value)); directEdits++; }
       }
-      if (!structureAdded) { // first SUCCESSFUL turn, not turn 1: a failed turn 1 is retried as a later index
-        structureAdded = true;
-        // Known limitation: the interviewer cannot create steps/requirements, so the user adds them now.
-        for (let n = 0; n < fixture.steps.length; n++) await run({ type: "START_STEP_DRAFT" });
-        for (const r of fixture.requirements) await run({ type: "START_REQUIREMENT_DRAFT",
-          asIsStepId: state.stepDrafts[r.stepN - 1]!.id, kind: r.kind, critical: r.critical });
-      }
       if (current.readiness?.ready) { transcript.readiness = { ...transcript.readiness, reached: true, atTurn: index }; break; }
       if (capExceeded()) { transcript.aborted = `output token cap ${OUTPUT_TOKEN_CAP} exceeded`; break; }
 
       // Answer everything the interviewer asked in one message; fields without a bank answer get "I don't know".
-      let asked = record.questions.map(q => q.fieldId);
+      let asked: Asked[] = record.questions;
       if (!asked.length) {
         // No question asked: volunteer the next few open details so the conversation keeps moving.
-        asked = input.activeGaps.map(g => g.fieldId).filter(id => factStatus(state, id) === "EMPTY" && answerFor(fixture, state, id)).slice(0, 3);
+        asked = state.facts.filter(f => f.status === "EMPTY" && answerFor(fixture, state, f.id)).slice(0, 3)
+          .map(f => ({ gapKey: `g_${f.id}`, fieldId: f.id, question: "" }));
       }
-      const reply = composeReply(fixture, state, asked);
+      const reply = composeReply(fixture, state, asked, told);
       answeredFields = reply.answered; outgoing = reply.text;
-      const unknown = reply.unknown;
-      for (const fieldId of unknown) await run(fieldCommand(state, fieldId, null));
+      for (const fieldId of reply.unknown) await run(fieldCommand(state, fieldId, null));
     }
 
     const lastUser = state.messages.findLast(m => m.role === "user");
@@ -256,18 +278,15 @@ async function runOnce(fixture: Fixture, deps: { pool: Pool; provider: string; m
     if (!transcript.readiness.reached && !transcript.aborted && deps.forceComplete && deps.toBe) {
       // Turn cap reached: complete the template by direct entry so the To-Be can still be measured (flagged in the score).
       transcript.readiness.forcedCompletion = true;
-      await resolvePending();
-      const open = [...state.facts.map(f => f.id), ...state.stepDrafts.flatMap(d => d.fields.map(f => f.id)),
-        ...state.requirementDrafts.map(d => d.statement.id)];
-      for (const fieldId of open) {
-        const value = answerFor(fixture, state, fieldId);
-        if (value && factStatus(state, fieldId) !== "KNOWN") { await run(fieldCommand(state, fieldId, value)); directEdits++; }
-      }
+      directEdits += await forceComplete(fixture, () => state, run, () => current, resolvePending);
     }
     transcript.readiness.directEdits = directEdits;
+    transcript.structure = { steps: state.steps.length + state.stepDrafts.length,
+      requirements: state.requirements.length + state.requirementDrafts.length };
     transcript.readiness.blockers = (current.readiness?.blockers ?? []).map(b => b.code);
 
     const canGenerate = deps.toBe && !!current.readiness?.ready && (transcript.readiness.reached || transcript.readiness.forcedCompletion);
+    if (deps.toBe && !canGenerate) console.log(`To-Be skipped: not ready (${transcript.readiness.blockers.join(", ") || "no blockers read"})`);
     if (canGenerate && !capExceeded()) {
       await run({ type: "CONFIRM" });
       transcript.toBe = await generateToBe(pool, current.confirmedSnapshotId!, stage);
@@ -279,24 +298,61 @@ async function runOnce(fixture: Fixture, deps: { pool: Pool; provider: string; m
   return TranscriptSchema.parse(transcript);
 }
 
+/** Forced completion: clear every readiness blocker the fixture can answer by direct entry (catalog fields, every blank step
+ * field, requirement statements), review what is left pending, and repeat until nothing changes. Prints each blocker it could
+ * not clear. Returns the number of direct edits made. */
+async function forceComplete(fixture: Fixture, getState: () => WorkspaceState, run: (c: Command) => Promise<void>,
+  getCurrent: () => { readiness: { ready: boolean; blockers: { code: string; detail: string }[] } | null }, resolvePending: () => Promise<void>) {
+  let edits = 0;
+  for (let round = 1; round <= 3; round++) {
+    await resolvePending();
+    const { commands, unresolved } = planForcedCompletion(fixture, getState());
+    for (const command of commands) { await run(command); edits++; }
+    await resolvePending();
+    const readiness = getCurrent().readiness;
+    if (readiness?.ready) return edits;
+    if (!commands.length) {
+      for (const blocker of readiness?.blockers ?? []) console.log(`forced completion could not clear: ${blocker.code} (${blocker.detail})`);
+      for (const item of unresolved) console.log(`forced completion: ${item}`);
+      return edits;
+    }
+  }
+  for (const blocker of getCurrent().readiness?.blockers ?? []) console.log(`forced completion could not clear: ${blocker.code} (${blocker.detail})`);
+  return edits;
+}
+
 /** Mirrors the consultant-jobs worker: confirmed snapshot -> parseToBeInput -> runStage("to_be") -> validateToBeOutput. */
 async function generateToBe(pool: Pool, snapshotId: string, stage: typeof runStage): Promise<NonNullable<Transcript["toBe"]>> {
-  const row = (await pool.query(`SELECT target_product,payload FROM discovery_versions WHERE id=$1`, [snapshotId])).rows[0];
+  const row = (await pool.query(`SELECT target_product,payload,version_no,variant_code FROM discovery_versions WHERE id=$1`, [snapshotId])).rows[0];
   const input = parseToBeInput({ targetProduct: row.target_product, discovery: row.payload });
+  const references = await loadToBeReferences(input);
+  console.log(`catalog: ${input.targetProduct} ${input.discovery.targetRelease ?? "UNKNOWN"} -> ${references.length} verified references`);
+  console.log(`To-Be input: ${input.discovery.asIsSteps.length} steps, ${input.discovery.requirements.length} requirements, ${input.discovery.companyContext?.length ?? 0} company-context fields`);
   const requirements = input.discovery.requirements.map(r => ({ id: r.id, statement: r.statement, evidence: r.evidence.quote }));
   const base = { attempted: true, requirements };
+  const finish = (m: StageMetrics | undefined, rest: { structurallyValid: boolean; errorCode: string | null; design: NonNullable<Transcript["toBe"]>["design"]; derived?: Record<string, unknown> }) => {
+    const run = toBeRun(m);
+    console.log(toBeSummary(run, rest.errorCode));
+    return { ...base, ...run, ...rest };
+  };
   try {
     const generated = await stage("to_be", input);
-    const m = generated.metrics;
-    const stats = { attempts: m.attempts, validationErrors: m.validationErrors.length, inputTokens: m.inputTokens, outputTokens: m.outputTokens };
-    const validation = validateToBeOutput(input, (generated.payload as { design?: unknown }).design, await loadToBeReferences(input));
-    return { ...base, ...stats, structurallyValid: validation.success, errorCode: validation.success ? null : "VALIDATION_FAILED",
-      design: validation.success ? validation.data.design as unknown as NonNullable<Transcript["toBe"]>["design"] : null };
+    const validation = validateToBeOutput(input, (generated.payload as { design?: unknown }).design, references,
+      reviewBlockers((generated.payload as { reviewFindings?: ReviewOutcome[] }).reviewFindings));
+    // The sections the report builds without a model (document control, As-Is narratives, RICEFW list) travel with the design, so the judge reads the whole document.
+    const derived = validation.success ? deriveSections({ design: validation.data.design, asIsSteps: input.discovery.asIsSteps, meta: {
+      sourceRevision: row.version_no, variantCode: row.variant_code, variantName: input.discovery.variantName, snapshotId, generatedAt: new Date().toISOString(),
+      targetProduct: input.targetProduct, targetRelease: input.discovery.targetRelease,
+      sources: input.discovery.sources.map(({ id, title, revision, text }) => ({ id, title, revision, digest: createHash("sha256").update(text, "utf8").digest("hex") })) } }) : undefined;
+    // Heuristic findings the application reports (REVIEW_FINDINGS) travel with the derived sections, so the judge sees the system is honest about gaps.
+    const reviewFindings = validation.success ? validation.data.evaluation.blockers.filter(item => item.code in REVIEW_FINDINGS)
+      .map(item => ({ code: item.code, path: item.path, explanation: REVIEW_FINDINGS[item.code], ...(item.detail && { detail: item.detail }) })) : [];
+    if (derived) Object.assign(derived, { reviewFindings });
+    return finish(generated.metrics, { structurallyValid: validation.success, errorCode: validation.success ? null : "VALIDATION_FAILED",
+      design: validation.success ? validation.data.design as unknown as NonNullable<Transcript["toBe"]>["design"] : null, ...(derived && { derived: derived as unknown as Record<string, unknown> }) });
   } catch (error) {
-    const stage = error instanceof AIStageError ? error : null;
-    return { ...base, attempts: stage?.metrics.attempts ?? 0, validationErrors: stage?.metrics.validationErrors.length ?? 0,
-      inputTokens: stage?.metrics.inputTokens ?? 0, outputTokens: stage?.metrics.outputTokens ?? 0,
-      structurallyValid: false, errorCode: stage?.code ?? `DRIVER_ERROR:${message(error).slice(0, 80)}`, design: null };
+    const failed = error instanceof AIStageError ? error : null;
+    return finish(failed?.metrics, { structurallyValid: false, errorCode: failed?.code ?? `DRIVER_ERROR:${message(error).slice(0, 80)}`, design: null });
   }
 }
 
@@ -354,15 +410,15 @@ async function main() {
     process.exitCode = score.pass ? 0 : 1;
     return;
   }
-  if (!has("live")) throw new Error("Use --replay <transcript.json> or --live --provider <anthropic|deepinfra> --model <id>");
+  if (!has("live")) throw new Error("Use --replay <transcript.json> or --live --provider <anthropic|deepinfra|openrouter> --model <id>");
   const provider = flag("provider"), model = flag("model");
-  if (!provider || !(PROVIDERS as readonly string[]).includes(provider) || !model) throw new Error("--live needs --provider <anthropic|deepinfra> and --model <id>");
+  if (!provider || !(PROVIDERS as readonly string[]).includes(provider) || !model) throw new Error("--live needs --provider <anthropic|deepinfra|openrouter> and --model <id>");
   const runs = Number(flag("runs") ?? 1), maxTurns = Number(flag("max-turns") ?? DEFAULT_MAX_TURNS);
   if (!Number.isInteger(runs) || runs < 1 || !Number.isInteger(maxTurns) || maxTurns < 1) throw new Error("--runs and --max-turns must be positive integers");
   fillEnvDefaults();
   process.env.AI_PROVIDER = provider; process.env.AI_MODEL = model;
   if (has("fake-model") && provider !== "stub") throw new Error("--fake-model only runs with --provider stub");
-  const keyName = { anthropic: "ANTHROPIC_API_KEY", deepinfra: "DEEPINFRA_API_KEY", stub: null }[provider as (typeof PROVIDERS)[number]];
+  const keyName = { anthropic: "ANTHROPIC_API_KEY", deepinfra: "DEEPINFRA_API_KEY", openrouter: "OPENROUTER_API_KEY", stub: null }[provider as (typeof PROVIDERS)[number]];
   if (keyName && !process.env[keyName]?.trim()) throw new Error(`${keyName} is not set`);
 
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
@@ -370,8 +426,9 @@ async function main() {
   let allPassed = true;
   await withDisposableDatabase(async pool => {
     for (let run = 1; run <= runs; run++) {
-      const transcript = await runOnce(fixture, { pool, provider, model, maxTurns, forceComplete: !has("no-force-complete"), toBe: !has("no-tobe"), fake: has("fake-model") });
+      const transcript = await runOnce(fixture, { pool, provider, model, maxTurns, forceComplete: !has("no-force-complete"), toBe: !has("no-tobe"), toBeOnly: has("tobe-only"), fake: has("fake-model") });
       const { score, summary } = report(transcript, fixture, `Run ${run}/${runs}`);
+      if (transcript.turns.some(t => t.error === "AI_PROVIDER_CREDIT") || transcript.toBe?.errorCode === "AI_PROVIDER_CREDIT") console.error(`eval-consultant: ${creditHint(provider as Provider)}`);
       const file = `test-results/eval/${stamp}-${provider}-${model.replace(/[^A-Za-z0-9._-]+/g, "_")}${runs > 1 ? `-run${run}` : ""}.json`;
       writeFileSync(file, JSON.stringify({ transcript, score, summary }, null, 2));
       console.log(`Wrote ${file}`);

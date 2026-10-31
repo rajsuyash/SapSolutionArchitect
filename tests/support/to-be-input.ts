@@ -26,3 +26,11 @@ export function fixture(): ToBeInput {
   };
   return { targetProduct: "S4HANA_CLOUD_PRIVATE", discovery };
 }
+
+/** Adds answered company-context fields to a To-Be input, each quoting a new interview-answers source. */
+export function withCompanyContext(input: ToBeInput, answers: Record<string, string>): ToBeInput {
+  const entries = Object.entries(answers);
+  const source = { id: "SRC-CTX", title: "Interview answers", revision: "v1", locator: "Fictional interview", text: entries.map(([, value]) => value).join("\n\n") };
+  return { ...input, discovery: { ...input.discovery, sources: [...input.discovery.sources, source],
+    companyContext: entries.map(([fieldId, value]) => ({ fieldId: fieldId as never, label: `Label for ${fieldId}`, value, evidence: { sourceId: source.id, quote: value } })) } };
+}

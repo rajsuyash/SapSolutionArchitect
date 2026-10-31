@@ -3,6 +3,9 @@ import type { ReactNode } from "react";
 import { AuthForm, WorkspaceLink as Link } from "../auth-ui";
 import { getPageSession, loginDestination, requirePageSession } from "../../lib/page-auth";
 import { isAuthError } from "../../lib/auth";
+import { z } from "zod";
+import { failureCode } from "../../lib/consultant-extraction";
+import { zodIssues } from "../../lib/auth-http";
 import { getRuntime } from "../../lib/runtime";
 import { googleEnabled } from "../../lib/google-oauth";
 import { ProjectForm } from "../project-form";
@@ -86,6 +89,9 @@ export default async function WorkspacePage({ params }: Props) {
       catch (error) {
         if (isAuthError(error) && error.status === 401) redirect(`/login?${new URLSearchParams({ next: route })}`);
         if (isAuthError(error) && error.status === 404) notFound();
+        // Codes and issue paths only: no values, no report text.
+        console.error(JSON.stringify({ event: "report_load_failed", ...(z.uuid().safeParse(path[5]).success && { jobId: path[5] }),
+          code: failureCode(error), ...zodIssues(error) }));
         return <Panel title="Could not load the report"><p className="panel-description">Please try again in a moment.</p>
           <a className="primary-button" href={route} data-primary-cta>Retry</a></Panel>;
       }

@@ -3,9 +3,9 @@ import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
 import { AuthError, type AuthService } from "./auth";
 import { withTenantSession } from "./tenant";
-import { containsSensitiveText, validateInterviewTurn } from "./ai/discovery-interview";
-import { applyWorkspaceCommand, buildInterviewInput, compileDiscovery, createWorkspace,
-  getWorkspaceReadiness, recordInterviewTurn, WorkspaceCommandSchema, WorkspaceStateSchema,
+import { containsSensitiveText, revalidateStoredTurn, type Scope } from "./ai/discovery-interview";
+import { applyWorkspaceCommand, backfillCatalog, buildInterviewInput, compileDiscovery, createWorkspace,
+  getWorkspaceReadiness, recordInterviewTurn, settleChatTurn, WorkspaceCommandSchema, WorkspaceStateSchema,
   type WorkspaceState } from "./discovery-workspace-model";
 
 const uuid = z.uuid();
@@ -19,10 +19,13 @@ const conflict = () => new AuthError("WORKSPACE_CONFLICT", 409, "Discovery chang
 type Row = { id: string; revision: number; state: unknown; request_hash: string;
   confirmed_snapshot_id: string | null; created_at: Date };
 type Access = { target_product: WorkspaceState["targetProduct"]; problem_statement: string;
+  modules: string[]; org_units: { type: string; code: string; name: string }[];
   project_role: string; org_role: string; is_demo: boolean };
 export type WorkspaceWorkerArgs = { orgId: string; projectId: string; variantCode: string; requestedBy: string };
+/** `scope` "chat" or "extraction" persists one half of a turn onto the latest revision (the other half, or the user, may
+ * have moved the workspace on since the job started); the default "full" still requires `expectedRevision` to be current. */
 export type WorkspaceTurnArgs = WorkspaceWorkerArgs & { expectedRevision: number; currentMessageId: string;
-  turn: unknown; requestKey: string };
+  turn: unknown; requestKey: string; scope?: Scope };
 
 function validIdentity(projectId: string, variantCode: string) {
   if (!uuid.safeParse(projectId).success || !variant.safeParse(variantCode).success) throw absent();
@@ -38,7 +41,7 @@ function validRevision(value: number) {
 function readState(row: Row): WorkspaceState {
   const parsed = WorkspaceStateSchema.safeParse(row.state);
   if (!parsed.success || parsed.data.revision !== row.revision) throw new Error("Invalid persisted discovery workspace");
-  return parsed.data;
+  return backfillCatalog(parsed.data);
 }
 async function lock(client: PoolClient, orgId: string, projectId: string, variantCode: string) {
   await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))",
@@ -51,7 +54,9 @@ async function lock(client: PoolClient, orgId: string, projectId: string, varian
 async function access(client: PoolClient, args: WorkspaceWorkerArgs, lockRows = false): Promise<Access> {
   validIdentity(args.projectId, args.variantCode);
   if (!uuid.safeParse(args.orgId).success || !uuid.safeParse(args.requestedBy).success) throw absent();
-  const row = (await client.query<Access>(`SELECT p.target_product,p.problem_statement,p.is_demo,
+  const row = (await client.query<Access>(`SELECT p.target_product,p.problem_statement,p.modules,p.is_demo,
+    COALESCE((SELECT json_agg(json_build_object('type',o.type,'code',o.code,'name',o.name) ORDER BY o.type,o.code)
+      FROM org_units o WHERE o.org_id=p.org_id AND o.project_id=p.id),'[]'::json) AS org_units,
     m.project_role,u.org_role FROM projects p JOIN project_memberships m
     ON m.org_id=p.org_id AND m.project_id=p.id AND m.user_id=$3
     JOIN users u ON u.org_id=m.org_id AND u.id=m.user_id
@@ -113,23 +118,31 @@ export async function loadWorkspaceForWorker(client: PoolClient, args: Workspace
 /** Called only inside the worker's transaction after it has fenced the job.
  * Model/network execution belongs outside this transaction. */
 export async function persistWorkspaceTurn(client: PoolClient, args: WorkspaceTurnArgs) {
+  const scope = args.scope ?? "full";
   validKey(args.requestKey);
   validRevision(args.expectedRevision);
   validIdentity(args.projectId, args.variantCode);
   await lock(client, args.orgId, args.projectId, args.variantCode);
   const a = await access(client, args, true); // worker-only: privileged connection
   requireEdit(a);
-  const hash = digest({ expectedRevision: args.expectedRevision, currentMessageId: args.currentMessageId, turn: args.turn });
+  const hash = digest(scope === "full" ? { expectedRevision: args.expectedRevision, currentMessageId: args.currentMessageId, turn: args.turn }
+    : { scope, currentMessageId: args.currentMessageId, turn: args.turn });
   const prior = await replay(client, args, args.requestKey, hash);
   if (prior) return result(prior, a);
   const current = await latest(client, args);
   if (!current) throw absent();
   const state = readState(current);
-  if (state.revision !== args.expectedRevision) throw conflict();
-  if (!validateInterviewTurn(buildInterviewInput(state, args.currentMessageId), args.turn).success) {
+  if (scope === "full" && state.revision !== args.expectedRevision) throw conflict();
+  // An extraction that was already recorded (a retry, or the same message extracted twice) changes nothing.
+  if (scope === "extraction" && state.extractedMessageIds?.includes(args.currentMessageId)) return result(current, a);
+  const input = buildInterviewInput(state, args.currentMessageId);
+  // A chat turn is stored after its message's extraction may have answered what it asked: closed gaps are not asked, and
+  // are replaced so the stored turn still asks something while any gap is open (see settleChatTurn).
+  const turn = scope === "chat" ? settleChatTurn(state, args.currentMessageId, args.turn) : args.turn;
+  if (!revalidateStoredTurn(input, turn, scope).success) {
     throw new AuthError("INVALID_INTERVIEW_TURN", 400, "The interview response could not be validated");
   }
-  const next = recordInterviewTurn(state, args.turn, args.currentMessageId, metadata(args.requestedBy));
+  const next = recordInterviewTurn(state, turn, args.currentMessageId, metadata(args.requestedBy), scope);
   return result(await append(client, args, "TURN", next, args.requestKey, hash,
     next.confirmation ? current.confirmed_snapshot_id : null), a);
 }
@@ -179,7 +192,7 @@ export function createDiscoveryWorkspaceRepository(pool: Pool, auth: AuthService
           throw new AuthError("VARIANT_LIMIT", 409, `A project can have at most ${MAX_VARIANTS_PER_PROJECT} process variants.`);
         }
         const state = createWorkspace({ variantCode, ...parsed.data, targetProduct: a.target_product,
-          problemStatement: a.problem_statement }, metadata(user.id));
+          problemStatement: a.problem_statement, modules: a.modules, orgUnits: a.org_units }, metadata(user.id));
         return result(await append(client, args, "CREATE", state, key!, hash), a);
       }),
     command: (token: string | null, projectId: string, variantCode: string, expectedRevision: number,
@@ -217,7 +230,7 @@ export function createDiscoveryWorkspaceRepository(pool: Pool, auth: AuthService
         }
         if (parsed.data.type !== "CONFIRM") return result(await append(client, args, "COMMAND", next, key!, hash,
           next.confirmation ? current.confirmed_snapshot_id : null), a);
-        const input = compileDiscovery(next);
+        const input = compileDiscovery(next, { allowGaps: !!next.confirmation?.withGaps });
         // Coordinate with the separate manual capture path before assigning a
         // discovery version. The workspace lock remains held until commit.
         await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))",

@@ -9,7 +9,7 @@ import { fixture as toBeInput } from "./support/to-be-input";
 
 const local = parseEnv(readFileSync(new URL("../.env.example", import.meta.url), "utf8"));
 const FLASH = "XiaomiMiMo/MiMo-V2.6-Flash", PRO = "XiaomiMiMo/MiMo-V2.6-Pro";
-const settings = (overrides: Record<string, string> = {}) => parseEnvironment({ ...local, NODE_ENV: "test",
+const settings = (overrides: Record<string, string> = {}) => parseEnvironment({ ...local, NODE_ENV: "test", AI_TO_BE_REVIEW: "off", AI_TO_BE_FIX_MAX_PARTS: "0",
   AI_PROVIDER: "deepinfra", DEEPINFRA_API_KEY: "synthetic-di-key", AI_MODEL: FLASH, ...overrides });
 const analysisInput = { name: "Synthetic project", clientName: "Synthetic client",
   problemStatement: "Orders arrive by email and staff re-key them into spreadsheets, causing delays and errors.",

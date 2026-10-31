@@ -14,6 +14,7 @@ function ConsultantMessage({ message, questions }: { message: Message; questions
   const [reply, ...rest] = message.text.split("\n\n");
   return <>
     <p>{reply}</p>
+    {message.note && <p data-testid="to-be-note"><strong>{message.note}</strong></p>}
     {rest.length > 0 && <ol className={styles.questions}>{rest.map((paragraph, index) => {
       const match = questions.find(question => `${question.question} ${question.whyItMatters}` === paragraph);
       return <li key={index}>{match

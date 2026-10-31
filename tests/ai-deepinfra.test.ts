@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { parseEnvironment } from "../src/lib/env";
 import { createStageRunner } from "../src/lib/ai/runStage";
 import { classifyProviderError } from "../src/lib/ai/provider";
+import { fixture } from "./support/interview-input";
 import { asStream, messageEvents, sseResponse } from "./support/sse";
 
 const local = parseEnv(readFileSync(new URL("../.env.example", import.meta.url), "utf8"));
@@ -60,6 +61,21 @@ describe("provider request shape", () => {
     expect(h.urls.every((url) => url.startsWith("https://api.anthropic.com/v1/messages"))).toBe(true);
     expect(h.headers[0]!.get("x-api-key")).toBe("an-test-key");
     expect(Object.keys(h.bodies[0]!).sort()).toEqual(ALLOWED_KEYS);
+  });
+  it("forces the stage's tool on DeepInfra (all stages) and keeps auto on Anthropic, in the call and the token count", async () => {
+    for (const [stage, name, stageInput] of [["problem_analysis", "submit_analysis", input],
+      ["interview_turn", "submit_interview_turn", fixture()]] as const) {
+      const h = harness(() => reply([{ type: "tool_use", id: "t", name, input: payload() }]));
+      const seen: { tool_choice: unknown; tools?: unknown }[] = [];
+      const fetch = vi.fn<typeof globalThis.fetch>(async (url, init) => { seen.push(JSON.parse(String(init?.body))); return h.fetch(url, init); });
+      await createStageRunner(deepinfra(), { fetch })(stage, stageInput).catch(() => undefined);
+      const withTools = seen.filter(body => body.tools); // the plain-text size count of problem analysis carries no tools
+      expect(withTools.length).toBeGreaterThanOrEqual(1); // the call (the interview also counts tokens with the tool)
+      for (const body of withTools) expect(body.tool_choice).toEqual({ type: "tool", name, disable_parallel_tool_use: true });
+    }
+    const h = harness();
+    await createStageRunner(anthropic(), { fetch: h.fetch })("problem_analysis", input);
+    expect(h.bodies[0]!.tool_choice).toEqual({ type: "auto", disable_parallel_tool_use: true });
   });
   it("refuses to start without the selected provider's key", () => {
     expect(() => createStageRunner({ ...deepinfra(), DEEPINFRA_API_KEY: undefined })).toThrow("Missing DEEPINFRA_API_KEY");
@@ -156,11 +172,11 @@ describe("provider failure logging", () => {
   it("maps SDK timeouts to timeout", () => {
     expect(classifyProviderError(new Anthropic.APIConnectionTimeoutError())).toEqual({ category: "timeout" });
   });
-  it("logs one safe line, keeps the user-facing code generic, and leaks no prompt or key", async () => {
+  it("logs one safe line, uses the distinct credit code, and leaks no prompt or key", async () => {
     const log = vi.spyOn(console, "error").mockImplementation(() => {});
     const h = harness(() => new Response(JSON.stringify({ type: "error", error: { type: "invalid_request_error",
       message: "Your credit balance is too low" } }), { status: 400, ...json }));
-    await expect(createStageRunner(deepinfra(), { fetch: h.fetch })("problem_analysis", input)).rejects.toMatchObject({ code: "AI_PROVIDER_ERROR" });
+    await expect(createStageRunner(deepinfra(), { fetch: h.fetch })("problem_analysis", input)).rejects.toMatchObject({ code: "AI_PROVIDER_CREDIT" });
     expect(log).toHaveBeenCalledTimes(1);
     const line = String(log.mock.calls[0]![0]);
     expect(JSON.parse(line)).toEqual({ event: "ai_provider_error", provider: "deepinfra", model: "XiaomiMiMo/MiMo-V2.6-Pro",
@@ -203,18 +219,24 @@ const stalling = (overrides: Record<string, string>) => {
 };
 
 describe("streaming failures", () => {
-  it("classifies a provider error event that arrives mid-stream", async () => {
+  it("classifies a provider error event that arrives mid-stream, retries the call three times, then logs one error line", async () => {
+    vi.useFakeTimers(); vi.spyOn(Math, "random").mockReturnValue(0.5);
     const log = vi.spyOn(console, "error").mockImplementation(() => {});
     const h = harness();
     const fetch = vi.fn<typeof globalThis.fetch>(async (url) => String(url).includes("count_tokens")
       ? new Response(JSON.stringify({ input_tokens: 10 }), json)
       : sseResponse(messageEvents({ content: [thinking] }, { type: "overloaded_error", message: "private provider detail" })));
-    await expect(createStageRunner(deepinfra(), { fetch })("problem_analysis", input))
-      .rejects.toMatchObject({ code: "AI_PROVIDER_ERROR", metrics: { attempts: 1 } });
+    const pending = createStageRunner(deepinfra(), { fetch })("problem_analysis", input).catch((error: unknown) => error);
+    const messageCalls = () => fetch.mock.calls.filter(([url]) => !String(url).includes("count_tokens")).length;
+    for (const [call, wait] of [[1, 2000], [2, 6000], [3, 18000]] as const) {
+      await vi.waitFor(() => expect(messageCalls()).toBe(call)); await vi.advanceTimersByTimeAsync(wait);
+    }
+    expect(await pending).toMatchObject({ code: "AI_PROVIDER_ERROR", metrics: { attempts: 4, providerRetries: 3 } });
     expect(h.fetch).not.toHaveBeenCalled();
-    expect(log).toHaveBeenCalledTimes(1);
-    expect(JSON.parse(String(log.mock.calls[0]![0]))).toMatchObject({ event: "ai_provider_error", provider: "deepinfra", category: "overloaded" });
-    expect(String(log.mock.calls[0]![0])).not.toContain("private");
+    const lines = log.mock.calls.map((call) => JSON.parse(String(call[0])) as Record<string, unknown>);
+    expect(lines.map((line) => line.event)).toEqual(["ai_provider_retry", "ai_provider_retry", "ai_provider_retry", "ai_provider_error"]);
+    expect(lines[3]).toMatchObject({ provider: "deepinfra", category: "overloaded" });
+    expect(log.mock.calls.map((call) => String(call[0])).join()).not.toContain("private");
   });
   it("maps a stream aborted by the per-call signal to AI_TIMEOUT", async () => {
     vi.useFakeTimers();

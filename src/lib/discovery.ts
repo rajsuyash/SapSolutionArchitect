@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
 import { AuthError, type AuthService, type SessionUser } from "./auth";
+import { CompanyContextSchema } from "./company-context";
 import { withTenantSession } from "./tenant";
 
 const id = z.string().regex(/^[A-Za-z0-9_-]{1,64}$/);
@@ -11,13 +12,15 @@ const text = rawText(8000);
 const label = rawText(200);
 const evidence = z.strictObject({ sourceId: id, quote: text });
 const texts = z.array(text).max(50);
+/** Upper bound of `openQuestions`; compileDiscovery trims to it so a large workspace never fails to confirm. */
+export const MAX_OPEN_QUESTIONS = 100;
 export const DiscoveryInputSchema = z.strictObject({
   schemaVersion: z.literal(1), variantName: label, targetRelease: label.nullable(),
   sources: z.array(z.strictObject({
     id, title: label, revision: label, locator: label, text: rawText(40000),
   })).min(1).max(200),
   asIsSteps: z.array(z.strictObject({
-    id, sequence: z.number().int().positive(), name: label, actor: label, system: label,
+    id, sequence: z.number().int().positive(), name: text, actor: text, system: text,
     trigger: text, description: text, inputs: texts, outputs: texts, controls: texts,
     exceptions: texts, evidence,
   })).min(1).max(200),
@@ -28,7 +31,9 @@ export const DiscoveryInputSchema = z.strictObject({
   conflicts: z.array(z.strictObject({
     id, question: text, sourceIds: z.array(id).min(1).max(20),
   })).max(100),
-  openQuestions: z.array(z.strictObject({ id, question: text, owner: label })).max(100),
+  openQuestions: z.array(z.strictObject({ id, question: text, owner: label })).max(MAX_OPEN_QUESTIONS),
+  // Answered company-context fields (design input). Optional so frozen revisions saved before it existed still load.
+  companyContext: CompanyContextSchema.optional(),
 });
 const SaveSchema = z.strictObject({
   expectedVersion: z.number().int().min(0).max(2147483646), input: DiscoveryInputSchema,
@@ -62,6 +67,8 @@ export function validateDiscovery(value: unknown): DiscoveryInput {
     if (!steps.has(requirement.asIsStepId)) throw invalid(`requirements.${i}.asIsStepId`);
     checkEvidence(requirement.evidence, `requirements.${i}.evidence`);
   });
+  unique((input.companyContext ?? []).map(item => item.fieldId), "companyContext");
+  (input.companyContext ?? []).forEach((item, i) => checkEvidence(item.evidence, `companyContext.${i}.evidence`));
   input.conflicts.forEach((conflict, i) => {
     unique(conflict.sourceIds, `conflicts.${i}.sourceIds`);
     if (conflict.sourceIds.some(sourceId => !sources.has(sourceId))) throw invalid(`conflicts.${i}.sourceIds`);

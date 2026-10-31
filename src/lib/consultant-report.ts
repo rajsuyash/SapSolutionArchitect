@@ -1,28 +1,35 @@
 // Reviewable To-Be report: one pure view-model shared by the page, the JSON endpoint and the exports.
 // Human labels live here only. Internal codes are kept as secondary text for consultants.
 import { z } from "zod";
-import { DetailedDesignSchema, type DetailedDesign, type TrustedReference } from "./ai/design-quality";
+import { BLOCKER_DETAIL_MAX, DetailedDesignSchema, type DetailedDesign, type TrustedReference } from "./ai/design-quality";
 import type { DiscoveryInput } from "./discovery";
+import { deriveSections, inputQuestionRows } from "./to-be-derived";
+import { productRelease } from "./sap-releases";
+import { WORKSPACE_FIELDS } from "./workspace-fields";
 
 /** What the server stores plus the context needed to read it. Never contains provider metrics, sources text or secrets. */
 export type ReportData = {
   jobId: string; project: { name: string; clientName: string }; variant: { code: string; name: string };
   targetProduct: string; targetRelease: string | null; sourceRevision: number; generatedAt: string | null;
   discovery: Pick<DiscoveryInput, "asIsSteps" | "requirements" | "conflicts" | "openQuestions"> & {
-    sources: { id: string; title: string; locator: string; revision: string }[] };
-  design: DetailedDesign; blockers: { code: string; path: string }[];
-  unresolvedInputQuestions: { id: string; question: string; owner: string }[];
+    sources: { id: string; title: string; locator: string; revision: string; digest?: string }[] };
+  /** The frozen discovery revision the design was generated from (document control). */
+  snapshotId?: string | null;
+  design: DetailedDesign; blockers: { code: string; path: string; detail?: string }[];
+  unresolvedInputQuestions: { id: string; question: string; owner: string; label?: string }[];
   /** Only references the design cites, resolved from the curated catalog at read time. */
   references: TrustedReference[];
+  /** Size of the curated catalog for this product and release; 0 means no SAP claim in the design could be verified. */
+  catalogReferenceCount: number;
 };
 
 const StoredSchema = z.object({
   design: DetailedDesignSchema,
-  evaluation: z.object({ blockers: z.array(z.object({ code: z.string().max(80), path: z.string().max(200) })).max(1000) }),
-  unresolvedInputQuestions: z.array(z.object({ id: z.string(), question: z.string(), owner: z.string() })).max(100),
+  evaluation: z.object({ blockers: z.array(z.object({ code: z.string().max(80), path: z.string().max(200), detail: z.string().transform(detail => detail.slice(0, BLOCKER_DETAIL_MAX)).optional() })).max(1000) }),
+  unresolvedInputQuestions: z.array(z.object({ id: z.string(), question: z.string(), owner: z.string(), label: z.string().optional() })).max(100),
   sourceRevision: z.number().int(), snapshotId: z.string(),
 });
-/** Re-validates what was stored; a corrupted row must fail loudly rather than render partially. */
+/** Re-validates what was stored; a corrupted row must fail loudly rather than render partially. Only a blocker detail is tolerated over-long (rows saved before the writer bounded it): it is truncated, every other field keeps its cap. */
 export const parseStoredToBe = (result: unknown) => StoredSchema.parse(result);
 
 export const PRODUCT_LABELS: Record<string, string> = {
@@ -32,8 +39,65 @@ const FIT_LABELS: Record<string, string> = { STANDARD: "Standard SAP", CONFIGURA
   INTEGRATION: "Integration", MANUAL: "Manual process", LICENSE_DEPENDENT: "Licence-dependent", NEEDS_VALIDATION: "Needs SAP validation" };
 const DISPOSITION_LABELS = { IMPLEMENTED: "Implemented in the To-Be design", DEFERRED: "Deferred (approved decision)", REJECTED: "Rejected (approved decision)",
   CONDITIONAL: "Conditional on an open decision (partly designed)" } as const;
+const FIT_CLASS_LABELS: Record<string, string> = { STANDARD: "Standard", CONFIGURATION: "Configuration", STANDARD_INTEGRATION: "Standard integration (released SAP API)", KEY_USER_EXTENSION: "Key-user extension",
+  SIDE_BY_SIDE_BTP: "Side-by-side (BTP)", CLASSIC_RICEFW: "Classic custom development (RICEFW)", MANUAL_WORKAROUND: "Manual workaround" };
+const DIRECTION_LABELS: Record<string, string> = { INBOUND: "Into SAP", OUTBOUND: "From SAP", BIDIRECTIONAL: "Both ways" };
+const STEP_TYPE_LABELS: Record<string, string> = { IN_SYSTEM_MANUAL: "In system, manual", AUTOMATIC: "Automatic", OUTSIDE_SYSTEM: "Outside the system", DECISION: "Decision", INTEGRATION: "Integration" };
+const MITIGATION_LABELS: Record<string, string> = { NONE_STANDARD_FITS: "None: standard fits", PROCESS_CHANGE: "Change the business process", CONFIGURE: "Configure",
+  EXTEND_KEY_USER: "Key-user extension", BUILD_SIDE_BY_SIDE: "Build side-by-side", DEVELOP_CUSTOM: "Develop custom code", MANUAL_WORKAROUND: "Manual workaround" };
+const CONFIG_CATEGORY_LABELS: Record<string, string> = { DOCUMENT_TYPE: "Document type", REASON_CODE: "Reason code", PRICING_ELEMENT: "Pricing element", NUMBER_RANGE: "Number range", OTHER: "Other" };
+const CONFIG_STATUS_LABELS: Record<string, string> = { CONFIRMED_IN_CATALOG: "Confirmed in the SAP catalog", BUSINESS_TO_PROVIDE: "Business to provide", NEEDS_VALIDATION: "Needs validation" };
+const MECHANISM_LABELS: Record<string, string> = { BUSINESS_RULE: "Business rule", WORKFLOW: "Workflow", AUTHORIZATION: "Authorization", REPORT: "Report" };
+const SOD_LABELS: Record<string, string> = { CONFLICT_IDENTIFIED: "Conflict identified", NO_CONFLICT_ASSESSED: "Assessed: no conflict" };
+const contextLabel = (fieldId: string) => WORKSPACE_FIELDS.find(field => field.id === fieldId)?.label ?? "Company context";
 const KIND_LABELS: Record<string, string> = { PAIN_POINT: "Pain point", TO_BE_REQUIREMENT: "Future requirement", CONTROL: "Control" };
+/** Findings of the model's own read-through of the finished design (to_be_review): what it saw that does not fit together and could not be repaired. The finding text itself travels with the blocker as its detail. */
+export const REVIEW_PASS_FINDINGS: Record<string, string> = {
+  REVIEW_CONTRADICTION: "A reviewer pass found two parts of the design that contradict each other. See the note.",
+  REVIEW_MISSING_LINK: "A reviewer pass found a link between two parts of the design that is missing. See the note.",
+  REVIEW_UNRESOLVED_CODE: "A reviewer pass found a code used in a step that no register defines. See the note.",
+  REVIEW_COVERAGE_GAP: "A reviewer pass found something the design should cover and does not. See the note.",
+  REVIEW_INTERNAL_TERM: "A reviewer pass found a working term of the generation process in client text. See the note.",
+  REVIEW_OPEN_QUESTION_DECIDED: "A reviewer pass found a statement in the design that assumes an answer to a question still open. See the note.",
+};
+/** Category of the findings that come from completeness and consistency checks. The design is valid and delivered; a person confirms or fixes each one. */
+export const REVIEW_FINDINGS_CATEGORY = "Review findings";
+/** Plain-English explanation of each heuristic finding (design-registers-v3.ts `block`). The fix pass (to-be-fix.ts) sends the part back once; what it could not clear is listed here. */
+export const REVIEW_FINDINGS: Record<string, string> = {
+  OBJECTIVE_STEP_UNMAPPED: "A To-Be step is not listed under any objective, so it is unclear which goal it serves.",
+  OBJECTIVE_CONTEXT_UNCOVERED: "An answered desired outcome, KPI target or constraint is not cited by any objective.",
+  STATUS_TRANSITION_MISSING: "A step produces a document that has a status model, but the model has no status change recorded for that step.",
+  CONFIG_DOCUMENT_TYPE_MISSING: "A document status model names a document type that has no matching document-type entry in the configuration catalogue.",
+  ROLE_STEP_UNCOVERED: "No role in the role catalogue is assigned to this step.",
+  ROLE_ACTOR_UNMATCHED: "The roles assigned to this step do not match the actor named on the step.",
+  CONTROL_UNMAPPED: "A control from discovery has no control mapping saying how the design enforces it.",
+  REPORT_PAIN_POINT_UNCOVERED: "A pain point from discovery is not addressed by any report or KPI.",
+  SOD_CONFLICT_STEPS: "A segregation-of-duties assessment records a conflict but names fewer than two steps, so it is unclear which steps clash.",
+  E2E_STEP_UNCOVERED: "A To-Be step is not walked by any end-to-end test scenario.",
+  UNRESOLVED_CODE: "A step uses an SAP code (movement type, document type, condition type, reason code or organisation code) that the configuration catalogue and organisation structure do not define.",
+  ORG_CODE_NOT_IN_CONTEXT: "An organisational unit is marked as having a confirmed code, but that code does not appear in the company-context answers.",
+  ORG_CODE_MISMATCH: "A step or register gives an organisation unit (plant, company code or storage location) a code that differs from the one in the organisation structure.",
+  INTERFACE_STEP_UNCOVERED: "An integration step is not listed by any interface, so its system boundary has no interface entry.",
+  PERIOD_END_MISSING: "No period-end activity is listed, so it is unclear what the scope adds to the period close.",
+  CONFIG_CONFIRMATION_UNSUPPORTED: "A configuration item is marked as confirmed in the SAP catalog, but no catalog reference it cites mentions it.",
+  KPI_VALUE_IGNORED: "A KPI shows a baseline or target as not provided, although the company-context answers give a value for this measure.",
+  INTERNAL_TERM: "Text meant for the client uses a working term of the generation process (for example \"outline\" or \"register call\"). Reword it in business language.",
+  TRUNCATED_TEXT: "A text field stops before its sentence is finished (it ends mid-sentence or with an ellipsis). Write it out in full.",
+  LANGUAGE_FRAGMENT: "A text field contains a fragment that is not English. Rewrite it in English.",
+  STATUS_MODEL_UNCOVERED: "A step outputs a document with a lifecycle (for example a delivery, advance shipping notice or billing request) that has no document status model.",
+  STATUS_TRANSITION_STEP_MISMATCH: "A document status model attributes a status change to a step that neither outputs nor handles that document.",
+  ROLE_OWNER_UNCATALOGUED: "An owner named in a register or step is not an entry of the role catalogue (or is spelled differently from it).",
+  CUTOVER_INTERFACE_UNCOVERED: "An interface has no cutover item for its initial load or connection set-up.",
+  REQUIRED_OUTPUT_UNCOVERED: "A required output from the company context has no report or KPI and is not declared out of scope.",
+  RULE_RESTATED: "A step repeats a business rule of an earlier step instead of referring to it; only the differences should be written out.",
+  BUILD_REALIZATION_UNLISTED: "A step's realization names something to build, but it is neither an extension or integration step nor listed by a built fit-gap row, so the RICEFW list would miss it.",
+  DANGLING_ID_REFERENCE: "Text cites an id in this design's own pattern (a step, rule, test, question or register row) that does not exist. Correct the id or remove the reference.",
+  UNKNOWN_QUESTION_REFERENCE: "A step cites an open question id (for example ETO-OQ-4 or IQ-7) that no register holds. Correct the id or remove the reference.",
+  CRITICAL_REQUIREMENT_PARTLY_TESTED: "A critical requirement is tested in one step but a variant step that also traces it has no acceptance test for it. Add a test to that step.",
+  ...REVIEW_PASS_FINDINGS,
+};
 const BLOCKERS: Record<string, { category: string; label: string }> = {
+  ...Object.fromEntries(Object.entries(REVIEW_FINDINGS).map(([code, label]) => [code, { category: REVIEW_FINDINGS_CATEGORY, label }])),
   TARGET_RELEASE_MISSING: { category: "Target release", label: "The target SAP release has not been decided." },
   IMPLEMENTATION_UNVERIFIED: { category: "SAP validation", label: "The SAP realization is not yet validated against the target release." },
   LICENSE_ENTITLEMENT_UNCONFIRMED: { category: "Licensing", label: "A cited SAP capability depends on a licence that is not confirmed." },
@@ -58,10 +122,12 @@ export const formatTimestamp = (iso: string | null) => iso && !Number.isNaN(Date
 
 export type RefView = { id: string; found: boolean; capability: string; fit: string; objects: string[]; limitations: string[]; urls: string[] };
 export type ImplementationView = { kind: string; kindLabel: string; detail: string; refs: RefView[] };
-export type BlockerView = { code: string; category: string; label: string; subject: string; anchor: string | null };
+export type BlockerView = { code: string; path: string; category: string; label: string; subject: string; anchor: string | null; detail: string };
 export type StepStatus = { code: "BLOCKED" | "REVIEW"; label: string; blockers: BlockerView[] };
 type Design = DetailedDesign["steps"][number];
-export type StepView = { anchor: string; heading: string; step: Design; asIsNames: string[]; implementation: ImplementationView; status: StepStatus };
+export type StepView = { anchor: string; heading: string; step: Design; asIsNames: string[]; implementation: ImplementationView; status: StepStatus;
+  /** Version 3 steps: how it is performed, the phase, and the interim process while it is not yet live. Empty strings for older designs. */
+  typeLabel: string; phase: string; interimProcess: string };
 export type ComparisonRow = {
   id: string; heading: string; actor: string; system: string; trigger: string; description: string;
   requirements: { id: string; kindLabel: string; statement: string; critical: boolean; quote: string }[];
@@ -69,7 +135,32 @@ export type ComparisonRow = {
 };
 export type TraceRow = { id: string; label: string; kindLabel: string; statement: string; critical: boolean; asIs: string; disposition: string;
   rationale: string; steps: string[]; rules: string[]; tests: string[] };
-export type Register = { id: string; text: string; owner: string; affects: string; state: string };
+export type Register = { id: string; sourceId?: string; text: string; owner: string; affects: string; state: string };
+/** Solution-design registers of a schemaVersion 2 or 3 design, already labelled. Null for a version 1 design. The version 3 lists are empty for version 2. */
+export type SolutionView = {
+  version3: boolean;
+  objectives: { id: string; statement: string; measure: string; basis: string; steps: string }[];
+  scope: { id: string; kind: string; statement: string; reason: string; basis: string }[];
+  statusModels: { id: string; documentType: string; statuses: string; transitions: string; editLock: string }[];
+  configuration: { id: string; category: string; name: string; purpose: string; status: string; owner: string; sap: string; note: string; steps: string }[];
+  roles: { id: string; name: string; responsibilities: string; steps: string }[];
+  sod: { id: string; assessment: string; description: string; roles: string; steps: string; mitigation: string }[];
+  controls: { id: string; requirement: string; statement: string; mechanism: string; realization: string; rule: string; steps: string }[];
+  reports: { id: string; name: string; purpose: string; realization: string; sap: string; steps: string }[];
+  endToEnd: { id: string; valueStream: string; given: string; when: string; then: string; steps: string; basis: string }[];
+  decisions: { id: string; topic: string; options: string; recommendation: string; rationale: string; affects: string; owner: string; status: string; basis: string }[];
+  fitGap: { requirementId: string; requirement: string; statement: string; classification: string; ricefwType: string; justification: string; sap: string; steps: string; stepTitles: string[];
+    mitigation: string; owner: string; status: string }[];
+  orgStructure: { id: string; unitType: string; proposal: string; source: string; openPoint: string; parent: string; code: string; owner: string }[];
+  masterData: { id: string; object: string; owner: string; keyFields: string; migrationSource: string; steps: string; creationChannel: string; governance: string }[];
+  interfaces: { id: string; system: string; direction: string; trigger: string; payload: string; apiCandidate: string; errorOwner: string; steps: string; scope: string; failureHandling: string; systemOfRecord: string }[];
+  kpis: { id: string; name: string; baseline: string; target: string; measuredFrom: string; steps: string; owner: string; producedBy: string }[];
+  dataMigration: { id: string; sequence: number; object: string; source: string; approach: string; risk: string }[];
+  cutover: { id: string; sequence: number; activity: string; owner: string; risk: string }[];
+  periodEnd: { id: string; sequence: number; activity: string; owner: string; steps: string }[];
+  /** One entry per register row that traces to requirements, for the traceability export. */
+  traces: { kind: string; label: string; summary: string; requirementIds: string[]; stepTitles: string[] }[];
+};
 export type ReportModel = ReturnType<typeof buildReport>;
 
 /** Builds every label, count and trace once, so the page and the exports cannot disagree. */
@@ -97,7 +188,7 @@ export function buildReport(data: ReportData) {
     return { subject: path.startsWith("input.targetRelease") ? "Project" : "Design", anchor: null };
   };
   const blockers: BlockerView[] = data.blockers.map(blocker => ({
-    code: blocker.code, ...(BLOCKERS[blocker.code] ?? { category: "Other", label: "Review is needed before this can progress." }), ...subjectOf(blocker.path) }));
+    code: blocker.code, path: blocker.path, detail: blocker.detail ?? "", ...(BLOCKERS[blocker.code] ?? { category: "Other", label: "Review is needed before this can progress." }), ...subjectOf(blocker.path) }));
   const byCategory = [...Map.groupBy(blockers, item => item.category)].map(([category, items]) => ({ category, items }));
 
   const refView = (id: string): RefView => {
@@ -111,7 +202,8 @@ export function buildReport(data: ReportData) {
     return { anchor: anchor(step), heading: stepTitle(step), step, asIsNames: step.asIsStepIds.map(asIsName),
       implementation: { kind: step.implementation.kind, kindLabel: FIT_LABELS[step.implementation.kind] ?? step.implementation.kind,
         detail: step.implementation.detail, refs: step.implementation.referenceIds.map(refView) },
-      status: own.length ? { code: "BLOCKED", label: `Blocked (${own.length})`, blockers: own } : { code: "REVIEW", label: "Needs human review", blockers: [] } };
+      status: own.length ? { code: "BLOCKED", label: `Blocked (${own.length})`, blockers: own } : { code: "REVIEW", label: "Needs human review", blockers: [] },
+      typeLabel: step.stepType ? STEP_TYPE_LABELS[step.stepType] ?? step.stepType : "", phase: step.phase ?? "", interimProcess: step.interimProcess ?? "" };
   });
 
   const comparison: ComparisonRow[] = discovery.asIsSteps.map(asIs => {
@@ -140,8 +232,8 @@ export function buildReport(data: ReportData) {
 
   const stepNames = (ids: string[]) => ids.map(id => design.steps.find(step => step.id === id)).flatMap(step => step ? [stepTitle(step)] : []).join("; ");
   const questions: Register[] = [
-    ...design.openQuestions.map(item => ({ id: item.id, text: item.question, owner: item.owner, affects: stepNames(item.affectedStepIds), state: "Open" })),
-    ...data.unresolvedInputQuestions.map(item => ({ id: item.id, text: item.question, owner: item.owner, affects: "Whole process", state: "Open" })),
+    ...design.openQuestions.map(item => ({ id: item.id, sourceId: inputQuestionRows(data.unresolvedInputQuestions).find(row => row.label === item.id)?.id, text: item.question, owner: item.owner, affects: stepNames(item.affectedStepIds), state: "Open" })),
+    ...inputQuestionRows(data.unresolvedInputQuestions).filter(item => !design.openQuestions.some(held => held.id === item.label)).map(item => ({ id: item.label, sourceId: item.id, text: item.question, owner: item.owner, affects: "Whole process", state: "Open" })),
   ];
   const conflicts: Register[] = discovery.conflicts.map(conflict => {
     const decision = design.conflictDecisions.find(item => item.conflictId === conflict.id);
@@ -158,6 +250,87 @@ export function buildReport(data: ReportData) {
     return notes.map((note, index) => ({ id: `${view.step.id}-${index + 1}`, text: note.text, owner: "SAP consultant", affects: view.heading, state: note.state }));
   });
 
+  const solution = ((): SolutionView | null => {
+    if (design.schemaVersion < 2) return null;
+    const requirementRefs = (list: string[]) => list.map(item => requirementLabels[item] ?? "Unknown requirement").join(", ");
+    const contextRefs = (list: string[]) => list.map(contextLabel).join(", ");
+    const stepList = (list: string[]) => list.flatMap(item => { const step = design.steps.find(candidate => candidate.id === item); return step ? [stepTitle(step)] : []; });
+    const basisOf = (row: { requirementIds: string[]; contextFieldIds: string[] }) => [requirementRefs(row.requirementIds), contextRefs(row.contextFieldIds)].filter(Boolean).join("; ") || "-";
+    const roleNames = (list: string[]) => list.map(item => design.roles?.find(role => role.id === item)?.name ?? "Unknown role").join(", ");
+    const sap = (row: { referenceIds: string[]; needsValidation: boolean; validationReason: string | null }) =>
+      [...row.referenceIds.map(item => { const view = refView(item); return `${view.capability} [${view.id}]`; }),
+        ...(row.needsValidation ? [`Needs SAP validation: ${row.validationReason ?? "no reason recorded"}`] : [])].join("; ") || "-";
+    const result: SolutionView = {
+      version3: design.schemaVersion === 3,
+      objectives: (design.objectives ?? []).map(row => ({ id: row.id, statement: row.statement, measure: row.measure, basis: basisOf(row), steps: stepList(row.stepIds).join("; ") || "-" })),
+      scope: (design.scopeStatements ?? []).map(row => ({ id: row.id, kind: row.kind === "IN_SCOPE" ? "In scope" : "Out of scope", statement: row.statement, reason: row.reason, basis: basisOf(row) })),
+      statusModels: (design.documentStatusModels ?? []).map(row => ({ id: row.id, documentType: row.documentType, statuses: row.statuses.join(" → "),
+        transitions: row.transitions.map(item => `${item.from ?? "(created)"} → ${item.to} at ${stepList([item.stepId])[0] ?? "an unknown step"}: ${item.event}`).join("\n"),
+        editLock: row.editLockRules.map(item => `After ${item.afterEvent}: locked ${item.locked}; still editable ${item.stillEditable}`).join("\n") })),
+      configuration: (design.configurationCatalogue ?? []).map(row => ({ id: row.id, category: CONFIG_CATEGORY_LABELS[row.category] ?? row.category, name: row.name, purpose: row.purpose,
+        status: CONFIG_STATUS_LABELS[row.status] ?? row.status, owner: row.owner, sap: row.referenceIds.map(item => { const view = refView(item); return `${view.capability} [${view.id}]`; }).join("; ") || "-",
+        note: row.note ?? "-", steps: stepList(row.stepIds).join("; ") || "-" })),
+      roles: (design.roles ?? []).map(row => ({ id: row.id, name: row.name, responsibilities: row.responsibilities, steps: stepList(row.stepIds).join("; ") })),
+      sod: (design.sodAssessments ?? []).map(row => ({ id: row.id, assessment: SOD_LABELS[row.assessment] ?? row.assessment, description: row.description,
+        roles: roleNames(row.roleIds), steps: stepList(row.stepIds).join("; "), mitigation: row.mitigation })),
+      controls: (design.controlMappings ?? []).map(row => ({ id: row.id, requirement: requirementLabels[row.requirementId] ?? "Unknown requirement",
+        statement: discovery.requirements.find(item => item.id === row.requirementId)?.statement ?? "", mechanism: MECHANISM_LABELS[row.mechanism] ?? row.mechanism,
+        realization: row.realization, rule: row.ruleId ?? "-", steps: stepList(row.stepIds).join("; ") })),
+      reports: (design.reports ?? []).map(row => ({ id: row.id, name: row.name, purpose: row.purpose, realization: row.realization, sap: sap(row), steps: stepList(row.stepIds).join("; ") || "-" })),
+      endToEnd: (design.endToEndTests ?? []).map(row => ({ id: row.id, valueStream: row.valueStream, given: row.given, when: row.when, then: row.then,
+        steps: stepList(row.stepIds).join("; "), basis: requirementRefs(row.requirementIds) })),
+      decisions: (design.keyDesignDecisions ?? []).map(row => ({ id: row.id, topic: row.topic, recommendation: row.recommendation, rationale: row.rationale,
+        options: row.options.map(option => `${option.name} (${FIT_LABELS[option.fitType] ?? option.fitType}). Pros: ${option.pros} Cons: ${option.cons}`).join("\n"),
+        affects: stepList(row.impactedStepIds).join("; "), owner: row.owner, status: "Proposed, not approved",
+        basis: [requirementRefs(row.requirementIds), contextRefs(row.contextFieldIds)].filter(Boolean).join("; ") || "-" })),
+      fitGap: (design.fitGap ?? []).map(row => ({ requirementId: row.requirementId, requirement: requirementLabels[row.requirementId] ?? "Unknown requirement",
+        statement: discovery.requirements.find(item => item.id === row.requirementId)?.statement ?? "", classification: FIT_CLASS_LABELS[row.classification] ?? row.classification,
+        ricefwType: row.ricefwType ?? "-", justification: row.justification, sap: sap(row), steps: stepList(row.stepIds).join("; "), stepTitles: stepList(row.stepIds),
+        mitigation: row.mitigationType ? MITIGATION_LABELS[row.mitigationType] ?? row.mitigationType : "-", owner: row.owner ?? "-", status: row.status ? "Open" : "-" })),
+      orgStructure: (design.orgStructure ?? []).map(row => ({ id: row.id, unitType: row.unitType, proposal: row.proposal,
+        source: [contextRefs(row.contextFieldIds), requirementRefs(row.requirementIds), stepList(row.stepIds).join("; ")].filter(Boolean).join("; ") || "-",
+        openPoint: row.openPoint ?? "-", code: row.codeStatus === "CODE_CONFIRMED" ? row.code ?? "-" : row.codeStatus === "BUSINESS_TO_PROVIDE" ? "Business to provide" : "-", owner: row.owner ?? "-", parent: row.parentId ? (design.orgStructure ?? []).find(item => item.id === row.parentId)?.unitType ?? row.parentId : "-" })),
+      masterData: (design.masterDataPrerequisites ?? []).map(row => ({ id: row.id, object: row.object, owner: row.owner, keyFields: row.keyFields.join(", "),
+        migrationSource: row.migrationSource, steps: stepList(row.stepIds).join("; ") || "-", creationChannel: row.creationChannel ?? "-", governance: row.governance ?? "-" })),
+      interfaces: (design.interfaces ?? []).map(row => ({ id: row.id, system: row.counterpartSystem, direction: DIRECTION_LABELS[row.direction] ?? row.direction,
+        trigger: row.triggerFrequency, payload: row.payload, apiCandidate: sap(row), errorOwner: row.errorOwner, steps: stepList(row.stepIds).join("; ") || "-",
+        scope: row.outOfScopeReason ? `Out of scope: ${row.outOfScopeReason}` : "In scope", systemOfRecord: row.systemOfRecord ?? "-",
+        failureHandling: row.failureHandling ? `Seen: ${row.failureHandling.detection}\nAlerted: ${row.failureHandling.alerting}\nRerun: ${row.failureHandling.rerun}\nNo double posting: ${row.failureHandling.idempotency}` : "-" })),
+      kpis: (design.kpis ?? []).map(row => ({ id: row.id, name: row.name, baseline: row.baseline, target: row.target,
+        measuredFrom: `${row.measuredFrom} (${sap(row)})`, steps: stepList(row.stepIds).join("; ") || "-", owner: row.owner ?? "-",
+        producedBy: row.producingStepId ? stepList([row.producingStepId])[0] ?? "Unknown step" : "-" })),
+      dataMigration: [...(design.dataMigration ?? [])].sort((a, b) => a.sequence - b.sequence)
+        .map(row => ({ id: row.id, sequence: row.sequence, object: row.object, source: row.source, approach: row.approach, risk: row.risk })),
+      cutover: [...(design.cutover ?? [])].sort((a, b) => a.sequence - b.sequence)
+        .map(row => ({ id: row.id, sequence: row.sequence, activity: row.activity, owner: row.owner, risk: row.risk })),
+      periodEnd: [...(design.periodEndActivities ?? [])].sort((a, b) => a.sequence - b.sequence)
+        .map(row => ({ id: row.id, sequence: row.sequence, activity: row.activity, owner: row.owner, steps: stepList(row.stepIds).join("; ") || "-" })),
+      traces: [],
+    };
+    const trace = (kind: string, label: string, summary: string, requirementIds: string[], stepIds: string[]) =>
+      requirementIds.length ? [{ kind, label, summary, requirementIds, stepTitles: stepList(stepIds) }] : [];
+    result.traces = [
+      ...(design.keyDesignDecisions ?? []).flatMap(row => trace("Key design decision", row.id, `${row.topic}: recommend ${row.recommendation}. ${row.rationale}`, row.requirementIds, row.impactedStepIds)),
+      ...(design.orgStructure ?? []).flatMap(row => trace("Organisation structure", row.id, `${row.unitType}: ${row.proposal}`, row.requirementIds, row.stepIds)),
+      ...(design.masterDataPrerequisites ?? []).flatMap(row => trace("Master data", row.id, `${row.object} (${row.owner})`, row.requirementIds, row.stepIds)),
+      ...(design.interfaces ?? []).flatMap(row => trace("Interface", row.id, `${row.counterpartSystem}, ${DIRECTION_LABELS[row.direction]}: ${row.payload}`, row.requirementIds, row.stepIds)),
+      ...(design.kpis ?? []).flatMap(row => trace("KPI", row.id, `${row.name}: baseline ${row.baseline}, target ${row.target}`, row.requirementIds, row.stepIds)),
+      ...(design.dataMigration ?? []).flatMap(row => trace("Data migration", row.id, `${row.object}: ${row.approach}`, row.requirementIds, row.stepIds)),
+      ...(design.cutover ?? []).flatMap(row => trace("Cutover", row.id, row.activity, row.requirementIds, row.stepIds)),
+      ...(design.periodEndActivities ?? []).flatMap(row => trace("Period-end activity", row.id, row.activity, row.requirementIds, row.stepIds)),
+      ...(design.objectives ?? []).flatMap(row => trace("Objective", row.id, row.statement, row.requirementIds, row.stepIds)),
+      ...(design.scopeStatements ?? []).flatMap(row => trace(row.kind === "IN_SCOPE" ? "In scope" : "Out of scope", row.id, row.statement, row.requirementIds, row.stepIds)),
+      ...(design.documentStatusModels ?? []).flatMap(row => trace("Document status model", row.id, `${row.documentType}: ${row.statuses.join(", ")}`, row.requirementIds, row.transitions.map(item => item.stepId))),
+      ...(design.controlMappings ?? []).flatMap(row => trace("Control mapping", row.id, `${MECHANISM_LABELS[row.mechanism] ?? row.mechanism}: ${row.realization}`, [row.requirementId], row.stepIds)),
+      ...(design.reports ?? []).flatMap(row => trace("Report", row.id, `${row.name}: ${row.purpose}`, row.requirementIds, row.stepIds)),
+      ...(design.endToEndTests ?? []).flatMap(row => trace("End-to-end test", row.id, `${row.valueStream}: ${row.then}`, row.requirementIds, row.stepIds)),
+    ];
+    const flagged = [...(design.fitGap ?? []), ...(design.kpis ?? []), ...(design.interfaces ?? []), ...(design.reports ?? [])].filter(row => row.needsValidation);
+    sapPoints.push(...flagged.map((row, index) => ({ id: `register-${index + 1}`, text: row.validationReason ?? "Validate against the target release.",
+      owner: "SAP consultant", affects: "Solution-design registers", state: "Not validated" })));
+    return result;
+  })();
+
   const coverageCount = (kind: keyof typeof DISPOSITION_LABELS) => design.coverage.filter(item => item.disposition === kind).length;
   return {
     data, requirementLabels, status, statusCopy: STATUS_COPY[status], blockers, blockersByCategory: byCategory,
@@ -170,8 +343,13 @@ export function buildReport(data: ReportData) {
       tests: design.steps.reduce((sum, step) => sum + step.acceptanceTests.length, 0), requirements: discovery.requirements.length,
       implemented: coverageCount("IMPLEMENTED"), deferred: coverageCount("DEFERRED"), rejected: coverageCount("REJECTED"),
       openQuestions: questions.length, conflicts: conflicts.length },
-    comparison, steps: stepViews, traceability, registers: { questions, conflicts, sapPoints },
+    catalogWarning: data.catalogReferenceCount === 0
+      ? `Warning: there is no verified SAP reference catalog for ${productRelease(PRODUCT_LABELS[data.targetProduct] ?? data.targetProduct, data.targetRelease)}. Every SAP claim in this design needs SAP validation.` : null,
+    comparison, steps: stepViews, traceability, registers: { questions, conflicts, sapPoints }, solution,
     sources: discovery.sources,
+    /** Document control, As-Is narratives, RICEFW list and actor-role matrix: built from trusted inputs, no model involved. */
+    derived: deriveSections({ design, asIsSteps: discovery.asIsSteps, inputQuestions: data.unresolvedInputQuestions, meta: { sourceRevision: data.sourceRevision, variantCode: data.variant.code, variantName: data.variant.name,
+      snapshotId: data.snapshotId ?? null, generatedAt: data.generatedAt, targetProduct: data.targetProduct, targetRelease: data.targetRelease, sources: discovery.sources } }),
   };
 }
 

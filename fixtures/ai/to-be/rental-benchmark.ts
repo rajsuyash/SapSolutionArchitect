@@ -38,6 +38,7 @@ export const rentalDraft: DetailedDesign = {
       id: "TB-1", sequence: 1, title: "Create individually traceable hire items",
       asIsStepIds: ["AS-1"], requirementIds: ["R-1", "R-2"],
       actor: "Rental coordinator", trigger: "A customer accepts a quotation containing four identical hire units.",
+      stepType: "IN_SYSTEM_MANUAL", phase: "Phase 1", interimProcess: null,
       inputDocuments: ["Accepted quotation and item quantity", "Customer and delivery location", "Available asset identifiers"],
       actions: [
         { actor: "Rental coordinator", system: "Proposed hire workspace", operation: "Select the accepted quotation lines and confirm the quantity to convert.",
@@ -54,8 +55,9 @@ export const rentalDraft: DetailedDesign = {
       ],
       exceptions: [{ condition: "The selected asset is already allocated during overlapping dates", response: "Reject allocation and retain the unsaved item for correction.", owner: "Rental coordinator" }],
       exceptionsNotApplicableReason: null,
-      masterData: [{ object: "Rental asset", fields: ["unique asset identifier", "availability status", "owning party"], owner: "Rental master-data steward" }],
-      effects: { inventory: "Reserve availability; do not treat reservation as physical dispatch.", financial: "No invoice is produced at this step.", ownership: "Hire allocation does not transfer ownership." },
+      masterData: [{ object: "Rental asset", fields: ["unique asset identifier", "availability status", "owning party"], owner: "Rental coordinator" }],
+      effects: { inventory: "Reserve availability; do not treat reservation as physical dispatch.", financial: "No invoice is produced at this step.", ownership: "Hire allocation does not transfer ownership.",
+        accountingEntry: "None: reserving hire items posts nothing to accounting." },
       implementation,
       addedValue: "Each asset can be dispatched, extended, returned and billed independently without manual quantity splitting.",
       acceptanceTests: [
@@ -70,6 +72,7 @@ export const rentalDraft: DetailedDesign = {
       id: "TB-2", sequence: 2, title: "Receive a partial return and end charges per item",
       asIsStepIds: ["AS-2"], requirementIds: ["R-3", "R-4"],
       actor: "Rental stores clerk", trigger: "One of four hired assets physically returns.",
+      stepType: "IN_SYSTEM_MANUAL", phase: "Phase 1", interimProcess: null,
       inputDocuments: ["Open hire items", "Customer return note", "Returned asset identifier"],
       actions: [
         { actor: "Rental stores clerk", system: "Proposed returns workspace", operation: "Match the returned asset to the open hire item and record receipt details.",
@@ -82,12 +85,13 @@ export const rentalDraft: DetailedDesign = {
         response: "End future charging only for the returned item; retain all three other items as active." }],
       exceptions: [
         { condition: "The actual return timestamp is missing", response: "Block return completion and ask the clerk to enter the timestamp.", owner: "Rental stores clerk" },
-        { condition: "The return would affect an already posted billing period", response: "Route the discrepancy to billing review; do not rewrite a posted invoice.", owner: "Billing reviewer" },
+        { condition: "The return would affect an already posted billing period", response: "Route the discrepancy to billing review; do not rewrite a posted invoice.", owner: "Billing clerk" },
       ],
       exceptionsNotApplicableReason: null,
-      masterData: [{ object: "Asset return condition", fields: ["condition code", "inspection required"], owner: "Rental stores lead" }],
+      masterData: [{ object: "Asset return condition", fields: ["condition code", "inspection required"], owner: "Rental stores clerk" }],
       effects: { inventory: "Record physical return separately from availability for re-hire; inspection may still be pending.",
-        financial: "Reconcile the final charge using the approved proration decision; that decision is currently open.", ownership: "Preserve the asset's recorded owning party." },
+        financial: "Reconcile the final charge using the approved proration decision; that decision is currently open.", ownership: "Preserve the asset's recorded owning party.",
+        accountingEntry: "None at the return itself; the final hire charge is posted by the billing step once the proration decision is closed." },
       implementation,
       addedValue: "A partial return does not prematurely close the entire order or continue billing a returned asset.",
       acceptanceTests: [
@@ -101,6 +105,7 @@ export const rentalDraft: DetailedDesign = {
       id: "TB-3", sequence: 3, title: "Prepare recurring hire billing with one-time charges separated",
       asIsStepIds: ["AS-3"], requirementIds: ["R-5", "R-6"],
       actor: "Billing clerk", trigger: "The monthly billing period is ready for review.",
+      stepType: "IN_SYSTEM_MANUAL", phase: "Phase 1", interimProcess: null,
       inputDocuments: ["Hire items and their charge types", "Item-specific return records", "Prior billing records", "Approved billing rules"],
       actions: [
         { actor: "System", system: "Proposed billing workspace", operation: "Select eligible hire items for the period and separate recurring hire from installation charges.",
@@ -113,11 +118,12 @@ export const rentalDraft: DetailedDesign = {
         { id: "BR-4", condition: "An installation charge has already been billed", response: "Exclude it from subsequent monthly billing proposals." },
         { id: "BR-5", condition: "A hire item remains active in the next monthly period", response: "Include its recurring charge according to the agreed period calculation." },
       ],
-      exceptions: [{ condition: "An item's final day needs a proration rule that is not approved", response: "Hold that item's affected charge and request a billing-policy decision.", owner: "Billing policy owner" }],
+      exceptions: [{ condition: "An item's final day needs a proration rule that is not approved", response: "Hold that item's affected charge and request a billing-policy decision.", owner: "Billing clerk" }],
       exceptionsNotApplicableReason: null,
-      masterData: [{ object: "Charge classification", fields: ["recurring hire", "one-time installation", "rate period"], owner: "Billing master-data steward" }],
+      masterData: [{ object: "Charge classification", fields: ["recurring hire", "one-time installation", "rate period"], owner: "Billing clerk" }],
       effects: { inventory: "Billing proposal creation does not move stock.", financial: "Posting and tax/account determination remain subject to the separate approved finance design.",
-        ownership: "Billing does not change asset ownership." },
+        ownership: "Billing does not change asset ownership.",
+        accountingEntry: "Pending the approved finance design: the receivable and hire-revenue account categories are not yet decided, so no account is named here." },
       implementation,
       addedValue: "Monthly rental billing retains asset-level traceability and prevents repeat billing of installation.",
       acceptanceTests: [
@@ -139,5 +145,5 @@ export const rentalDraft: DetailedDesign = {
   ],
   conflictDecisions: [{ conflictId: "CON-1", decisionId: null }],
   openQuestions: [{ id: "Q-1", question: "Which proration convention applies to a partial final day, and who approves it?",
-    owner: "Billing policy owner", affectedStepIds: ["TB-2", "TB-3"] }],
+    owner: "Billing clerk", affectedStepIds: ["TB-2", "TB-3"] }],
 };
