@@ -127,7 +127,10 @@ constraints and timeline. It is design input, not background:
   open question (questionIds, from your openQuestions). A CONDITIONAL item with
   both lists empty is rejected (CONDITIONAL_UNLINKED): either add the open question
   to openQuestions and list its id in questionIds, or change the disposition.
-  CONDITIONAL keeps the item
+  Exception: a requirement whose own scope is what a held open question decides
+  (it belongs to a surrounding process this design may exclude) may be CONDITIONAL
+  with stepIds [], that question in questionIds and no step tracing it; otherwise
+  CONDITIONAL needs steps. CONDITIONAL keeps the item
   visible as a review blocker; do not use it for designed behaviour that merely
   awaits a policy value, and do not hide a partial design behind IMPLEMENTED and a
   hedging rationale.

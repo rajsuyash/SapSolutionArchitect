@@ -104,6 +104,7 @@ const BLOCKERS: Record<string, { category: string; label: string }> = {
   SAP_REFERENCE_MISSING: { category: "SAP validation", label: "An extension or integration is proposed without a cited SAP reference." },
   OPEN_CONFLICT: { category: "Source conflicts", label: "Sources disagree and no approved decision resolves the conflict." },
   OPEN_QUESTION: { category: "Open decisions", label: "A business question raised in the design is still unanswered." },
+  COVERAGE_SCOPE_PENDING: { category: "Open decisions", label: "A requirement is not designed until the linked open question decides whether it is in scope." },
   COVERAGE_CONDITIONAL: { category: "Open decisions", label: "A requirement is only partly designed until an open decision is answered." },
   INPUT_QUESTION_UNRESOLVED: { category: "Open decisions", label: "A question from discovery is still unanswered." },
 };
@@ -224,7 +225,8 @@ export function buildReport(data: ReportData) {
     const covering = design.steps.filter(step => step.requirementIds.includes(requirement.id));
     return { id: requirement.id, label: requirementLabels[requirement.id]!, kindLabel: KIND_LABELS[requirement.kind] ?? requirement.kind, statement: requirement.statement,
       critical: requirement.critical, asIs: asIsName(requirement.asIsStepId),
-      disposition: coverage ? DISPOSITION_LABELS[coverage.disposition] : "No disposition recorded",
+      disposition: !coverage ? "No disposition recorded" : coverage.disposition === "CONDITIONAL" && !covering.length && !coverage.stepIds.length && coverage.questionIds?.length
+        ? `Not designed: scope pending ${coverage.questionIds.join(", ")}` : DISPOSITION_LABELS[coverage.disposition],
       rationale: coverage?.rationale ?? "", steps: covering.map(stepTitle),
       rules: covering.flatMap(step => step.businessRules.map(rule => `${rule.id} (${stepTitle(step)})`)),
       tests: covering.flatMap(step => step.acceptanceTests.filter(test => test.requirementIds.includes(requirement.id)).map(test => test.id)) };

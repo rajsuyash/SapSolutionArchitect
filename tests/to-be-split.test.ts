@@ -1301,3 +1301,24 @@ describe("readable input-question ids and no person names in the design", () => 
     expect(result.metrics.warnings).toContainEqual({ code: "PERSON_NAME_REMOVED", path: "draft.roles.0.name" });
   });
 });
+
+describe("scope-pending coverage in the pipeline", () => {
+  const withPendingRequirement = () => {
+    const input = fixture();
+    input.discovery.requirements.push({ id: "R-7", asIsStepId: "AS-3", critical: true, kind: "TO_BE_REQUIREMENT",
+      statement: "The treatment of a partial final day", evidence: { sourceId: "SRC-3", quote: "The treatment of a partial final day" } });
+    return input;
+  };
+  const pendingOutline = { ...split.outline, coverage: [...split.outline.coverage, { requirementId: "R-7", disposition: "CONDITIONAL" as const, stepIds: [],
+    decisionId: null, questionIds: ["Q-1"], rationale: "Not designed here: whether this is in scope is held on Q-1." }] };
+  it("accepts a first outline with a scope-pending row without a repair round or a step call for it", async () => {
+    const h = harness({ outline: () => pendingOutline });
+    const result = await h.run(withPendingRequirement());
+    expect(h.outlineCalls.length).toBe(1);
+    expect(h.patchCalls.length).toBe(0);
+    expect(h.stepCalls.length).toBe(STEP_IDS.length);
+    expect(result.payload.evaluation.blockers).toContainEqual({ code: "COVERAGE_SCOPE_PENDING", path: "draft.coverage.6" });
+    expect(result.payload.evaluation.errors ?? []).toEqual([]);
+  });
+});
+

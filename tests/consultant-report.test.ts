@@ -44,6 +44,28 @@ const data: ReportData = {
     capability: "Returns processing", objects: ["VA01"], limitations: ["Needs plant setup"], evidenceUrls: ["https://help.sap.com/docs/x", "https://evil.example/x", "http://help.sap.com/y"] }],
 };
 
+describe("scope-pending coverage in the report", () => {
+  const pendingDesign = DetailedDesignSchema.parse({ ...design, coverage: [...design.coverage, { requirementId: "R2", disposition: "CONDITIONAL", stepIds: [],
+    decisionId: null, questionIds: ["Q-1"], rationale: "Not designed here: scope is held on Q-1." }] });
+  const pending = { ...data, design: pendingDesign, blockers: [{ code: "COVERAGE_SCOPE_PENDING", path: "draft.coverage.1" }],
+    discovery: { ...data.discovery, requirements: [...data.discovery.requirements,
+      { id: "R2", asIsStepId: "A1", kind: "TO_BE_REQUIREMENT" as const, statement: "Customer schedule intake", critical: false, evidence }] } };
+  it("renders the row as not designed with the question id, in the model, the Markdown and the CSV, with its blocker label", () => {
+    const model = buildReport(pending);
+    const row = model.traceability.find(item => item.id === "R2")!;
+    expect(row.disposition).toBe("Not designed: scope pending Q-1");
+    expect(row.steps).toEqual([]);
+    expect(model.blockers.find(item => item.code === "COVERAGE_SCOPE_PENDING")).toMatchObject({ label: expect.stringContaining("decides whether it is in scope") });
+    expect(model.blockersByCategory.map(group => group.category)).toContain("Open decisions");
+    expect(renderMarkdown(model)).toContain("Not designed: scope pending Q-1");
+    expect(renderTraceabilityCsv(model)).toContain("Not designed: scope pending Q-1");
+  });
+  it("is accepted by the stored-design reader", () => {
+    const stored = { design: JSON.parse(JSON.stringify(pendingDesign)), evaluation: { blockers: [] }, unresolvedInputQuestions: [], sourceRevision: 1, snapshotId: "s" };
+    expect(parseStoredToBe(stored).design.coverage[1]).toMatchObject({ requirementId: "R2", stepIds: [], questionIds: ["Q-1"] });
+  });
+});
+
 describe("consultant report model", () => {
   const model = buildReport(data);
   it("never says approved; blocked while blockers remain, review-required otherwise", () => {
