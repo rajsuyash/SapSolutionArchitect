@@ -10,7 +10,7 @@ import { REGISTER_GROUPS, REGISTER_KEYS, groupOf, type RegisterGroup, type Regis
 export const REVIEW_KINDS = ["CONTRADICTION", "MISSING_LINK", "UNRESOLVED_CODE", "COVERAGE_GAP", "INTERNAL_TERM", "OPEN_QUESTION_DECIDED"] as const;
 export type ReviewKind = (typeof REVIEW_KINDS)[number];
 export const MAX_REVIEW_FINDINGS = 20;
-const EXPLANATION_MAX_CHARS = 400;
+export const EXPLANATION_MAX_CHARS = 400;
 
 export const ReviewFindingSchema = z.strictObject({
   kind: z.enum(REVIEW_KINDS),
@@ -37,15 +37,16 @@ const strip = (value: unknown, limit: number): unknown => typeof value === "stri
 
 /** The review reads the whole design in one request, and a long design is large (18 steps measured at about 220k characters of step text alone), so the
  * text the reviewer sees is shortened: enough of each statement to see what it claims, not all of it. The repair of a part carries that part in full. */
-const CUT_CHARS = { trigger: 160, rule: 170, exception: 110, effect: 190, implementation: 280, action: 90, document: 70, register: 220 } as const;
+const CUT_CHARS = { trigger: 160, rule: 170, exception: 110, effect: 190, implementation: 280, action: 90, document: 70, register: 220, test: 120 } as const;
 /** The review request is kept under this many characters of design (about 35k tokens): the text limits below are scaled down together until it fits. */
 export const MAX_REVIEW_DESIGN_CHARS = 120_000;
 const SCALES = [1, 0.7, 0.5, 0.35, 0.25] as const;
 const MAX_ACTIONS = 4;
 const cut = (value: string, limit: number) => value.length <= limit ? value : `${value.slice(0, limit - 1).trimEnd()}…`;
 
-/** The design as the reviewer reads it: every step with shortened operational text, every register row with its content, the coverage table and the open
- * questions. Acceptance tests keep only their id and kind; traceability arrays and catalog bookkeeping are left out. */
+/** The design as the reviewer reads it: every step with shortened operational text (acceptance tests with their given/when/then), every register row with its content,
+ * the coverage table with its question and decision links and rationale, and the open questions with their decisions and the requirements they put in scope. The
+ * links the reviewer needs to judge "open question decided" and coverage findings are kept; other traceability arrays and catalog bookkeeping are left out. */
 export function compactDesign(design: DetailedDesign, maxChars = MAX_REVIEW_DESIGN_CHARS) {
   const fits = SCALES.map(scale => compactAt(design, scale));
   return fits.find(compact => JSON.stringify(compact).length <= maxChars) ?? fits[fits.length - 1]!;
@@ -65,10 +66,12 @@ function compactAt(design: DetailedDesign, scale: number) {
       exceptions: step.exceptions.map(item => c(`${item.condition} -> ${item.response}`, CUT_CHARS.exception)),
       effects: Object.fromEntries(Object.entries(step.effects).map(([key, value]) => [key, c(value, CUT_CHARS.effect)])),
       implementation: { kind: step.implementation.kind, detail: c(step.implementation.detail, CUT_CHARS.implementation) }, decisionIds: step.decisionIds,
-      acceptanceTests: step.acceptanceTests.map(test => `${test.id} (${test.kind})`),
+      acceptanceTests: step.acceptanceTests.map(test => ({ id: test.id, kind: test.kind, given: c(test.given, CUT_CHARS.test), when: c(test.when, CUT_CHARS.test), then: c(test.then, CUT_CHARS.test) })),
     })),
-    coverage: design.coverage.map(({ requirementId, disposition, stepIds }) => ({ requirementId, disposition, stepIds })),
-    openQuestions: design.openQuestions.map(({ id, question, affectedStepIds }) => ({ id, question: c(question, CUT_CHARS.rule), affectedStepIds })),
+    coverage: design.coverage.map(({ requirementId, disposition, stepIds, decisionId, questionIds, decisionIds, rationale }) =>
+      ({ requirementId, disposition, stepIds, decisionId, questionIds, decisionIds, rationale: c(rationale, CUT_CHARS.rule) })),
+    openQuestions: design.openQuestions.map(({ id, question, affectedStepIds, decisionIds, scopeOfRequirementIds }) =>
+      ({ id, question: c(question, CUT_CHARS.rule), affectedStepIds, decisionIds, scopeOfRequirementIds })),
     ...registers,
   };
 }

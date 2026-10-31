@@ -27,6 +27,8 @@ function run(script: Script = {}) {
       const request = user as Record<string, unknown>;
       calls.push({ substage, user: request, group });
       if (substage === "to_be_outline") return split.outline;
+      // A verify call (it carries verifyFindings) confirms every claimed repair; to-be-verify.test.ts covers the verifier answering otherwise.
+      if (substage === "to_be_review" && request.verifyFindings) return { findings: [] };
       if (substage === "to_be_review") return typeof script.review === "function" ? (script.review as () => unknown)() : script.review;
       if (substage === "to_be_step") {
         const id = (request.step as { id: string }).id; stepCount[id] = (stepCount[id] ?? 0) + 1;
@@ -184,8 +186,8 @@ describe("fix pass: unresolved review findings", () => {
     const parts = ["TB-1", "TB-2", "TB-3", "KDD-1", "ORG-1", "MD-1", "REP-1", "DSM-1", "ROLE-1"];
     const h = run({ review: { findings: parts.map(finding) } });
     const out = await h.result;
-    // 13 calls to build, 6 review repairs, then the 3 parts the review had no room for.
-    expect(h.calls).toHaveLength(13 + 6 + 3);
+    // 13 calls to build, 6 review repairs and 1 verify call for them, then the 3 parts the review had no room for and 1 verify call for those.
+    expect(h.calls).toHaveLength(13 + 6 + 1 + 3 + 1);
     expect(h.fixCalls()).toHaveLength(3);
     expect(out.reviewFindings!.every(item => item.outcome === "REPAIRED")).toBe(true);
     expect(out.evaluation.blockers.some(item => item.code.startsWith("REVIEW_"))).toBe(false);

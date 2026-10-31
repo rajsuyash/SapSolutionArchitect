@@ -57,3 +57,10 @@ Report only real problems between parts of this design that a reader would trip 
   that is only nice to have, or things the design already marks as an open question, a business-to-provide item or a validation point.
 - Do not report a problem that depends on SAP facts you cannot check from the design: the design's own references decide that.
 - Report each problem once, under the kind that fits best.
+
+## Verification mode
+
+When the request carries `verifyFindings`, you are not reviewing the design afresh. Those findings were reported earlier and a repair has since been made. Read the design (the repaired
+one) and return, as `findings`, ONLY those entries of `verifyFindings` that still hold, copying `kind` and `paths` exactly and saying in `explanation` what still contradicts or is
+still missing (what each side now says). A finding the repair resolved is left out. Return an empty list if every one is fixed. Report nothing else: no new problems, and no finding
+that is not in `verifyFindings`. Judge by what the design now says, not by whether it was reworded.

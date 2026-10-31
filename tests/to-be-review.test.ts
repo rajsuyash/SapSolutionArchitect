@@ -21,6 +21,8 @@ function run(script: Script = {}) {
       const request = user as Record<string, unknown>;
       calls.push({ substage, user: request, group });
       if (substage === "to_be_outline") return split.outline;
+      // A verify call (it carries verifyFindings) confirms every claimed repair; to-be-verify.test.ts covers the verifier answering otherwise.
+      if (substage === "to_be_review" && request.verifyFindings) return { findings: [] };
       if (substage === "to_be_review") { if (typeof script.review === "function") return (script.review as () => never)(); return "review" in script ? script.review : { findings: [] }; }
       if (substage === "to_be_step") {
         const id = (request.step as { id: string }).id; stepCount[id] = (stepCount[id] ?? 0) + 1;
@@ -32,7 +34,7 @@ function run(script: Script = {}) {
     ...script.deps,
   };
   const result = runDesign(fixture(), [], deps);
-  return { result, calls, warnings, stepCount, groupCount, reviewCalls: () => calls.filter(call => call.substage === "to_be_review") };
+  return { result, calls, warnings, stepCount, groupCount, reviewCalls: () => calls.filter(call => call.substage === "to_be_review" && !call.user.verifyFindings) };
 }
 
 describe("consistency review pass", () => {
@@ -43,11 +45,11 @@ describe("consistency review pass", () => {
     expect(out.design).toEqual(rentalDraftV3);
     expect(out.reviewFindings).toEqual([]);
     expect(out.evaluation.blockers.some(item => item.code.startsWith("REVIEW_"))).toBe(false);
-    // The request is the compact form: step texts and registers, no acceptance-test bodies or trace arrays.
+    // The request is the compact form: step texts, acceptance-test bodies and registers, no trace arrays.
     const sent = JSON.stringify(h.reviewCalls()[0]!.user);
     expect(sent).toContain(rentalDraftV3.steps[0]!.title);
     expect(sent).not.toContain("requirementIds\":[\"R-1\",\"R-2\"],\"contextFieldIds");
-    expect(sent).not.toContain(rentalDraftV3.steps[0]!.acceptanceTests[0]!.given);
+    expect(sent).toContain(rentalDraftV3.steps[0]!.acceptanceTests[0]!.given);
   });
 
   it("finding -> one targeted repair of the step it names, with the finding as the repair note -> resolved, no blocker", async () => {
@@ -142,8 +144,8 @@ describe("consistency review pass", () => {
     const parts = ["TB-1", "TB-2", "TB-3", "KDD-1", "ORG-1", "MD-1", "REP-1", "DSM-1", "ROLE-1"];
     const h = run({ review: { findings: parts.map(id => ({ kind: "CONTRADICTION", paths: [id], explanation: `Problem with ${id}.` })) } });
     const out = await h.result;
-    // 1 outline + 3 steps + 8 groups + 1 review = 13 calls before any repair; 9 parts are named, 6 are repaired.
-    expect(h.calls).toHaveLength(13 + 6);
+    // 1 outline + 3 steps + 8 groups + 1 review = 13 calls before any repair; 9 parts are named, 6 are repaired, and one verify call checks those six.
+    expect(h.calls).toHaveLength(13 + 6 + 1);
     expect(out.reviewFindings!.filter(item => item.outcome === "REPAIRED")).toHaveLength(6);
     expect(out.evaluation.blockers.filter(item => item.code === "REVIEW_CONTRADICTION")).toHaveLength(3);
   });
@@ -179,8 +181,8 @@ describe("review pass building blocks", () => {
   });
   it("the compact design keeps content and drops trace bookkeeping", () => {
     const compact = JSON.stringify(compactDesign(rentalDraftV3));
-    for (const kept of [rentalDraftV3.steps[0]!.trigger, rentalDraftV3.documentStatusModels![0]!.documentType, `${rentalDraftV3.steps[0]!.acceptanceTests[0]!.id} (NORMAL)`]) expect(compact).toContain(kept);
-    for (const dropped of ["contextFieldIds", "referenceIds", "needsValidation", rentalDraftV3.steps[0]!.acceptanceTests[0]!.when]) expect(compact).not.toContain(dropped);
+    for (const kept of [rentalDraftV3.steps[0]!.trigger, rentalDraftV3.documentStatusModels![0]!.documentType, rentalDraftV3.steps[0]!.acceptanceTests[0]!.when]) expect(compact).toContain(kept);
+    for (const dropped of ["contextFieldIds", "referenceIds", "needsValidation"]) expect(compact).not.toContain(dropped);
   });
   it("accepts the OPEN_QUESTION_DECIDED kind", () => {
     expect(ReviewFindingSchema.safeParse({ kind: "OPEN_QUESTION_DECIDED", paths: ["TB-1-BR-1", "Q-1"], explanation: "The rule settles Q-1." }).success).toBe(true);

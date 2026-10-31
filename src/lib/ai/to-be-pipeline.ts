@@ -17,7 +17,7 @@ import { inputQuestionLabel } from "../to-be-derived";
 import { LEAK_DETAIL, TOOL_MARKUP_LEAKED, findToolMarkup, hasToolMarkup } from "./tool-markup";
 import { toBeContext, validateToBeOutput, type ToBeInput, type ToBeOutput } from "./to-be";
 import { extractSapCodes, textFields, designIds } from "./design-text-lint";
-import { ReviewSchema, compactDesign, partKey, repairNote, routeFindings, reviewBlockers, type Part, type RoutedFinding, type ReviewOutcome } from "./to-be-review";
+import { EXPLANATION_MAX_CHARS, ReviewSchema, compactDesign, partKey, repairNote, routeFindings, reviewBlockers, type Part, type RoutedFinding, type ReviewOutcome } from "./to-be-review";
 import { collectTargets, explainBlocker, findingLine, fixNote, newQuestionNote, newStepNote, partPath, type MissingQuestion } from "./to-be-fix";
 
 /** Skeleton-then-expansion To-Be generation. A slow model cannot emit a whole design inside the stage budget, so the model
@@ -391,8 +391,12 @@ export function registerRequest(input: ToBeInput, references: DesignContext["ref
   };
 }
 
-/** Consistency-pass input: the finished design in compact form, what the business asked for, and the answered company context to check it against. */
-export function reviewRequest(input: ToBeInput, design: DetailedDesign, outline?: Outline) {
+/** Said in a verify request (one that carries `verifyFindings`) so the same review call, schema and system prompt can check claimed repairs. */
+const VERIFY_INSTRUCTION = "This is a verification, not a new review. verifyFindings are findings that were reported earlier and have since been repaired. Return as findings ONLY those of verifyFindings that still hold in this design, copying kind and paths exactly and saying in explanation what still contradicts. Return an empty list if all are fixed. Report nothing else.";
+
+/** Consistency-pass input: the finished design in compact form, what the business asked for, and the answered company context to check it against.
+ * With `verify`, the findings claimed repaired: the same request then asks which of them still hold. */
+export function reviewRequest(input: ToBeInput, design: DetailedDesign, outline?: Outline, verify?: readonly Pick<ReviewOutcome, "kind" | "paths" | "explanation">[]) {
   const { discovery } = input;
   return {
     targetProduct: input.targetProduct, targetRelease: discovery.targetRelease, variantName: discovery.variantName,
@@ -401,6 +405,7 @@ export function reviewRequest(input: ToBeInput, design: DetailedDesign, outline?
     inputOpenQuestions: discovery.openQuestions.map(({ id, question }) => ({ id, question })),
     ...(outline && Object.keys(postingContract(outline).contract).length && { processContract: postingContract(outline).contract }),
     design: compactDesign(design),
+    ...(verify && { verifyFindings: verify.map(({ kind, paths, explanation }) => ({ kind, paths, explanation })), verifyInstruction: VERIFY_INSTRUCTION }),
   };
 }
 
@@ -466,6 +471,13 @@ export const FIX_PATCH_MIN_REMAINING = 0.4;
 /** The same finding, worded alike by the reviewer in a later round: kind, elements and explanation, ignoring case and spacing. */
 const findingKey = (finding: Pick<ReviewOutcome, "kind" | "paths" | "explanation">) =>
   `${finding.kind}|${[...finding.paths].sort().join(",")}|${finding.explanation.toLowerCase().replace(/\s+/g, " ").trim()}`;
+/** The element ids a finding names, without any ".field" suffix, sorted and unique. */
+const pathIds = (finding: Pick<ReviewOutcome, "paths">) => [...new Set(finding.paths.map(path => path.split(".")[0]!))].sort();
+/** Which claimed finding a verifier's finding answers: the same kind and the identical set of element ids, else the same kind and overlapping ids. */
+function matchClaimed(held: Pick<ReviewOutcome, "kind" | "paths">, claimed: readonly { index: number; outcome: ReviewOutcome }[]) {
+  const ids = pathIds(held), sameKind = claimed.filter(item => item.outcome.kind === held.kind);
+  return sameKind.find(item => pathIds(item.outcome).join("\u0000") === ids.join("\u0000")) ?? sameKind.find(item => pathIds(item.outcome).some(id => ids.includes(id)));
+}
 const percent = (fraction: number) => `${Math.round(fraction * 100)}%`;
 /** The final validation loop starts another re-expansion round (steps and register groups redone) only while more than this share of the stage budget remains: a round takes
  * 10-20% (estimated from the 2026-10-30 runs: everything after the outline took ~190-370 s of 1800 s), and the draft must still be validated and stored after it. */
@@ -707,6 +719,35 @@ async function runLabelledDesign(input: ToBeInput, references: DesignContext["re
   /** Parts the consistency pass already sent back once: the fix pass does not send their review findings again. */
   const reviewTried = new Set<string>();
 
+  /** Asks the reviewer (the same review call, with the claimed findings attached) which of the findings `indexes` of `outcomes` claim as repaired still hold in `design`.
+   * Those flip back to UNRESOLVED with the reviewer's explanation; `reopened` are their indexes. A verification that is skipped for budget or fails changes nothing
+   * and never fails the stage: the repair then stands as claimed. */
+  const verifyRepaired = async (design: DetailedDesign, outcomes: ReviewOutcome[], indexes: readonly number[]): Promise<{ outcomes: ReviewOutcome[]; reopened: number[] }> => {
+    const unchanged = { outcomes, reopened: [] as number[] };
+    if (!indexes.length) return unchanged;
+    const note = (code: string, detail?: string) => deps.warn?.([{ code, path: "to_be_review", ...(detail && { detail }) }]);
+    if ((deps.remainingBudget?.() ?? 1) <= REVIEW_MIN_REMAINING) { note("REVIEW_VERIFY_SKIPPED_BUDGET"); return unchanged; }
+    let held;
+    try {
+      const raw = await deps.ask("to_be_review", reviewRequest(input, design, outline, indexes.map(i => outcomes[i]!)));
+      if (raw === TRUNCATED || raw === null || findToolMarkup(raw, "review")) { note("REVIEW_VERIFY_FAILED"); return unchanged; }
+      const parsed = ReviewSchema.safeParse(normalizeToolInput(ReviewSchema, raw, "review").value);
+      if (!parsed.success) { note("REVIEW_VERIFY_FAILED"); return unchanged; }
+      held = parsed.data.findings;
+    } catch { note("REVIEW_VERIFY_FAILED"); return unchanged; }
+    const claimed = indexes.map(index => ({ index, outcome: outcomes[index]! })), reopened: number[] = [];
+    const next = [...outcomes];
+    for (const finding of held) {
+      const match = matchClaimed(finding, claimed.filter(item => !reopened.includes(item.index)));
+      if (!match) continue; // a finding that is none of the claimed ones is not what was asked
+      reopened.push(match.index);
+      next[match.index] = { ...match.outcome, outcome: "UNRESOLVED", explanation: finding.explanation.slice(0, EXPLANATION_MAX_CHARS) };
+      deps.warn?.([{ code: "REVIEW_VERIFIED_HOLDS", path: match.outcome.blockerPath }]);
+    }
+    note("REVIEW_VERIFIED", `${indexes.length - reopened.length} of ${indexes.length} claimed repairs confirmed`);
+    return { outcomes: next, reopened };
+  };
+
   /** The consistency pass. A valid design is read once as a whole; each finding that names a step or register group sends that part back once with the finding as its
    * repair note, and a repair is kept only if the whole design is still valid with it. Findings that name no part, parts the repair could not fix and findings beyond the
    * repair limit stay as review findings. The pass never fails the stage: a design that was valid before it is valid after it. */
@@ -769,11 +810,15 @@ async function runLabelledDesign(input: ToBeInput, references: DesignContext["re
     // A finding is resolved only when every part it names was repaired and kept. The blockers point into the final design.
     const open = routeFindings(finalDesign, found).map((routed, i) => ({ ...routed,
       outcome: findings[i]!.parts.length > 0 && findings[i]!.parts.every(part => adopted.has(partKey(part))) ? "REPAIRED" as const : "UNRESOLVED" as const }));
-    const everything: ReviewOutcome[] = [...earlier, ...open.map(({ kind, paths, explanation, outcome, blockerPath }) => ({ kind, paths, explanation, outcome, blockerPath }))];
-    const extra = reviewBlockers(everything);
+    const claimed: ReviewOutcome[] = [...earlier, ...open.map(({ kind, paths, explanation, outcome, blockerPath }) => ({ kind, paths, explanation, outcome, blockerPath }))];
+    // A repair is only claimed until the reviewer has looked again: findings that still hold are open again, and their parts may be sent back once by the fix pass.
+    const verified = await verifyRepaired(finalDesign, claimed, claimed.flatMap((item, i) => i >= earlier.length && item.outcome === "REPAIRED" ? [i] : []));
+    for (const i of verified.reopened) for (const part of open[i - earlier.length]!.parts) reviewTried.delete(partKey(part));
+    const everything = verified.outcomes, extra = reviewBlockers(everything);
     const final = extra.length ? validateToBeOutput(input, finalDesign, references, extra) : undefined;
-    deps.warn?.(open.map(finding => ({ code: `REVIEW_${finding.outcome}_${finding.kind}`, path: finding.blockerPath })));
-    roundNote(`${reported} findings, ${found.length} new, ${adopted.size} of ${parts.length} parts repaired, ${open.filter(finding => finding.outcome === "UNRESOLVED").length} open`);
+    const outcomes = everything.slice(earlier.length);
+    deps.warn?.(outcomes.map(finding => ({ code: `REVIEW_${finding.outcome}_${finding.kind}`, path: finding.blockerPath })));
+    roundNote(`${reported} findings, ${found.length} new, ${adopted.size} of ${parts.length} parts repaired, ${outcomes.filter(finding => finding.outcome === "UNRESOLVED").length} open`);
     return { ...(final?.success ? final.data : result), reviewFindings: everything };
   };
 
@@ -814,6 +859,16 @@ async function runLabelledDesign(input: ToBeInput, references: DesignContext["re
         if (part.type === "step" && priorStep) details.set(part.stepId, priorStep);
         if (part.type === "group" && priorGroup) registers.set(part.group, priorGroup);
         deps.warn?.([{ code: "FIX_REJECTED", path }]);
+      }
+    }
+    // A review finding the kept repairs claim cleared is checked by the reviewer; one that still holds stays open, and its part is not tried again.
+    const claimed = (findings ?? []).flatMap((finding, i) => finding.outcome === "REPAIRED" && start.reviewFindings![i]!.outcome === "UNRESOLVED" ? [i] : []);
+    if (findings && claimed.length) {
+      const verified = await verifyRepaired(data.design, findings, claimed);
+      if (verified.reopened.length) {
+        for (const i of verified.reopened) for (const part of routed[i]!.parts) reviewTried.add(partKey(part));
+        const reopened = validateToBeOutput(input, assembled(outline, details, registers), references, reviewBlockers(verified.outcomes));
+        data = { ...(reopened.success ? reopened.data : data), reviewFindings: verified.outcomes };
       }
     }
     return { data, used: chosen.length };

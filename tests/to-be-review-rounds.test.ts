@@ -18,13 +18,15 @@ type Script = { reviews: unknown[]; deps?: Partial<DesignDeps>; onReview?: (nth:
 /** A model that answers the rental design as it is; the nth review answers reviews[n-1] (the last one repeats); TB-2 is rewritten on every repair. */
 function run(script: Script) {
   const calls: Substage[] = [], warnings: { code: string; path: string; detail?: string }[] = [], stepCount: Record<string, number> = {};
-  let reviews = 0;
+  let reviews = 0, verifies = 0;
   const deps: DesignDeps = {
     parallelism: 2, invalid: () => new Error("AI_INVALID_OUTPUT"), record: () => {}, warn: issues => { warnings.push(...issues); }, review: true,
     ask: async (substage, user, group) => {
       calls.push(substage);
       const request = user as Record<string, unknown>;
       if (substage === "to_be_outline") return split.outline;
+      // A verify call (it carries verifyFindings, see to-be-verify.test.ts) confirms every claimed repair and is not one of the numbered reviews.
+      if (substage === "to_be_review" && request.verifyFindings) { verifies++; return { findings: [] }; }
       if (substage === "to_be_review") { reviews++; script.onReview?.(reviews); return script.reviews[Math.min(reviews, script.reviews.length) - 1]; }
       if (substage === "to_be_step") {
         const id = (request.step as { id: string }).id; stepCount[id] = (stepCount[id] ?? 0) + 1;
@@ -34,7 +36,7 @@ function run(script: Script) {
     },
     ...script.deps,
   };
-  return { result: runDesign(fixture(), [], deps), calls, warnings, stepCount, reviewCalls: () => calls.filter(call => call === "to_be_review").length };
+  return { result: runDesign(fixture(), [], deps), calls, warnings, stepCount, reviewCalls: () => reviews, verifyCalls: () => verifies };
 }
 
 describe("review rounds", () => {
