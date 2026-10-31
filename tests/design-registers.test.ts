@@ -336,6 +336,13 @@ describe("input open questions in the register (IQ-n)", () => {
     expect(registerInputQuestions(out.design, input).warnings).toEqual([]); // no duplicate on a second run
     expect(codes(out.design).filter(code => code.startsWith("UNKNOWN_"))).toEqual([]);
   });
+  it("attaches a question cited in a row to the steps the row links via impactedStepIds, affectedStepIds or producingStepId, not to the first step", () => {
+    const draft = base(); const [, second, third] = draft.steps.map(step => step.id);
+    Object.assign(draft, { keyDesignDecisions: [{ id: "KDD-1", decision: "Pending IQ-2.", impactedStepIds: [second] }],
+      kpis: [{ id: "KPI-1", measuredFrom: "Pending IQ-7.", producingStepId: third }] });
+    const added = registerInputQuestions(draft, input).design.openQuestions.filter(item => item.id.startsWith("IQ-"));
+    expect(added.map(item => [item.id, item.affectedStepIds])).toEqual([["IQ-2", [second]], ["IQ-7", [third]]]);
+  });
   it("does not invent an entry for an IQ id the input lacks", () => {
     const draft = base(); draft.steps[0]!.addedValue = "Pending IQ-99.";
     expect(registerInputQuestions(draft, input).design.openQuestions).toEqual(draft.openQuestions);

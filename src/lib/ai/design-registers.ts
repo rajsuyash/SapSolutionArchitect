@@ -423,10 +423,12 @@ const INPUT_QUESTION_REF = /(?<![A-Za-z0-9_-])IQ-\d+(?![A-Za-z0-9_-])/g;
 /** The question-id pattern of a design: the model's own questions (ETO-OQ-4, ETO-OQ-5-F1) and the input questions (IQ-7). */
 export const QUESTION_REF = /(?<![A-Za-z0-9_-])(?:IQ|[A-Z][A-Z0-9]*-OQ)-\d+(?:-[A-Z]+\d*)*(?![A-Za-z0-9_-])/g;
 const PROCESS_OWNER = "Process owner";
+/** The array fields a register row links its own steps by (with producingStepId): the same link set addOwnerRoles reads. */
+const STEP_LINK_FIELDS = ["stepIds", "impactedStepIds", "affectedStepIds"] as const;
 type QuestionDesign = { steps: { id: string }[]; openQuestions: { id: string; question: string; owner: string; affectedStepIds: string[]; decisionIds?: string[] }[] };
 
 /** Every input question (IQ-n) the design's text or id lists cite becomes an entry of design.openQuestions (the register a hold such as "Pending IQ-7" points at): the input's question text and owner
- * ("Process owner" when it names none) and, as affected steps, the steps whose text cites it (the steps of the register row that cites it, else the first step). An id the register already holds is left alone;
+ * ("Process owner" when it names none) and, as affected steps, the steps whose text cites it (the steps its register row links by stepIds, impactedStepIds, affectedStepIds or producingStepId, else the first step when the row links none). An id the register already holds is left alone;
  * an IQ id the input does not have is not invented here (the question-reference check reports it). One INPUT_QUESTION_REGISTERED warning per entry added. */
 export function registerInputQuestions<D extends QuestionDesign>(design: D, inputQuestions: readonly { id: string; question: string; owner: string }[]): { design: D; warnings: Warning[] } {
   const wanted = new Map(inputQuestions.map(item => [item.id, item]));
@@ -436,8 +438,8 @@ export function registerInputQuestions<D extends QuestionDesign>(design: D, inpu
     if (Array.isArray(node)) { node.forEach(item => walk(item, stepIds)); return; }
     if (!node || typeof node !== "object") return;
     const object = node as Record<string, unknown>;
-    const own = Array.isArray(object.stepIds) ? object.stepIds.filter((item): item is string => typeof item === "string") : undefined;
-    const here = own?.length ? own : stepIds;
+    const own = [...STEP_LINK_FIELDS.flatMap(field => Array.isArray(object[field]) ? object[field] : []), object.producingStepId].filter((item): item is string => typeof item === "string");
+    const here = own.length ? own : stepIds;
     Object.values(object).forEach(value => walk(value, here));
   };
   const top = design as unknown as Record<string, unknown>;
