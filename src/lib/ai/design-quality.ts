@@ -85,7 +85,9 @@ export const DetailedDesignSchema = z.strictObject({
     decisionIds: ids.optional(), questionIds: ids.optional(),
   })),
   conflictDecisions: list(z.strictObject({ conflictId: id, decisionId: id.nullable() })),
-  openQuestions: list(z.strictObject({ id, question: text, owner: text, affectedStepIds: ids.min(1), decisionIds: ids.optional() })),
+  openQuestions: list(z.strictObject({ id, question: text, owner: text, affectedStepIds: ids.min(1), decisionIds: ids.optional(),
+    /** The requirements whose in/out-of-scope status this question decides; only a question that names a requirement here lets its CONDITIONAL row carry no steps. */
+    scopeOfRequirementIds: ids.optional() })),
 });
 
 export type DesignContext = z.infer<typeof DesignContextSchema>;
@@ -329,6 +331,7 @@ export function evaluateDesign(input: unknown, value: unknown): DesignEvaluation
   });
   unique(draft.coverage.map(item => item.requirementId), "draft.coverage", "DUPLICATE_DISPOSITION");
   const questionIds = new Set(draft.openQuestions.map(question => question.id));
+  const scopeQuestions = new Map(draft.openQuestions.map(question => [question.id, question.scopeOfRequirementIds ?? []]));
   const coverage = new Map(draft.coverage.map(item => [item.requirementId, item]));
   draft.coverage.forEach((item, i) => {
     const path = `draft.coverage.${i}`;
@@ -339,9 +342,9 @@ export function evaluateDesign(input: unknown, value: unknown): DesignEvaluation
     checkDecisions(item.decisionIds, path);
     unique(item.questionIds ?? [], path, "DUPLICATE_TRACE");
     if ((item.questionIds ?? []).some(ref => !questionIds.has(ref))) error("UNKNOWN_QUESTION", path);
-    // Scope pending: nothing designed, and a held open question decides whether the requirement is in scope at all.
+    // Scope pending: nothing designed, and a linked open question names this requirement as one whose scope it decides.
     const scopePending = item.disposition === "CONDITIONAL" && !item.stepIds.length && !traced.length &&
-      (item.questionIds ?? []).some(ref => questionIds.has(ref));
+      (item.questionIds ?? []).some(ref => scopeQuestions.get(ref)?.includes(item.requirementId));
     if (item.disposition === "CONDITIONAL") {
       if (!item.decisionIds?.length && !item.questionIds?.length) error("CONDITIONAL_UNLINKED", path);
       block(scopePending ? "COVERAGE_SCOPE_PENDING" : "COVERAGE_CONDITIONAL", path);
@@ -379,6 +382,8 @@ export function evaluateDesign(input: unknown, value: unknown): DesignEvaluation
   draft.openQuestions.forEach((question, i) => {
     const path = `draft.openQuestions.${i}`;
     unique(question.affectedStepIds, path, "DUPLICATE_TRACE");
+    unique(question.scopeOfRequirementIds ?? [], path, "DUPLICATE_TRACE");
+    if ((question.scopeOfRequirementIds ?? []).some(ref => !requirements.has(ref))) error("UNKNOWN_REQUIREMENT", path);
     checkDecisions(question.decisionIds, path);
     if (question.affectedStepIds.some(ref => !steps.has(ref))) error("UNKNOWN_STEP", path);
     block("OPEN_QUESTION", path);

@@ -45,7 +45,9 @@ const data: ReportData = {
 };
 
 describe("scope-pending coverage in the report", () => {
-  const pendingDesign = DetailedDesignSchema.parse({ ...design, coverage: [...design.coverage, { requirementId: "R2", disposition: "CONDITIONAL", stepIds: [],
+  const pendingDesign = DetailedDesignSchema.parse({ ...design,
+    openQuestions: design.openQuestions.map(question => question.id === "Q-1" ? { ...question, scopeOfRequirementIds: ["R2"] } : question),
+    coverage: [...design.coverage, { requirementId: "R2", disposition: "CONDITIONAL", stepIds: [],
     decisionId: null, questionIds: ["Q-1"], rationale: "Not designed here: scope is held on Q-1." }] });
   const pending = { ...data, design: pendingDesign, blockers: [{ code: "COVERAGE_SCOPE_PENDING", path: "draft.coverage.1" }],
     discovery: { ...data.discovery, requirements: [...data.discovery.requirements,
@@ -63,6 +65,12 @@ describe("scope-pending coverage in the report", () => {
   it("is accepted by the stored-design reader", () => {
     const stored = { design: JSON.parse(JSON.stringify(pendingDesign)), evaluation: { blockers: [] }, unresolvedInputQuestions: [], sourceRevision: 1, snapshotId: "s" };
     expect(parseStoredToBe(stored).design.coverage[1]).toMatchObject({ requirementId: "R2", stepIds: [], questionIds: ["Q-1"] });
+  });
+  it("keeps scopeOfRequirementIds when reading a stored design, and reads an old row without it", () => {
+    const stored = { design: JSON.parse(JSON.stringify(pendingDesign)), evaluation: { blockers: [] }, unresolvedInputQuestions: [], sourceRevision: 1, snapshotId: "s" };
+    expect(parseStoredToBe(stored).design.openQuestions[0]).toMatchObject({ id: "Q-1", scopeOfRequirementIds: ["R2"] });
+    delete stored.design.openQuestions[0].scopeOfRequirementIds;
+    expect(parseStoredToBe(stored).design.openQuestions[0]!.scopeOfRequirementIds).toBeUndefined();
   });
 });
 

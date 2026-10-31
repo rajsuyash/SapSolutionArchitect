@@ -911,7 +911,7 @@ describe("To-Be answers without a tool call", () => {
 describe("tool input schemas sent to the provider", () => {
   type Node = { properties?: Record<string, Node>; required?: string[]; items?: Node; anyOf?: Node[] };
   /** Properties a model may legitimately omit (the schema's .optional()/.default() fields); everything else must be listed in `required`. */
-  const OPTIONAL = new Set(["decisionIds", "questionIds", "enablesStepIds"]);
+  const OPTIONAL = new Set(["decisionIds", "questionIds", "enablesStepIds", "scopeOfRequirementIds"]);
   const missing = (node: Node | undefined, path: string, out: string[] = [], seen = { objects: 0 }): string[] => {
     if (!node) return out;
     if (node.properties) {
@@ -1309,7 +1309,9 @@ describe("scope-pending coverage in the pipeline", () => {
       statement: "The treatment of a partial final day", evidence: { sourceId: "SRC-3", quote: "The treatment of a partial final day" } });
     return input;
   };
-  const pendingOutline = { ...split.outline, coverage: [...split.outline.coverage, { requirementId: "R-7", disposition: "CONDITIONAL" as const, stepIds: [],
+  const pendingOutline = { ...split.outline,
+    openQuestions: split.outline.openQuestions.map(question => question.id === "Q-1" ? { ...question, scopeOfRequirementIds: ["R-7"] } : question),
+    coverage: [...split.outline.coverage, { requirementId: "R-7", disposition: "CONDITIONAL" as const, stepIds: [],
     decisionId: null, questionIds: ["Q-1"], rationale: "Not designed here: whether this is in scope is held on Q-1." }] };
   it("accepts a first outline with a scope-pending row without a repair round or a step call for it", async () => {
     const h = harness({ outline: () => pendingOutline });
