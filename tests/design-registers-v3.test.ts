@@ -51,11 +51,11 @@ describe("schema versions 1, 2 and 3", () => {
     expect(codes(stripped)).toEqual(expect.arrayContaining(["REGISTER_FIELD_MISSING@draft.fitGap.0", "REGISTER_FIELD_MISSING@draft.orgStructure.0",
       "REGISTER_FIELD_MISSING@draft.masterDataPrerequisites.0"]));
   });
-  it("every register key belongs to exactly one group, and only documents and governance wait for the steps", () => {
+  it("every register key belongs to exactly one group, and only documents, governance, integration and reporting wait for the steps", () => {
     const keys = Object.values(REGISTER_GROUPS).flat();
     expect(new Set(keys).size).toBe(keys.length);
     expect(keys.length).toBe(VERSION_2_KEYS.length + 10);
-    expect([...LATE_GROUPS]).toEqual(["documents", "governance"]);
+    expect([...LATE_GROUPS].sort()).toEqual(["documents", "governance", "integration", "reporting"]);
   });
   it("model answers require the version 3 fields that stored version 2 rows lack", () => {
     const old = { fitGap: [{ ...at(rentalRegisterGroups.fitgap.fitGap), mitigationType: undefined }] };

@@ -73,8 +73,8 @@ export const REGISTER_GROUPS = {
   scope: ["objectives", "scopeStatements", "orgStructure"], reporting: ["reports", "endToEndTests"],
   documents: ["documentStatusModels", "configurationCatalogue"], governance: ["roles", "sodAssessments", "controlMappings"],
 } as const satisfies Record<string, readonly RegisterKey[]>;
-/** Groups that need the finished step bodies (actors, output documents, rule ids), so they run after the step calls. */
-export const LATE_GROUPS = ["documents", "governance"] as const satisfies readonly (keyof typeof REGISTER_GROUPS)[];
+/** Groups that read the finished step bodies (actors, output documents, rule ids, effects, rule responses, exceptions), so they run after the step calls. */
+export const LATE_GROUPS = ["documents", "governance", "integration", "reporting"] as const satisfies readonly (keyof typeof REGISTER_GROUPS)[];
 export type RegisterGroup = keyof typeof REGISTER_GROUPS;
 export const REGISTER_GROUP_NAMES = Object.keys(REGISTER_GROUPS) as RegisterGroup[];
 export const groupOf = (key: string): RegisterGroup | undefined => REGISTER_GROUP_NAMES.find(group => (REGISTER_GROUPS[group] as readonly string[]).includes(key));

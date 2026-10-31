@@ -6,7 +6,7 @@ import { createStageRunner } from "../src/lib/ai/runStage";
 import { evaluateDesign, DetailedDesignSchema } from "../src/lib/ai/design-quality";
 import { toBeContext, parseToBeInput, validateToBeOutput } from "../src/lib/ai/to-be";
 import { reviewBlockers } from "../src/lib/ai/to-be-review";
-import { runPool } from "../src/lib/ai/to-be-pipeline";
+import { runPool, stepDigest } from "../src/lib/ai/to-be-pipeline";
 import { rentalDraft } from "../fixtures/ai/to-be/rental-benchmark";
 import { rentalDraftV3, rentalRegisterGroups } from "../fixtures/ai/to-be/rental-registers";
 import { LATE_GROUPS, REGISTER_GROUP_NAMES, type RegisterGroup } from "../src/lib/ai/design-registers";
@@ -649,9 +649,9 @@ describe("register calls: repair and checks", () => {
       ? { ...split.details[id], effects: { ...split.details[id]!.effects, financial: "Post with movement type 777 and Fiori app F9999." } } : split.details[id] });
     const result = await h.run();
     expect(h.stepCount).toEqual({ "TB-1": 1, "TB-2": 2, "TB-3": 1 });
-    // The documents and governance groups read the step bodies, so they are written again once a step has been redone.
+    // The late groups (documents, governance, integration, reporting) read the step bodies, so they are written again once a step has been redone.
     expect(h.registerCalls).toHaveLength(REGISTER_GROUP_NAMES.length + LATE_GROUPS.length);
-    expect(Object.fromEntries(LATE_GROUPS.map(group => [group, h.registerCount[group]]))).toEqual({ documents: 2, governance: 2 });
+    expect(Object.fromEntries(LATE_GROUPS.map(group => [group, h.registerCount[group]]))).toEqual({ documents: 2, governance: 2, integration: 2, reporting: 2 });
     const repair = h.stepCalls.filter(call => call.id === "TB-2")[1]!.body.messages[0]!.content;
     expect(repair).toContain("UNKNOWN_SAP_OBJECT");
     expect(repair).toContain("draft.steps.1.effects.financial");
@@ -946,21 +946,38 @@ describe("tool input schemas sent to the provider", () => {
   });
 });
 
-describe("late register groups (documents, governance)", () => {
-  const isLate = (group: RegisterGroup) => (LATE_GROUPS as readonly string[]).includes(group);
+describe("late register groups (documents, governance, integration, reporting)", () => {
+  // Spelled out, not read from LATE_GROUPS, so shrinking the constant fails the ordering test below too.
+  const LATE: readonly RegisterGroup[] = ["documents", "governance", "integration", "reporting"];
+  const isLate = (group: RegisterGroup) => LATE.includes(group);
+  it("are exactly documents, governance, integration and reporting", () => {
+    expect([...LATE_GROUPS].sort()).toEqual(["documents", "governance", "integration", "reporting"]);
+  });
+  it("step digest carries effects, rule responses and exceptions, with long text clipped at a word boundary", () => {
+    const [first] = stepDigest(rentalDraft.steps);
+    const step = rentalDraft.steps[0]!;
+    expect(first!.effects).toMatchObject({ inventory: step.effects.inventory, financial: step.effects.financial, ownership: step.effects.ownership });
+    expect(first!.businessRules).toEqual(step.businessRules.map(rule => ({ id: rule.id, condition: rule.condition, response: rule.response })));
+    expect(first!.exceptions).toEqual(step.exceptions.map(item => ({ condition: item.condition, response: item.response })));
+    const long = "word ".repeat(100).trim();
+    const clipped = stepDigest([{ ...step, effects: { ...step.effects, inventory: long } }])[0]!.effects.inventory!;
+    expect(clipped.length).toBeLessThanOrEqual(300);
+    expect(clipped.endsWith("word…")).toBe(true);
+  });
   it("run only after every step call, and are the only register calls that receive the step digest", async () => {
     const order: string[] = [];
     const h = harness({ step: id => { order.push(`step:${id}`); return split.details[id]; },
       registers: group => { order.push(`group:${group}`); return rentalRegisterGroups[group]; } });
     await h.run();
     const lastStep = Math.max(...STEP_IDS.map(id => order.indexOf(`step:${id}`)));
-    for (const group of LATE_GROUPS) expect(order.indexOf(`group:${group}`), group).toBeGreaterThan(lastStep);
+    for (const group of LATE) expect(order.indexOf(`group:${group}`), group).toBeGreaterThan(lastStep);
     for (const call of h.registerCalls) {
       const sent = JSON.parse(call.body.messages[0]!.content) as { steps?: { id: string; actor: string; outputDocuments: string[]; businessRules: { id: string }[] }[] };
       if (!isLate(call.group)) { expect(sent.steps, call.group).toBeUndefined(); continue; }
       expect(sent.steps!.map(step => step.id)).toEqual(STEP_IDS);
       expect(sent.steps![0]).toMatchObject({ actor: "Rental coordinator", outputDocuments: rentalDraft.steps[0]!.outputDocuments });
       expect(sent.steps![0]!.businessRules.map(rule => rule.id)).toEqual(["BR-1", "BR-2"]);
+      expect(sent.steps![0]).toHaveProperty("effects");
     }
   });
   it("merges roles whose names differ only in case or punctuation: the stage succeeds with ROLE_MERGED, references to the dropped id and name point at the kept role, and governance is asked once", async () => {

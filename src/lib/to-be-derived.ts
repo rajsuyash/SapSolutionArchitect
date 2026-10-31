@@ -85,7 +85,7 @@ const CUSTOM_ANALYTICS = /\b(?:custom(?:ised|ized)?|bespoke)\b|\bCDS\b|\banalyti
 const STEP_KIND_ITEM = { EXTENSION: { type: "ENHANCEMENT", classification: "STEP_EXTENSION" }, INTEGRATION: { type: "INTERFACE", classification: "STEP_INTEGRATION" } } as const;
 const RATIONALE_CHARS = 400;
 /** The text cut to at most `max` characters: at the last sentence end (". " or "; ") that fits, else at the last word boundary with an ellipsis, never mid-word. */
-function clip(text: string, max: number): string {
+export function clip(text: string, max: number): string {
   if (text.length <= max) return text;
   const ends = [...text.slice(0, max + 1).matchAll(/[.;](?=\s|$)/g)].filter(hit => hit.index < max);
   const end = ends.at(-1);

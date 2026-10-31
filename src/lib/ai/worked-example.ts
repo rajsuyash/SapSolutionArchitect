@@ -60,7 +60,7 @@ function stepExample(example: WorkedExample): string {
     "tests as given, when, then with concrete quantities that cite the step's requirements."].join("\n");
 }
 
-/** What a late group (documents, governance) is shown of the finished steps: the same digest the real request carries. */
+/** What a late group (integration, reporting, documents, governance) is shown of the finished steps: the same digest the real request carries. */
 export const exampleStepDigest = (example: WorkedExample) =>
   stepDigest(assemble(example.outline, new Map(Object.entries(example.details))).steps);
 
@@ -69,7 +69,7 @@ function registersExample(example: WorkedExample): string {
   return [HEADING, INTRO, "The rows below are an excerpt: a real answer covers every requirement, step and retained system it is given.", "",
     "What its request said (excerpt):", json({ companyContext: example.context.companyContext, requirements: requirementsOf(example),
       steps: example.outline.steps.map(({ id: stepId, title }) => ({ id: stepId, title })) }), "",
-    "What the documents and governance groups also saw: the finished steps (`steps` in their request):", json(exampleStepDigest(example)), "",
+    "What the integration, reporting, documents and governance groups also saw: the finished steps (`steps` in their request):", json(exampleStepDigest(example)), "",
     ...REGISTER_GROUP_NAMES.flatMap(group => [`group ${group}:`, json(registers[group]), ""]),
     "Notice: a decision has genuine options with honest cons and a recommendation that is exactly one option name; a fit-gap row says why this class and not the cleaner one, " +
     "cites the reference and flags what to validate, and names the mitigation, an owner and status OPEN; an interface gives direction, frequency, payload, the role that owns errors and how a failed message is seen, alerted, rerun and kept from posting twice; " +

@@ -13,7 +13,7 @@ import { normalizeToolInput } from "./tool-input-normalizer";
 import { repairIdTypos, repairIdVariants } from "./id-variant-repair";
 import { shortenInputIds } from "./input-id-labels";
 import { repairRegisterGroup, repairStepBody } from "./part-repair";
-import { inputQuestionLabel } from "../to-be-derived";
+import { clip, inputQuestionLabel } from "../to-be-derived";
 import { LEAK_DETAIL, TOOL_MARKUP_LEAKED, findToolMarkup, hasToolMarkup } from "./tool-markup";
 import { toBeContext, validateToBeOutput, type ToBeInput, type ToBeOutput } from "./to-be";
 import { extractSapCodes, textFields, designIds } from "./design-text-lint";
@@ -23,7 +23,7 @@ import { collectTargets, explainBlocker, findingLine, fixNote, newQuestionNote, 
 /** Skeleton-then-expansion To-Be generation. A slow model cannot emit a whole design inside the stage budget, so the model
  * first returns an outline (steps, traceability, coverage, questions), then one small call per step fills in the operational
  * detail, and eight register calls (decisions, fit-gap, foundation, integration, scope, reporting, documents, governance) add the
- * solution-design registers. All but documents and governance run in parallel with the steps; those two need the finished step bodies
+ * solution-design registers. The decisions, fit-gap, foundation and scope calls run in parallel with the steps; the other four need the finished step bodies
  * (actors, output documents, rule ids) and run once the steps are in. The assembled result is a schemaVersion 3 DetailedDesign,
  * validated by the same checks as a one-shot design. */
 
@@ -352,13 +352,17 @@ export function stepRequest(input: ToBeInput, references: DesignContext["referen
 
 const NO_CATALOG_GROUPS: readonly RegisterGroup[] = ["scope", "governance"];
 
-/** What the late register groups (documents, governance) read of the finished steps: who acts, which documents come out, which rules exist.
- * Taken from the assembled steps so rule ids are the final ones. */
+/** What the late register groups (documents, governance, integration, reporting) read of the finished steps: who acts, which documents come out, which rules exist
+ * and what they respond, what the step does to stock, money and ownership, and which exceptions it handles. Taken from the assembled steps so rule ids are the final ones.
+ * Each text is clipped to DIGEST_TEXT_CHARS at a word boundary. */
+const DIGEST_TEXT_CHARS = 300;
 export const stepDigest = (steps: DetailedDesign["steps"]) => steps.map(step => ({
   id: step.id, title: step.title, actor: step.actor, actionActors: [...new Set(step.actions.map(action => action.actor))],
   inputDocuments: step.inputDocuments, outputDocuments: step.outputDocuments, stepType: step.stepType,
   codes: [...new Set(textFields(step).flatMap(extractSapCodes).map(code => `${code.kind.toLowerCase().replace("_", " ")} ${code.token}`))],
-  businessRules: step.businessRules.map(rule => ({ id: rule.id, condition: rule.condition })),
+  effects: Object.fromEntries(Object.entries(step.effects).filter(([, value]) => value).map(([key, value]) => [key, clip(value!, DIGEST_TEXT_CHARS)])) as Partial<typeof step.effects>,
+  businessRules: step.businessRules.map(rule => ({ id: rule.id, condition: clip(rule.condition, DIGEST_TEXT_CHARS), response: clip(rule.response, DIGEST_TEXT_CHARS) })),
+  exceptions: step.exceptions.map(item => ({ condition: clip(item.condition, DIGEST_TEXT_CHARS), response: clip(item.response, DIGEST_TEXT_CHARS) })),
 }));
 
 /** Per-group register input: the frozen outline, every answered company-context field, all requirements and the catalog's
