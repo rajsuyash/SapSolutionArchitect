@@ -432,3 +432,43 @@ describe("enabling steps (no requirement of their own)", () => {
     expect(codes(input, draft)).toContain("ENABLING_STEP_UNLINKED");
   });
 });
+
+describe("scope-pending coverage (CONDITIONAL, no steps, held scope question)", () => {
+  const pending = (critical: boolean, extra: Record<string, unknown> = {}) => {
+    const { input, draft } = fixture();
+    input.requirements.push({ id: "R-7", asIsStepId: "AS-3", sourceId: "SRC-3", quote: "The treatment of a partial final day", critical });
+    draft.coverage.push({ requirementId: "R-7", disposition: "CONDITIONAL", stepIds: [], decisionId: null, questionIds: ["Q-1"],
+      rationale: "Not designed here: scope is held on Q-1.", ...extra } as never);
+    return { input, draft };
+  };
+  const path = "draft.coverage.6";
+
+  it.each([true, false])("accepts it with a COVERAGE_SCOPE_PENDING blocker instead of COVERAGE_CONDITIONAL (critical: %s)", critical => {
+    const { input, draft } = pending(critical);
+    const result = evaluateDesign(input, draft);
+    expect(result.errors).toEqual([]);
+    expect(result.blockers).toContainEqual({ code: "COVERAGE_SCOPE_PENDING", path });
+    expect(result.blockers).not.toContainEqual({ code: "COVERAGE_CONDITIONAL", path });
+    expect(result.reviewStatus).toBe("BLOCKED");
+  });
+
+  it("still errors with only a decision link, an unheld question, a stray decisionId, or IMPLEMENTED with no steps", () => {
+    const { input, draft } = pending(true);
+    const withRegister = (extra: Record<string, unknown>) => { const f = pending(true, extra); f.input.decisionRegister = [{ id: "DR-1" }]; return f; };
+    const decisionOnly = withRegister({ questionIds: [], decisionIds: ["DR-1"] });
+    expect(codes(decisionOnly.input, decisionOnly.draft)).toEqual(expect.arrayContaining(["COVERAGE_TRACE_MISMATCH", "CRITICAL_REQUIREMENT_UNTESTED"]));
+    const unheld = pending(true, { questionIds: ["Q-FAKE"] });
+    expect(codes(unheld.input, unheld.draft)).toContain("UNKNOWN_QUESTION");
+    expect(codes(unheld.input, unheld.draft)).toContain("COVERAGE_TRACE_MISMATCH");
+    const decided = pending(true, { decisionId: "DEC-1" });
+    expect(codes(decided.input, decided.draft)).toContain("UNEXPECTED_DECISION");
+    draft.coverage[6] = { ...draft.coverage[6]!, disposition: "IMPLEMENTED" };
+    expect(codes(input, draft)).toContain("COVERAGE_TRACE_MISMATCH");
+  });
+
+  it("still errors when a step traces the requirement but the row lists no steps", () => {
+    const { input, draft } = pending(true);
+    draft.steps[2]!.requirementIds.push("R-7");
+    expect(codes(input, draft)).toContain("COVERAGE_TRACE_MISMATCH");
+  });
+});

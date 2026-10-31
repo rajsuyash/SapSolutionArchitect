@@ -339,11 +339,16 @@ export function evaluateDesign(input: unknown, value: unknown): DesignEvaluation
     checkDecisions(item.decisionIds, path);
     unique(item.questionIds ?? [], path, "DUPLICATE_TRACE");
     if ((item.questionIds ?? []).some(ref => !questionIds.has(ref))) error("UNKNOWN_QUESTION", path);
+    // Scope pending: nothing designed, and a held open question decides whether the requirement is in scope at all.
+    const scopePending = item.disposition === "CONDITIONAL" && !item.stepIds.length && !traced.length &&
+      (item.questionIds ?? []).some(ref => questionIds.has(ref));
     if (item.disposition === "CONDITIONAL") {
       if (!item.decisionIds?.length && !item.questionIds?.length) error("CONDITIONAL_UNLINKED", path);
-      block("COVERAGE_CONDITIONAL", path);
+      block(scopePending ? "COVERAGE_SCOPE_PENDING" : "COVERAGE_CONDITIONAL", path);
     }
-    if (item.disposition === "IMPLEMENTED" || item.disposition === "CONDITIONAL") {
+    if (scopePending) {
+      if (item.decisionId !== null) error("UNEXPECTED_DECISION", path);
+    } else if (item.disposition === "IMPLEMENTED" || item.disposition === "CONDITIONAL") {
       if (!item.stepIds.length || traced.length !== item.stepIds.length ||
           traced.some(step => !item.stepIds.includes(step.id))) error("COVERAGE_TRACE_MISMATCH", path);
       if (item.decisionId !== null) error("UNEXPECTED_DECISION", path);
