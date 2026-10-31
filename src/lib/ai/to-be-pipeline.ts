@@ -163,7 +163,7 @@ function patchNotes(errors: readonly ValidationIssue[], outline: unknown, input:
 const OUTLINE_DIGEST = {
   steps: ["id", "sequence", "asIsStepIds", "requirementIds", "enablesStepIds", "implementation", "postingSummary"],
   coverage: ["requirementId", "disposition", "stepIds", "decisionId", "decisionIds", "questionIds"],
-  openQuestions: ["id", "affectedStepIds", "decisionIds"], eliminatedAsIsSteps: ["asIsStepId"], conflictDecisions: ["conflictId", "decisionId"],
+  openQuestions: ["id", "affectedStepIds", "decisionIds", "scopeOfRequirementIds"], eliminatedAsIsSteps: ["asIsStepId"], conflictDecisions: ["conflictId", "decisionId"],
 } as const;
 function outlineDigest(outline: unknown, errors: readonly ValidationIssue[]) {
   if (!isObj(outline)) return {};
