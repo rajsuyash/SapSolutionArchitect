@@ -6,6 +6,7 @@ import { createStageRunner } from "../src/lib/ai/runStage";
 import { evaluateDesign, DetailedDesignSchema } from "../src/lib/ai/design-quality";
 import { toBeContext, parseToBeInput, validateToBeOutput } from "../src/lib/ai/to-be";
 import { reviewBlockers } from "../src/lib/ai/to-be-review";
+import { runPool } from "../src/lib/ai/to-be-pipeline";
 import { rentalDraft } from "../fixtures/ai/to-be/rental-benchmark";
 import { rentalDraftV3, rentalRegisterGroups } from "../fixtures/ai/to-be/rental-registers";
 import { LATE_GROUPS, REGISTER_GROUP_NAMES, type RegisterGroup } from "../src/lib/ai/design-registers";
@@ -1324,3 +1325,56 @@ describe("scope-pending coverage in the pipeline", () => {
   });
 });
 
+
+describe("a part out of repairs versus a concurrent provider failure", () => {
+  const providerRefusal = () => new Response(JSON.stringify({ type: "error", error: { type: "invalid_request_error", message: "synthetic provider refusal" } }), { status: 400, headers: { "content-type": "application/json" } });
+  /** TB-3 fails a post-assembly check, so its redo also re-asks both late groups (documents, governance), which then run together in one pool.
+   * Governance stays schema-invalid on its redo until it is out of repairs (its 4th call is the one that exhausts them). `documents` is what the other late group does on its redo. */
+  const redoRound = (documents: (governanceOnItsLastCall: Promise<void>) => unknown, onGovernanceLastCall = () => {}) => {
+    let lastCall = () => {};
+    const governanceOnItsLastCall = new Promise<void>(resolve => { lastCall = resolve; });
+    const bad = { ...split.details["TB-3"]!, acceptanceTests: split.details["TB-3"]!.acceptanceTests.map(test => ({ ...test, requirementIds: ["R-1"] })) };
+    return harness({
+      step: (id, nth) => id === "TB-3" && nth === 1 ? bad : split.details[id],
+      registers: async (group, nth) => {
+        if (group === "governance" && nth > 1) { if (nth === 4) { lastCall(); await onGovernanceLastCall(); } return { oops: true }; }
+        if (group === "documents" && nth > 1) return documents(governanceOnItsLastCall);
+        return rentalRegisterGroups[group];
+      },
+    });
+  };
+  it("rejects with the provider error when it is thrown after the other part used its repairs", async () => {
+    const h = redoRound(async lastCall => {
+      await lastCall;
+      for (let i = 0; i < 25; i++) await new Promise(resolve => setImmediate(resolve)); // let governance's 4th answer be read and its exhaustion thrown
+      return providerRefusal();
+    });
+    await expect(h.run()).rejects.toMatchObject({ code: "AI_PROVIDER_ERROR" });
+    expect(h.registerCount.governance).toBe(4);
+  });
+  it("rejects with the provider error when it is thrown before the other part used its repairs", async () => {
+    let failed = () => {};
+    const providerFailed = new Promise<void>(resolve => { failed = resolve; });
+    const h = redoRound(() => { failed(); return providerRefusal(); }, () => providerFailed);
+    await expect(h.run()).rejects.toMatchObject({ code: "AI_PROVIDER_ERROR" });
+  });
+  it("still saves a blocked draft when a part runs out of repairs and nothing else fails", async () => {
+    const h = redoRound(() => rentalRegisterGroups.documents);
+    const result = await h.run();
+    expect(result.metrics.warnings?.map(item => item.code)).toContain("TO_BE_DEGRADED_TO_BLOCKED");
+    expect(h.registerCount.governance).toBe(4);
+  });
+});
+
+describe("runPool isSoft", () => {
+  const soft = new Error("soft"), hard = new Error("hard"), isSoft = (error: unknown) => error === soft;
+  /** Two lanes: the first task to run fails with `first`, the second fails with `second` only after that. */
+  const run = (first: Error, second: Error) => {
+    let release = () => {};
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    return runPool([0, 1], 2, async n => { if (n === 0) { release(); throw first; } await gate; throw second; }, isSoft);
+  };
+  it("throws the hard failure when a soft one came first", async () => { await expect(run(soft, hard)).rejects.toBe(hard); });
+  it("throws the hard failure when it came first", async () => { await expect(run(hard, soft)).rejects.toBe(hard); });
+  it("throws the soft failure when it is the only kind", async () => { await expect(run(soft, soft)).rejects.toBe(soft); });
+});

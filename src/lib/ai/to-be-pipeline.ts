@@ -404,12 +404,15 @@ export function reviewRequest(input: ToBeInput, design: DetailedDesign, outline?
   };
 }
 
-/** Run `worker` over `items` with at most `limit` in flight. After the first failure nothing new starts; the rest settle, then it rethrows. */
-export async function runPool<T>(items: readonly T[], limit: number, worker: (item: T) => Promise<void>): Promise<void> {
+/** Run `worker` over `items` with at most `limit` in flight. After the first failure nothing new starts; the rest settle, then it rethrows the first failure.
+ * With `isSoft`, a later failure that is not soft replaces a kept soft one, so a failure the caller can absorb never hides one it cannot. */
+export async function runPool<T>(items: readonly T[], limit: number, worker: (item: T) => Promise<void>, isSoft?: (error: unknown) => boolean): Promise<void> {
   let next = 0, failure: { error: unknown } | undefined;
+  // Written out as a function: inside the loop below TypeScript narrows `failure` to undefined, which hides the lanes that failed while this one was awaiting.
+  const keep = (kept: { error: unknown } | undefined, error: unknown) => !kept || (isSoft?.(kept.error) === true && isSoft?.(error) !== true) ? { error } : kept;
   const lane = async () => {
     while (!failure && next < items.length) {
-      try { await worker(items[next++]!); } catch (error) { failure ??= { error }; }
+      try { await worker(items[next++]!); } catch (error) { failure = keep(failure, error); }
     }
   };
   await Promise.all(Array.from({ length: Math.min(limit, items.length) }, lane));
@@ -427,7 +430,7 @@ export type DesignDeps = {
   record: (issues: ValidationIssue[]) => void;
   /** Record the deterministic repairs the server applied to an accepted call (warnings, not errors). */
   warn?: (issues: ValidationIssue[]) => void;
-  /** Eval only: the assembled design of the latest round whose validation failed, with that round's errors. Whatever ends the stage, the last call is the draft that was never accepted. */
+  /** Eval only: the assembled design of the latest round whose validation failed, with that round's errors. It is the design the stage saves as a blocked draft when repairs run out, and the last one that was not accepted when the stage fails some other way. */
   lastDraft?: (design: unknown, errors: ValidationIssue[]) => void;
   /** Eval only: the raw payload of a call that failed validation, with the call it answered. */
   rawFailure?: (substage: Substage, key: string, payload: unknown) => void;
@@ -578,9 +581,10 @@ async function runLabelledDesign(input: ToBeInput, references: DesignContext["re
   const isLate = (group: RegisterGroup) => (LATE_GROUPS as readonly string[]).includes(group);
   // Re-requests per call in total (AI_TO_BE_PART_REPAIRS, the second only while the stage budget is more than half unspent),
   // whether the answer failed its schema or the assembled design's checks.
-  // Set when a part has used its repairs: the final loop then saves the design it holds as a blocked draft instead of failing.
-  let repairsExhausted = false;
-  const exhausted = () => { repairsExhausted = true; return deps.invalid(); };
+  // The errors thrown by a part that has used its repairs: the final loop saves the design it holds as a blocked draft for these, and for no other failure.
+  const exhaustion = new WeakSet<object>();
+  const exhausted = () => { const error = deps.invalid(); exhaustion.add(error); return error; };
+  const isExhaustion = (error: unknown) => typeof error === "object" && error !== null && exhaustion.has(error);
   const markRetry = (key: string) => {
     const done = retries.get(key) ?? 0;
     if (!outlineRepairAllowed(done, deps.maxPartRepairs ?? 2, deps.remainingBudget?.() ?? 1)) throw exhausted();
@@ -674,8 +678,8 @@ async function runLabelledDesign(input: ToBeInput, references: DesignContext["re
       }
     };
     await runPool([...groups.filter(group => !isLate(group)).map(group => () => expandGroup(group)), ...stepIds.map(stepId => () => expandStep(stepId))],
-      deps.parallelism, task => task());
-    await runPool(groups.filter(isLate).map(group => () => expandGroup(group)), deps.parallelism, task => task());
+      deps.parallelism, task => task(), isExhaustion);
+    await runPool(groups.filter(isLate).map(group => () => expandGroup(group)), deps.parallelism, task => task(), isExhaustion);
   };
 
   /** One repair of one part: the note says what is open, the part's present answer travels with it. Resolves to the parsed answer, or undefined when the call failed, was cut off or did not parse.
@@ -899,7 +903,7 @@ async function runLabelledDesign(input: ToBeInput, references: DesignContext["re
 
   /** A part out of repairs ends the loop with the design held at the start of the round, saved as blocked; any other failure (a timeout, a cancelled call) still propagates. */
   const degradeIfExhausted = (error: unknown, design: DetailedDesign, errorCount: number) => {
-    if (!repairsExhausted) throw error;
+    if (!isExhaustion(error)) throw error;
     deps.progress?.("expand", false);
     return degraded(design, errorCount);
   };
