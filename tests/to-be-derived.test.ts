@@ -136,3 +136,29 @@ describe("RICEFW list beyond the fit-gap rows", () => {
     expect(ricefwList({ design: rentalDraftV3 }).some(item => item.source === "ANALYTICS")).toBe(false);
   });
 });
+
+describe("RICEFW rationale clipping", () => {
+  const rationaleOf = (detail: string) => {
+    const design = structuredClone(rentalDraftV3) as DetailedDesign;
+    design.fitGap = []; design.steps[0]!.implementation = { kind: "EXTENSION", detail, referenceIds: [] };
+    return ricefwList({ design }).find(item => item.source === "STEP")!.rationale;
+  };
+  it("cuts a long text with sentences at a sentence end within 400 characters", () => {
+    const text = Array.from({ length: 12 }, (_, i) => `Sentence number ${i} explains the extension in some detail here.`).join(" ");
+    expect(text.length).toBeGreaterThan(600);
+    const out = rationaleOf(text);
+    expect(out.length).toBeLessThanOrEqual(400);
+    expect(out.endsWith(".")).toBe(true);
+    expect(text.startsWith(out)).toBe(true);
+  });
+  it("cuts a long text with no sentence end at a word boundary and marks it with an ellipsis", () => {
+    const text = Array.from({ length: 80 }, () => "extension").join(" ") + " key-user logic";
+    const out = rationaleOf(text);
+    expect(out.length).toBeLessThanOrEqual(400);
+    expect(out.endsWith("\u2026")).toBe(true);
+    expect(out.slice(0, -1).split(" ").every(word => word === "extension")).toBe(true);
+  });
+  it("leaves a short text unchanged", () => {
+    expect(rationaleOf("Key-user logic.")).toBe("Key-user logic.");
+  });
+});

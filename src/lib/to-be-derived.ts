@@ -84,6 +84,15 @@ export function asIsNarratives({ design, asIsSteps }: Pick<DeriveInput, "design"
 const CUSTOM_ANALYTICS = /\b(?:custom(?:ised|ized)?|bespoke)\b|\bCDS\b|\banalytical quer|\bSAP Analytics Cloud\b|\bSAC\b|\bBTP\b|\bkey[- ]user (?:report|quer|view|analytic)/i;
 const STEP_KIND_ITEM = { EXTENSION: { type: "ENHANCEMENT", classification: "STEP_EXTENSION" }, INTEGRATION: { type: "INTERFACE", classification: "STEP_INTEGRATION" } } as const;
 const RATIONALE_CHARS = 400;
+/** The text cut to at most `max` characters: at the last sentence end (". " or "; ") that fits, else at the last word boundary with an ellipsis, never mid-word. */
+function clip(text: string, max: number): string {
+  if (text.length <= max) return text;
+  const ends = [...text.slice(0, max + 1).matchAll(/[.;](?=\s|$)/g)].filter(hit => hit.index < max);
+  const end = ends.at(-1);
+  if (end) return text.slice(0, end.index + 1);
+  const room = text.slice(0, max - 1), cut = room.search(/\s\S*$/);
+  return `${(cut > 0 ? room.slice(0, cut) : room).trimEnd()}…`;
+}
 
 /** Everything that needs something built or connected, once each: the fit-gap rows of the classes in RICEFW_CLASSES, every step whose realization is an
  * extension or an integration and that no such row already links, and every report or KPI realised with custom analytics. Version 1 designs have no registers. */
@@ -103,7 +112,7 @@ export function ricefwList({ design }: Pick<DeriveInput, "design">): RicefwItem[
     covered.add(step.id);
     const referenced = step.implementation.referenceIds.length > 0;
     items.push({ source: "STEP", ...STEP_KIND_ITEM[kind], requirementId: step.requirementIds[0] ?? null, linkedSteps: titleOf(new Set([step.id])),
-      rationale: step.implementation.detail.slice(0, RATIONALE_CHARS), referenceIds: step.implementation.referenceIds, needsValidation: !referenced,
+      rationale: clip(step.implementation.detail, RATIONALE_CHARS), referenceIds: step.implementation.referenceIds, needsValidation: !referenced,
       validationReason: referenced ? null : "The step is an extension or integration but cites no catalog reference.", owner: null, status: null });
   }
   // A step whose realization text names a build (a key-user extension, custom field or logic, form, workflow) but whose kind is not extension or integration.
@@ -113,7 +122,7 @@ export function ricefwList({ design }: Pick<DeriveInput, "design">): RicefwItem[
     covered.add(step.id);
     const referenced = step.implementation.referenceIds.length > 0;
     items.push({ source: "STEP", type: built.type, classification: "STEP_BUILD", requirementId: step.requirementIds[0] ?? null, linkedSteps: titleOf(new Set([step.id])),
-      rationale: step.implementation.detail.slice(0, RATIONALE_CHARS), referenceIds: step.implementation.referenceIds, needsValidation: !referenced,
+      rationale: clip(step.implementation.detail, RATIONALE_CHARS), referenceIds: step.implementation.referenceIds, needsValidation: !referenced,
       validationReason: referenced ? null : "The step names something to build but cites no catalog reference.", owner: null, status: null });
   }
   // Every interface in scope is something to build or connect, unless a fit-gap item or step already lists its steps.
@@ -121,14 +130,14 @@ export function ricefwList({ design }: Pick<DeriveInput, "design">): RicefwItem[
     if (row.outOfScopeReason || row.stepIds.some(stepId => covered.has(stepId))) continue;
     row.stepIds.forEach(stepId => covered.add(stepId));
     items.push({ source: "INTERFACE", type: "INTERFACE", classification: "INTERFACE_REGISTER", requirementId: row.requirementIds[0] ?? null, linkedSteps: titleOf(new Set(row.stepIds)),
-      rationale: `${row.counterpartSystem} (${row.direction.toLowerCase()}): ${row.payload}`.slice(0, RATIONALE_CHARS), referenceIds: row.referenceIds, needsValidation: row.needsValidation,
+      rationale: clip(`${row.counterpartSystem} (${row.direction.toLowerCase()}): ${row.payload}`, RATIONALE_CHARS), referenceIds: row.referenceIds, needsValidation: row.needsValidation,
       validationReason: row.validationReason, owner: row.errorOwner, status: null });
   }
   // A migration object loaded by a custom program or script is a conversion item.
   for (const row of design.dataMigration ?? []) {
     if (buildTypeOf(`${row.approach}`)?.type !== "CONVERSION") continue;
     items.push({ source: "MIGRATION", type: "CONVERSION", classification: "MIGRATION_PROGRAM", requirementId: row.requirementIds[0] ?? null, linkedSteps: titleOf(new Set(row.stepIds)),
-      rationale: `${row.object}: ${row.approach}`.slice(0, RATIONALE_CHARS), referenceIds: [], needsValidation: true,
+      rationale: clip(`${row.object}: ${row.approach}`, RATIONALE_CHARS), referenceIds: [], needsValidation: true,
       validationReason: "The load program is proposed from the approach text; a consultant must confirm it is needed instead of the standard migration tools.", owner: null, status: null });
   }
   const analytics = [
@@ -138,7 +147,7 @@ export function ricefwList({ design }: Pick<DeriveInput, "design">): RicefwItem[
   for (const row of analytics) {
     if (!CUSTOM_ANALYTICS.test(row.text) || items.some(item => item.type === "REPORT" && item.requirementId !== null && row.requirementIds.includes(item.requirementId))) continue;
     items.push({ source: "ANALYTICS", type: "REPORT", classification: "CUSTOM_ANALYTICS", requirementId: row.requirementIds[0] ?? null, linkedSteps: titleOf(new Set(row.linked)),
-      rationale: row.text.slice(0, RATIONALE_CHARS), referenceIds: row.referenceIds, needsValidation: row.needsValidation, validationReason: row.validationReason, owner: null, status: null });
+      rationale: clip(row.text, RATIONALE_CHARS), referenceIds: row.referenceIds, needsValidation: row.needsValidation, validationReason: row.validationReason, owner: null, status: null });
   }
   return mergeDuplicateRicefw(items).map((item, i) => ({ id: `RICEFW-${i + 1}`, ...item }));
 }

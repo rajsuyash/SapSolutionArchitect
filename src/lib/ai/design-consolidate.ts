@@ -115,7 +115,8 @@ function addOwnerRoles(design: DetailedDesign): Result {
   for (const [register, field] of OWNER_FIELDS) {
     for (const row of ((design as Record<string, unknown>)[register] ?? []) as Record<string, unknown>[]) {
       const own = [...((row.stepIds ?? []) as string[]), ...((row.impactedStepIds ?? []) as string[]), row.producingStepId as string | undefined];
-      noteOwner(row[field], `${register} ${String(row.id)}`, own, false);
+      const key = [row.id, row.requirementId].find((value): value is string => typeof value === "string" && value.length > 0); // fit-gap rows key on requirementId
+      noteOwner(row[field], key ? `${register} ${key}` : register, own, false);
     }
   }
   for (const step of design.steps) {

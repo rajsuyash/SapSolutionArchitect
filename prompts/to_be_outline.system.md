@@ -129,8 +129,11 @@ constraints and timeline. It is design input, not background:
   to openQuestions and list its id in questionIds, or change the disposition.
   Exception: a requirement whose own scope is what a held open question decides
   (it belongs to a surrounding process this design may exclude) may be CONDITIONAL
-  with stepIds [], that question in questionIds and no step tracing it; otherwise
-  CONDITIONAL needs steps. CONDITIONAL keeps the item
+  with stepIds [], that question in questionIds and no step tracing it, but only
+  when that question lists the requirement's id in its scopeOfRequirementIds (the
+  requirement ids whose in-scope or out-of-scope status it decides); a question
+  about anything else, however related, does not qualify. Otherwise CONDITIONAL
+  needs steps. CONDITIONAL keeps the item
   visible as a review blocker; do not use it for designed behaviour that merely
   awaits a policy value, and do not hide a partial design behind IMPLEMENTED and a
   hedging rationale.
@@ -358,6 +361,8 @@ Further mechanical rules (each is also checked, none is optional):
   order the steps appear.
 - Every open question lists at least one step id in affectedStepIds, taken from
   your own steps.
+  scopeOfRequirementIds is optional: set it only on a question that decides whether
+  a requirement is in scope at all, and list only requirement ids from the input.
 - Every step has a postingSummary and the outline has processFacts (see the posting chain section).
 - An As-Is step is either traced by at least one step (in its asIsStepIds) or listed
   in eliminatedAsIsSteps, never both.
@@ -383,7 +388,8 @@ the flagged items, never the whole outline:
 - coverage: the replacement row of each flagged requirement, matched by requirementId.
 - openQuestions: a replacement question matched by id, or a new question (a new id) when
   a flagged coverage row needs one to link to through questionIds. A new question needs
-  affectedStepIds taken from the steps.
+  affectedStepIds taken from the steps. A replacement question keeps its
+  scopeOfRequirementIds, if it had any, because the replacement is the whole question.
 - eliminatedAsIsSteps: a replacement or new elimination, matched by asIsStepId, with a reason.
 
 Do not resend an item that is not flagged. The server merges the patch onto `outline`
