@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import { parseEnvironment } from "../src/lib/env";
 import { createStageRunner } from "../src/lib/ai/runStage";
 import { evaluateDesign, type DetailedDesign } from "../src/lib/ai/design-quality";
-import { consolidateDesign, addDocumentTypeRows, addKpiPlans, addOwnerRoles, mergeConfigRows, mergeRoles, mergeStatusModels } from "../src/lib/ai/design-consolidate";
+import { consolidateDesign, addDocumentTypeRows, addKpiPlans, addOwnerRoles, mergeConfigRows, mergeRoles, mergeStatusModels, syncFitGapSteps } from "../src/lib/ai/design-consolidate";
 import { isNotProvided, normaliseKpiRows, type RegisterGroup } from "../src/lib/ai/design-registers";
 import { roleKey } from "../src/lib/ai/design-registers-v3";
 import { rentalContext, rentalDraft } from "../fixtures/ai/to-be/rental-benchmark";
@@ -53,24 +53,54 @@ describe("addOwnerRoles", () => {
     d.fitGap = [{ ...at(d.fitGap), owner: "to be assigned" }, { ...at(d.fitGap), owner: "Rental coordinator" }] as never;
     at(d.steps, 2).exceptions = [{ condition: "Customer disputes the invoice", response: "Hold the invoice and escalate", owner: "Finance controller" }];
   });
-  it("adds one role per uncatalogued owner, with its steps and what it owns, and skips placeholders and catalogue roles", () => {
+  const BOILERPLATE = /Owner of|fitGap|register|keyDesignDecisions|undefined|\bmore\b/;
+  it("adds one role per uncatalogued owner, with its steps and what it owns as duties, and skips placeholders and catalogue roles", () => {
     const draft = withOwners();
     const out = addOwnerRoles(draft);
-    expect(out.design.roles!.slice(3)).toEqual([
-      { id: "ROLE-4", name: "Credit controller", responsibilities: "Owner of kpis KPI-1; kpis KPI-2.", stepIds: ["TB-1", "TB-2"] },
-      { id: "ROLE-5", name: "Finance controller", responsibilities: "Owner of step TB-3 exception.", stepIds: ["TB-3"] }]);
+    const added = out.design.roles!.slice(3);
+    expect(added.map(role => [role.id, role.name, role.stepIds])).toEqual([["ROLE-4", "Credit controller", ["TB-1", "TB-2"]], ["ROLE-5", "Finance controller", ["TB-3"]]]);
+    expect(added[0]!.responsibilities).toContain("Quote turnaround in days");
+    expect(added[1]!.responsibilities).toBe("Resolves Customer disputes the invoice at TB-3.");
+    for (const role of added) expect(role.responsibilities).not.toMatch(BOILERPLATE);
     expect(out.warnings).toEqual([{ code: "ROLE_ADDED_FOR_OWNER", path: "draft.roles.3" }, { code: "ROLE_ADDED_FOR_OWNER", path: "draft.roles.4" }]);
     expect(draft.roles).toHaveLength(3); // the input is not mutated
   });
-  it("labels a fit-gap owner by its requirementId (the register has no row id), never as undefined", () => {
-    const out = addOwnerRoles(design(d => { d.fitGap = [{ ...at(d.fitGap), requirementId: "R-1", stepIds: ["TB-1"], owner: "Quality auditor" }] as never; }));
+  it("reads a fit-gap owner's duty from the row's justification, never from the register name, a requirement id or undefined", () => {
+    const out = addOwnerRoles(design(d => { d.fitGap = [{ ...at(d.fitGap), requirementId: "R-1", justification: "Standard approval is enough", stepIds: ["TB-1"], owner: "Quality auditor" }] as never; }));
     const role = out.design.roles!.find(item => item.name === "Quality auditor")!;
-    expect(role.responsibilities).toContain("fitGap R-1");
-    expect(role.responsibilities).not.toContain("undefined");
+    expect(role.responsibilities).toContain("Standard approval is enough");
+    expect(role.responsibilities).not.toMatch(BOILERPLATE);
   });
-  it("names a row with neither id nor requirementId by its register alone", () => {
-    const out = addOwnerRoles(design(d => { d.fitGap = [{ ...at(d.fitGap), requirementId: "", id: undefined, stepIds: ["TB-1"], owner: "Quality auditor" }] as never; }));
-    expect(out.design.roles!.find(item => item.name === "Quality auditor")!.responsibilities).toBe("Owner of fitGap.");
+  it("gives a role whose owned rows have no usable text a duty from the step it acts in", () => {
+    const out = addOwnerRoles(design(d => { d.fitGap = [{ ...at(d.fitGap), requirementId: "", justification: "", id: undefined, stepIds: ["TB-1"], owner: "Quality auditor" }] as never; }));
+    const text = out.design.roles!.find(item => item.name === "Quality auditor")!.responsibilities;
+    expect(text).toContain("TB-1");
+    expect(text).not.toMatch(BOILERPLATE);
+  });
+  it("lists at most a handful of duties and never says 'and N more'", () => {
+    const out = addOwnerRoles(design(d => { d.kpis = Array.from({ length: 12 }, (_, i) => kpi({ id: `KPI-${i + 1}`, name: `Measure number ${i + 1}`, owner: "Credit controller" })) as never; }));
+    const text = out.design.roles!.find(item => item.name === "Credit controller")!.responsibilities;
+    expect(text).toContain("Measure number 1");
+    expect(text).not.toContain("Measure number 12");
+    expect(text).not.toMatch(BOILERPLATE);
+  });
+  it("matches an owner to an equivalent catalogue role: adds the steps, creates no role, renames the owner where used", () => {
+    const draft = design(d => { d.kpis = [kpi({ owner: "Rental coordinator Chakan", producingStepId: "TB-3", stepIds: ["TB-3"] })] as never; });
+    const out = addOwnerRoles(draft);
+    expect(out.design.roles!.map(role => role.name)).toEqual(draft.roles!.map(role => role.name));
+    expect(out.design.roles![0]!.stepIds).toContain("TB-3");
+    expect(at(out.design.kpis).owner).toBe("Rental coordinator");
+    expect(out.warnings.map(w => w.code)).toEqual(["ROLE_OWNER_MATCHED"]);
+    expect(addOwnerRoles(out.design).design).toBe(out.design);
+  });
+  it("collapses two equivalent new owners into one role carrying both owners' steps and duties", () => {
+    const draft = design(d => { d.kpis = [kpi({ owner: "Credit controller" }), kpi({ id: "KPI-2", name: "Days sales outstanding", owner: "Credit controller Pune", producingStepId: "TB-2", stepIds: ["TB-2"] })] as never; });
+    const out = addOwnerRoles(draft);
+    const added = out.design.roles!.slice(3);
+    expect(added).toHaveLength(1);
+    expect(added[0]!.stepIds).toEqual(["TB-1", "TB-2"]);
+    expect(added[0]!.responsibilities).toContain("Days sales outstanding");
+    expect(out.design.kpis!.map(row => row.owner)).toEqual(["Credit controller", "Credit controller"]);
   });
   it("removes every ROLE_OWNER_UNCATALOGUED finding the owners caused, and adds no error", () => {
     const draft = withOwners();
@@ -89,6 +119,30 @@ describe("addOwnerRoles", () => {
     expect(consolidateDesign(once).design).toBe(once);
     const v1 = structuredClone(rentalDraft);
     expect(consolidateDesign(v1).design).toBe(v1);
+  });
+});
+
+describe("syncFitGapSteps", () => {
+  const coverageOf = (d: DetailedDesign) => d.coverage.find(row => row.requirementId === at(d.fitGap).requirementId)!;
+  it("sets a fit-gap row's steps to those of the coverage row of its requirement, with a warning", () => {
+    const draft = design(d => { coverageOf(d).stepIds = ["TB-2", "TB-3"]; at(d.fitGap).stepIds = ["TB-1"]; });
+    const out = syncFitGapSteps(draft);
+    expect(at(out.design.fitGap).stepIds).toEqual(["TB-2", "TB-3"]);
+    expect(out.warnings).toEqual([{ code: "FITGAP_STEPS_SYNCED", path: "draft.fitGap.0" }]);
+    expect(draft.fitGap![0]!.stepIds).toEqual(["TB-1"]); // the input is not mutated
+    expect(syncFitGapSteps(out.design).design).toBe(out.design);
+  });
+  it("leaves a row alone when the steps agree (in any order), the coverage row has no steps, or the requirement has no coverage row", () => {
+    const agree = design(d => { coverageOf(d).stepIds = ["TB-2", "TB-3"]; at(d.fitGap).stepIds = ["TB-3", "TB-2"]; });
+    expect(syncFitGapSteps(agree).design).toBe(agree);
+    const none = design(d => { coverageOf(d).stepIds = []; at(d.fitGap).stepIds = ["TB-1"]; });
+    expect(syncFitGapSteps(none).design).toBe(none);
+    const orphan = design(d => { at(d.fitGap).requirementId = "R-UNKNOWN"; });
+    expect(syncFitGapSteps(orphan).design).toBe(orphan);
+  });
+  it("runs inside consolidateDesign", () => {
+    const draft = design(d => { coverageOf(d).stepIds = ["TB-2"]; at(d.fitGap).stepIds = ["TB-1"]; });
+    expect(at(consolidateDesign(draft).design.fitGap).stepIds).toEqual(["TB-2"]);
   });
 });
 

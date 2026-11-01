@@ -1,9 +1,10 @@
 // Deterministic, warn-only consolidation of an assembled To-Be design: what the server can settle without a model call is settled here, so the same
-// finding is not paid for again in a fix round (owners missing from the role catalogue, duplicate status models and configuration rows, KPIs with
-// no plan to obtain a baseline). Every step returns the design it was given (same object) when it has nothing to do, so the whole is idempotent.
+// finding is not paid for again in a fix round (owners missing from the role catalogue, matched to an equivalent role or added with duties, duplicate
+// status models and configuration rows, fit-gap steps that disagree with their coverage row, KPIs with no plan to obtain a baseline). Every step returns the design it was given (same object) when it has nothing to do, so the whole is idempotent.
 import { orgCodeChecker, type DetailedDesign } from "./design-quality";
 import { norm, overlaps } from "./design-register-types";
 import { NOT_PROVIDED, mergeDuplicateRoles, renameRoleRefs, rewriteStrings } from "./design-registers";
+import { clip } from "../to-be-derived";
 import { NO_OWNER_YET, OWNER_FIELDS, roleKey } from "./design-registers-v3";
 
 type Warning = { code: string; path: string };
@@ -12,7 +13,7 @@ type Model = NonNullable<DetailedDesign["documentStatusModels"]>[number];
 type ConfigRow = NonNullable<DetailedDesign["configurationCatalogue"]>[number];
 
 const PLACEHOLDER_OWNER = "to be assigned";
-const MAX_STATUSES = 20, MAX_TRANSITIONS = 40, MAX_LOCK_RULES = 15, MAX_LISTED_ITEMS = 6;
+const MAX_STATUSES = 20, MAX_TRANSITIONS = 40, MAX_LOCK_RULES = 15, MAX_LISTED_ITEMS = 4, MAX_DUTY_CHARS = 90, MAX_FIELDS = 3;
 const unchanged = (design: DetailedDesign): Result => ({ design, warnings: [] });
 const union = <T>(first: readonly T[], second: readonly T[], key: (item: T) => string): T[] => { const seen = new Set<string>(); return [...first, ...second].filter(item => !seen.has(key(item)) && !!seen.add(key(item))); };
 
@@ -96,42 +97,94 @@ function addDocumentTypeRows(design: DetailedDesign): Result {
   return warnings.length ? { design: { ...design, configurationCatalogue: rows }, warnings } : unchanged(design);
 }
 
-type OwnerUse = { name: string; items: string[]; stepIds: Set<string>; rowStepIds: Set<string> };
-/** An owner written in a register row or a step exception or master-data line that no catalogue role carries becomes a role: the owner of what it owns. */
+type OwnerUse = { name: string; names: Set<string>; items: string[]; stepIds: Set<string>; rowStepIds: Set<string> };
+type Row = Record<string, unknown>;
+const text = (value: unknown) => typeof value === "string" ? value.trim().replace(/[.;:,\s]+$/, "") : "";
+/** What an owned register row asks of its owner, as a duty built from the row's own text (empty when the row has none to build it from). */
+const REGISTER_DUTY: Record<string, (row: Row) => string> = {
+  keyDesignDecisions: row => text(row.topic) && `Decides ${clip(text(row.topic), MAX_DUTY_CHARS)}`,
+  fitGap: row => text(row.justification) && `Confirms the fit call: ${clip(text(row.justification), MAX_DUTY_CHARS)}`,
+  orgStructure: row => text(row.proposal) && `Maintains the ${text(row.unitType) || "organisation unit"} set-up: ${clip(text(row.proposal), MAX_DUTY_CHARS)}`,
+  masterDataPrerequisites: row => text(row.object) && `Provides ${text(row.object)} master data before go-live`,
+  interfaces: row => text(row.counterpartSystem) && `Clears errors on the ${text(row.counterpartSystem)} interface${text(row.payload) ? ` (${clip(text(row.payload), MAX_DUTY_CHARS)})` : ""}`,
+  kpis: row => text(row.name) && `Reports ${text(row.name)}`,
+  cutover: row => text(row.activity) && `Carries out the cutover activity: ${clip(text(row.activity), MAX_DUTY_CHARS)}`,
+  periodEndActivities: row => text(row.activity) && `Carries out the period-end activity: ${clip(text(row.activity), MAX_DUTY_CHARS)}`,
+  configurationCatalogue: row => text(row.name) && `Confirms the ${text(row.name)} configuration`,
+};
+/** Roles are one role when their name keys match, or when one name's words (two at least) are all in the other's ("Plant head" / "Plant Head Chakan"). */
+const sameRole = (a: string, b: string) => {
+  const [x, y] = [new Set(roleKey(a).split(" ")), new Set(roleKey(b).split(" "))], [small, large] = x.size <= y.size ? [x, y] : [y, x];
+  return roleKey(a) === roleKey(b) || small.size >= 2 && [...small].every(word => large.has(word));
+};
+/** The duties as sentences, at most MAX_LISTED_ITEMS of them; a role with no duty text says where it acts. */
+function dutiesOf(items: readonly string[], stepIds: readonly string[], titles: ReadonlyMap<string, string>): string {
+  if (!items.length) return `Acts in ${stepIds.slice(0, MAX_LISTED_ITEMS).map(id => `${titles.get(id) ?? "the step"} (${id})`).join("; ")}.`;
+  return items.slice(0, MAX_LISTED_ITEMS).map(item => /[.…]$/.test(item) ? item : `${item.replace(/[;:,]$/, "")}.`).join(" ");
+}
+
+/** An owner written in a register row or a step exception or master-data line that no catalogue role carries is matched to the equivalent role (its steps extended, its name rewritten where used)
+ * or, failing that, becomes a role whose responsibilities are the duties of what it owns; equivalent new owners become one role. */
 function addOwnerRoles(design: DetailedDesign): Result {
   const roles = design.roles;
   if (!roles?.length) return unchanged(design);
-  const stepIds = new Set(design.steps.map(step => step.id));
+  const stepIds = new Set(design.steps.map(step => step.id)), titles = new Map(design.steps.map(step => [step.id, step.title]));
   const catalogued = new Set([...roles.map(role => roleKey(role.name)), ...roles.map(role => roleKey(role.id))]);
   const uses = new Map<string, OwnerUse>();
   /** `inStep` marks an owner written inside a step (its steps are where the role acts); otherwise the steps are those of the register row that names it. */
-  const noteOwner = (owner: unknown, item: string, steps: readonly (string | null | undefined)[], inStep: boolean) => {
+  const noteOwner = (owner: unknown, duty: string, steps: readonly (string | null | undefined)[], inStep: boolean) => {
     if (typeof owner !== "string" || !owner.trim() || NO_OWNER_YET.test(owner.trim()) || catalogued.has(roleKey(owner))) return;
-    const entry = uses.get(roleKey(owner)) ?? { name: owner.trim(), items: [], stepIds: new Set<string>(), rowStepIds: new Set<string>() };
-    if (!entry.items.includes(item)) entry.items.push(item);
+    const entry = uses.get(roleKey(owner)) ?? { name: owner.trim(), names: new Set<string>(), items: [], stepIds: new Set<string>(), rowStepIds: new Set<string>() };
+    entry.names.add(owner);
+    if (duty && !entry.items.includes(duty)) entry.items.push(duty);
     for (const stepId of steps) if (stepId && stepIds.has(stepId)) (inStep ? entry.stepIds : entry.rowStepIds).add(stepId);
     uses.set(roleKey(owner), entry);
   };
   for (const [register, field] of OWNER_FIELDS) {
-    for (const row of ((design as Record<string, unknown>)[register] ?? []) as Record<string, unknown>[]) {
+    for (const row of ((design as Record<string, unknown>)[register] ?? []) as Row[]) {
       const own = [...((row.stepIds ?? []) as string[]), ...((row.impactedStepIds ?? []) as string[]), row.producingStepId as string | undefined];
-      const key = [row.id, row.requirementId].find((value): value is string => typeof value === "string" && value.length > 0); // fit-gap rows key on requirementId
-      noteOwner(row[field], key ? `${register} ${key}` : register, own, false);
+      noteOwner(row[field], REGISTER_DUTY[register]?.(row) ?? "", own, false);
     }
   }
   for (const step of design.steps) {
-    step.exceptions.forEach(item => noteOwner(item.owner, `step ${step.id} exception`, [step.id], true));
-    step.masterData.forEach(item => noteOwner(item.owner, `step ${step.id} master data`, [step.id], true));
+    const where = `${text(step.title)} (${step.id})`;
+    step.exceptions.forEach(item => noteOwner(item.owner, text(item.condition) && `Resolves ${clip(text(item.condition), MAX_DUTY_CHARS)} at ${step.id}`, [step.id], true));
+    step.masterData.forEach(item => noteOwner(item.owner, text(item.object) && `Maintains ${text(item.object)}${item.fields.length ? ` (${item.fields.slice(0, MAX_FIELDS).join(", ")})` : ""} used in ${where}`, [step.id], true));
   }
-  const added: typeof roles = [], warnings: Warning[] = [];
+  const all = roles.map(role => ({ role, items: [] as string[], created: false })), renames = new Map<string, string>(), warnings: Warning[] = [];
   for (const owner of uses.values()) {
-    const covered = owner.stepIds.size ? owner.stepIds : owner.rowStepIds;
-    if (!covered.size) continue; // a role covers at least one step; with none to name, the finding stays for the model
-    const shown = owner.items.slice(0, MAX_LISTED_ITEMS).join("; "), more = owner.items.length - MAX_LISTED_ITEMS;
-    warnings.push({ code: "ROLE_ADDED_FOR_OWNER", path: `draft.roles.${roles.length + added.length}` });
-    added.push({ id: nextId([...roles, ...added].map(role => role.id), "ROLE"), name: owner.name, responsibilities: `Owner of ${shown}${more > 0 ? ` and ${more} more` : ""}.`, stepIds: [...covered] });
+    const covered = [...(owner.stepIds.size ? owner.stepIds : owner.rowStepIds)];
+    const found = all.filter(entry => sameRole(entry.role.name, owner.name));
+    if (found.length > 1) continue; // two roles fit: which one the owner is, is not for the server to guess
+    const match = found[0];
+    if (!match && !covered.length) continue; // a role covers at least one step; with none to name, the finding stays for the model
+    if (match) {
+      for (const name of owner.names) if (name !== match.role.name) renames.set(name, match.role.name);
+      match.role = { ...match.role, stepIds: [...new Set([...match.role.stepIds, ...covered])] };
+      match.items.push(...owner.items);
+      warnings.push({ code: "ROLE_OWNER_MATCHED", path: `draft.roles.${all.indexOf(match)}` });
+    } else {
+      warnings.push({ code: "ROLE_ADDED_FOR_OWNER", path: `draft.roles.${all.length}` });
+      all.push({ role: { id: nextId(all.map(entry => entry.role.id), "ROLE"), name: owner.name, responsibilities: "", stepIds: covered }, items: owner.items, created: true });
+    }
   }
-  return added.length ? { design: { ...design, roles: [...roles, ...added] }, warnings } : unchanged(design);
+  if (!warnings.length) return unchanged(design);
+  const finished = all.map(entry => entry.created ? { ...entry.role, responsibilities: dutiesOf(entry.items, entry.role.stepIds, titles) } : entry.role);
+  return { design: renameRoleRefs({ ...design, roles: finished }, renames), warnings };
+}
+
+/** A fit-gap row's steps are those of the coverage row of its requirement (the outline owns the trace); a row is left alone when the coverage row names no step. */
+function syncFitGapSteps(design: DetailedDesign): Result {
+  const rows = design.fitGap;
+  if (!rows) return unchanged(design);
+  const coverage = new Map(design.coverage.map(row => [row.requirementId, row.stepIds])), warnings: Warning[] = [];
+  const synced = rows.map((row, i) => {
+    const steps = coverage.get(row.requirementId);
+    if (!steps?.length || (steps.length === new Set(row.stepIds).size && steps.every(id => row.stepIds.includes(id)))) return row;
+    warnings.push({ code: "FITGAP_STEPS_SYNCED", path: `draft.fitGap.${i}` });
+    return { ...row, stepIds: [...steps] };
+  });
+  return warnings.length ? { design: { ...design, fitGap: synced }, warnings } : unchanged(design);
 }
 
 /** A KPI whose baseline or target is "not provided" says who obtains it and by when. */
@@ -189,11 +242,11 @@ function holdCoverageOnPendingQuestions(design: DetailedDesign): Result {
 export function consolidateDesign<T extends DetailedDesign>(design: T): { design: T; warnings: Warning[] } {
   let current: DetailedDesign = design;
   const warnings: Warning[] = [];
-  for (const step of [mergeRoles, mergeStatusModels, mergeConfigRows, addDocumentTypeRows, addOwnerRoles, addKpiPlans, repairOrgCodes, holdCoverageOnPendingQuestions]) {
+  for (const step of [mergeRoles, mergeStatusModels, mergeConfigRows, addDocumentTypeRows, addOwnerRoles, syncFitGapSteps, addKpiPlans, repairOrgCodes, holdCoverageOnPendingQuestions]) {
     const out = step(current);
     current = out.design; warnings.push(...out.warnings);
   }
   return { design: current as T, warnings };
 }
 
-export { addDocumentTypeRows, addKpiPlans, addOwnerRoles, holdCoverageOnPendingQuestions, mergeConfigRows, repairOrgCodes, mergeRoles, mergeStatusModels };
+export { addDocumentTypeRows, addKpiPlans, addOwnerRoles, holdCoverageOnPendingQuestions, mergeConfigRows, repairOrgCodes, mergeRoles, mergeStatusModels, syncFitGapSteps };
