@@ -60,16 +60,44 @@ describe("addOwnerRoles", () => {
     const added = out.design.roles!.slice(3);
     expect(added.map(role => [role.id, role.name, role.stepIds])).toEqual([["ROLE-4", "Credit controller", ["TB-1", "TB-2"]], ["ROLE-5", "Finance controller", ["TB-3"]]]);
     expect(added[0]!.responsibilities).toContain("Quote turnaround in days");
-    expect(added[1]!.responsibilities).toBe("Resolves Customer disputes the invoice at TB-3.");
+    expect(added[1]!.responsibilities).toBe("Resolves customer disputes the invoice.");
     for (const role of added) expect(role.responsibilities).not.toMatch(BOILERPLATE);
     expect(out.warnings).toEqual([{ code: "ROLE_ADDED_FOR_OWNER", path: "draft.roles.3" }, { code: "ROLE_ADDED_FOR_OWNER", path: "draft.roles.4" }]);
     expect(draft.roles).toHaveLength(3); // the input is not mutated
   });
-  it("reads a fit-gap owner's duty from the row's justification, never from the register name, a requirement id or undefined", () => {
+  it("gives a fit-gap owner its steps only: the justification is never a duty, and there is no 'Confirms the fit call'", () => {
     const out = addOwnerRoles(design(d => { d.fitGap = [{ ...at(d.fitGap), requirementId: "R-1", justification: "Standard approval is enough", stepIds: ["TB-1"], owner: "Quality auditor" }] as never; }));
     const role = out.design.roles!.find(item => item.name === "Quality auditor")!;
-    expect(role.responsibilities).toContain("Standard approval is enough");
-    expect(role.responsibilities).not.toMatch(BOILERPLATE);
+    expect(role.stepIds).toEqual(["TB-1"]);
+    expect(role.responsibilities).toMatch(/^Acts in .*TB-1/);
+    expect(role.responsibilities).not.toMatch(/Confirms the fit call|Standard approval/);
+  });
+  it("builds duties from short phrases: no ellipsis, no field list, a long condition cut at a clause boundary or dropped, at most 200 characters", () => {
+    const long = "Customer disputes the invoice amount, and the credit note has to be approved by the regional finance head before posting";
+    const out = addOwnerRoles(design(d => {
+      at(d.steps, 2).exceptions = [{ condition: long, response: "Hold", owner: "Finance controller" }, { condition: "x".repeat(150), response: "Hold", owner: "Finance controller" }];
+      at(d.steps, 2).masterData = [{ object: "Vendor master", fields: ["a", "b", "c", "d"], owner: "Finance controller", source: "x" } as never];
+      d.kpis = Array.from({ length: 12 }, (_, i) => kpi({ id: `KPI-${i + 1}`, name: `Measure number ${i + 1} with a rather long descriptive name`, owner: "Credit controller" })) as never;
+    }));
+    for (const name of ["Finance controller", "Credit controller"]) {
+      const role = out.design.roles!.find(item => item.name === name)!.responsibilities;
+      expect(role).not.toContain("…");
+      expect(role).not.toMatch(/\(a, b|Confirms the fit call/);
+      expect(role.length).toBeLessThanOrEqual(200);
+    }
+    const finance = out.design.roles!.find(item => item.name === "Finance controller")!.responsibilities;
+    expect(finance).toContain("Resolves customer disputes the invoice amount.");
+    expect(finance).toContain("Maintains vendor master.");
+    expect(finance).not.toContain("xxxx");
+  });
+  it("appends at most one new kind of duty to a matched catalogue role and never rewrites its text", () => {
+    const draft = design(d => { d.kpis = [kpi({ owner: "Rental coordinator Chakan", producingStepId: "TB-3", stepIds: ["TB-3"] })] as never; });
+    const before = draft.roles![0]!.responsibilities;
+    const after = addOwnerRoles(draft).design.roles![0]!.responsibilities;
+    expect(after.startsWith(before.replace(/[.]$/, ""))).toBe(true);
+    expect(after.length).toBeLessThanOrEqual(Math.max(200, before.length));
+    expect(after.split("Reports").length - 1).toBeLessThanOrEqual(1);
+    expect(after).not.toContain("…");
   });
   it("gives a role whose owned rows have no usable text a duty from the step it acts in", () => {
     const out = addOwnerRoles(design(d => { d.fitGap = [{ ...at(d.fitGap), requirementId: "", justification: "", id: undefined, stepIds: ["TB-1"], owner: "Quality auditor" }] as never; }));

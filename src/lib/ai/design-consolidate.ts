@@ -4,7 +4,6 @@
 import { orgCodeChecker, type DetailedDesign } from "./design-quality";
 import { norm, overlaps } from "./design-register-types";
 import { NOT_PROVIDED, mergeDuplicateRoles, renameRoleRefs, rewriteStrings } from "./design-registers";
-import { clip } from "../to-be-derived";
 import { NO_OWNER_YET, OWNER_FIELDS, roleKey } from "./design-registers-v3";
 
 type Warning = { code: string; path: string };
@@ -13,7 +12,7 @@ type Model = NonNullable<DetailedDesign["documentStatusModels"]>[number];
 type ConfigRow = NonNullable<DetailedDesign["configurationCatalogue"]>[number];
 
 const PLACEHOLDER_OWNER = "to be assigned";
-const MAX_STATUSES = 20, MAX_TRANSITIONS = 40, MAX_LOCK_RULES = 15, MAX_LISTED_ITEMS = 4, MAX_DUTY_CHARS = 90, MAX_FIELDS = 3;
+const MAX_STATUSES = 20, MAX_TRANSITIONS = 40, MAX_LOCK_RULES = 15, MAX_LISTED_ITEMS = 4, MAX_DUTY_CHARS = 70, MAX_RESPONSIBILITY_CHARS = 200;
 const unchanged = (design: DetailedDesign): Result => ({ design, warnings: [] });
 const union = <T>(first: readonly T[], second: readonly T[], key: (item: T) => string): T[] => { const seen = new Set<string>(); return [...first, ...second].filter(item => !seen.has(key(item)) && !!seen.add(key(item))); };
 
@@ -100,27 +99,49 @@ function addDocumentTypeRows(design: DetailedDesign): Result {
 type OwnerUse = { name: string; names: Set<string>; items: string[]; stepIds: Set<string>; rowStepIds: Set<string> };
 type Row = Record<string, unknown>;
 const text = (value: unknown) => typeof value === "string" ? value.trim().replace(/[.;:,\s]+$/, "") : "";
-/** What an owned register row asks of its owner, as a duty built from the row's own text (empty when the row has none to build it from). */
+const DANGLING_END = /\s(?:a|an|the|of|for|to|in|on|at|by|with|from|and|or|is|are|that|which|as)$/i;
+/** A noun phrase of at most `max` characters, with a common first word (an article, "how", "whether" ...) lower-cased so it reads after a verb: the text up to its first clause boundary when it is longer; empty when no complete phrase fits
+ * (a phrase ending in a connective is not complete), so a duty is dropped rather than cut mid-phrase. */
+const phrase = (value: unknown, max = MAX_DUTY_CHARS) => {
+  const whole = text(value);
+  const boundary = whole.length <= max ? -1 : whole.search(/\s[-–—]\s|[,;:.(]/);
+  const head = boundary === -1 ? whole : boundary > 8 ? whole.slice(0, boundary).replace(/[\s,;:.(]+$/, "") : "";
+  return head.length > max || DANGLING_END.test(head) ? "" : head.replace(/^(?:the|a|an|how|whether|what|when|each|every|all|any|if|no|per|customer|vendor|material|batch|job|heat)\b/i, word => word.toLowerCase());
+};
+/** What an owned register row asks of its owner, as a short duty built from the row's own text (empty when the row has none to build it from). A fit-gap row gives its owner steps only: its justification is the fit call, not a duty. */
 const REGISTER_DUTY: Record<string, (row: Row) => string> = {
-  keyDesignDecisions: row => text(row.topic) && `Decides ${clip(text(row.topic), MAX_DUTY_CHARS)}`,
-  fitGap: row => text(row.justification) && `Confirms the fit call: ${clip(text(row.justification), MAX_DUTY_CHARS)}`,
-  orgStructure: row => text(row.proposal) && `Maintains the ${text(row.unitType) || "organisation unit"} set-up: ${clip(text(row.proposal), MAX_DUTY_CHARS)}`,
-  masterDataPrerequisites: row => text(row.object) && `Provides ${text(row.object)} master data before go-live`,
-  interfaces: row => text(row.counterpartSystem) && `Clears errors on the ${text(row.counterpartSystem)} interface${text(row.payload) ? ` (${clip(text(row.payload), MAX_DUTY_CHARS)})` : ""}`,
-  kpis: row => text(row.name) && `Reports ${text(row.name)}`,
-  cutover: row => text(row.activity) && `Carries out the cutover activity: ${clip(text(row.activity), MAX_DUTY_CHARS)}`,
-  periodEndActivities: row => text(row.activity) && `Carries out the period-end activity: ${clip(text(row.activity), MAX_DUTY_CHARS)}`,
-  configurationCatalogue: row => text(row.name) && `Confirms the ${text(row.name)} configuration`,
+  keyDesignDecisions: row => phrase(row.topic) && `Decides ${phrase(row.topic)}`,
+  orgStructure: row => text(row.unitType) && `Maintains the ${text(row.unitType)} set-up`,
+  masterDataPrerequisites: row => phrase(row.object) && `Provides ${phrase(row.object)} master data before go-live`,
+  interfaces: row => phrase(row.counterpartSystem) && `Clears errors on the ${phrase(row.counterpartSystem)} interface`,
+  kpis: row => phrase(row.name) && `Reports ${phrase(row.name)}`,
+  cutover: row => phrase(row.activity) && `Carries out the cutover activity: ${phrase(row.activity)}`,
+  periodEndActivities: row => phrase(row.activity) && `Carries out the period-end activity: ${phrase(row.activity)}`,
+  configurationCatalogue: row => phrase(row.name) && `Confirms the ${phrase(row.name)} configuration`,
 };
 /** Roles are one role when their name keys match, or when one name's words (two at least) are all in the other's ("Plant head" / "Plant Head Chakan"). */
 const sameRole = (a: string, b: string) => {
   const [x, y] = [new Set(roleKey(a).split(" ")), new Set(roleKey(b).split(" "))], [small, large] = x.size <= y.size ? [x, y] : [y, x];
   return roleKey(a) === roleKey(b) || small.size >= 2 && [...small].every(word => large.has(word));
 };
-/** The duties as sentences, at most MAX_LISTED_ITEMS of them; a role with no duty text says where it acts. */
+/** Whole duties as sentences, in order, while they fit MAX_RESPONSIBILITY_CHARS (at most MAX_LISTED_ITEMS); a role with no duty text says where it acts. */
 function dutiesOf(items: readonly string[], stepIds: readonly string[], titles: ReadonlyMap<string, string>): string {
-  if (!items.length) return `Acts in ${stepIds.slice(0, MAX_LISTED_ITEMS).map(id => `${titles.get(id) ?? "the step"} (${id})`).join("; ")}.`;
-  return items.slice(0, MAX_LISTED_ITEMS).map(item => /[.…]$/.test(item) ? item : `${item.replace(/[;:,]$/, "")}.`).join(" ");
+  const fitting: string[] = [];
+  for (const item of items.slice(0, MAX_LISTED_ITEMS)) {
+    const next = [...fitting, `${item}.`].join(" ");
+    if (next.length <= MAX_RESPONSIBILITY_CHARS) fitting.push(`${item}.`);
+  }
+  if (fitting.length) return fitting.join(" ");
+  const where = stepIds.slice(0, MAX_LISTED_ITEMS).map(id => `${titles.get(id) ?? "the step"} (${id})`);
+  while (where.length > 1 && `Acts in ${where.join("; ")}.`.length > MAX_RESPONSIBILITY_CHARS) where.pop();
+  return `Acts in ${where.join("; ")}.`;
+}
+/** One short duty for a catalogue role, only when its verb is a kind of duty the role's text does not already hold, and only if it fits; the model's text is never rewritten. */
+function withNewDuty(responsibilities: string, items: readonly string[]): string {
+  const held = responsibilities.toLowerCase();
+  const duty = items.find(item => !held.includes(item.split(" ")[0]!.toLowerCase().slice(0, 5)));
+  const base = responsibilities.trim(), joined = duty ? `${/[.!?]$/.test(base) ? base : `${base}.`} ${duty}.` : "";
+  return duty && joined.length <= MAX_RESPONSIBILITY_CHARS ? joined : responsibilities;
 }
 
 /** An owner written in a register row or a step exception or master-data line that no catalogue role carries is matched to the equivalent role (its steps extended, its name rewritten where used)
@@ -136,7 +157,7 @@ function addOwnerRoles(design: DetailedDesign): Result {
     if (typeof owner !== "string" || !owner.trim() || NO_OWNER_YET.test(owner.trim()) || catalogued.has(roleKey(owner))) return;
     const entry = uses.get(roleKey(owner)) ?? { name: owner.trim(), names: new Set<string>(), items: [], stepIds: new Set<string>(), rowStepIds: new Set<string>() };
     entry.names.add(owner);
-    if (duty && !entry.items.includes(duty)) entry.items.push(duty);
+    if (duty && !entry.items.some(item => item.split(" ", 3).join(" ") === duty.split(" ", 3).join(" "))) entry.items.push(duty);
     for (const stepId of steps) if (stepId && stepIds.has(stepId)) (inStep ? entry.stepIds : entry.rowStepIds).add(stepId);
     uses.set(roleKey(owner), entry);
   };
@@ -147,9 +168,8 @@ function addOwnerRoles(design: DetailedDesign): Result {
     }
   }
   for (const step of design.steps) {
-    const where = `${text(step.title)} (${step.id})`;
-    step.exceptions.forEach(item => noteOwner(item.owner, text(item.condition) && `Resolves ${clip(text(item.condition), MAX_DUTY_CHARS)} at ${step.id}`, [step.id], true));
-    step.masterData.forEach(item => noteOwner(item.owner, text(item.object) && `Maintains ${text(item.object)}${item.fields.length ? ` (${item.fields.slice(0, MAX_FIELDS).join(", ")})` : ""} used in ${where}`, [step.id], true));
+    step.exceptions.forEach(item => noteOwner(item.owner, phrase(item.condition) && `Resolves ${phrase(item.condition)}`, [step.id], true));
+    step.masterData.forEach(item => noteOwner(item.owner, phrase(item.object) && `Maintains ${phrase(item.object)}`, [step.id], true));
   }
   const all = roles.map(role => ({ role, items: [] as string[], created: false })), renames = new Map<string, string>(), warnings: Warning[] = [];
   for (const owner of uses.values()) {
@@ -160,8 +180,8 @@ function addOwnerRoles(design: DetailedDesign): Result {
     if (!match && !covered.length) continue; // a role covers at least one step; with none to name, the finding stays for the model
     if (match) {
       for (const name of owner.names) if (name !== match.role.name) renames.set(name, match.role.name);
-      match.role = { ...match.role, stepIds: [...new Set([...match.role.stepIds, ...covered])] };
-      match.items.push(...owner.items);
+      match.role = { ...match.role, stepIds: [...new Set([...match.role.stepIds, ...covered])], responsibilities: match.created ? match.role.responsibilities : withNewDuty(match.role.responsibilities, owner.items) };
+      if (match.created) match.items.push(...owner.items); // a role made from an earlier owner takes every duty of its equivalents
       warnings.push({ code: "ROLE_OWNER_MATCHED", path: `draft.roles.${all.indexOf(match)}` });
     } else {
       warnings.push({ code: "ROLE_ADDED_FOR_OWNER", path: `draft.roles.${all.length}` });
