@@ -205,11 +205,12 @@ export function createStageRunner(config: Config, options: Options = {}) {
       outlineReasoningOff: (substage?: Substage) => outlineEffort(substage) === "none", reasoningOff: routeProvider === "openrouter" && effort === "none",
       modelFor: (isDesign: boolean) => isDesign ? designModel : chatModel,
       expansionThinkingOff: (substage: Substage) => routeProvider === "openrouter" && config.AI_REASONING_EFFORT === undefined && substage !== "to_be_outline",
-      // Claude Sonnet 5.5 rejects a forced tool choice (HTTP 400), so Anthropic keeps "auto". DeepInfra's MiMo answers in
+      // Claude Sonnet 5.5 rejects a forced tool choice (HTTP 400: `tool_choice: type "tool" and "any" are not supported for this model`) on Anthropic and,
+      // measured 2026-11-01, on OpenRouter too, so a Claude model id keeps "auto" on every route. DeepInfra's MiMo answers in
       // prose under "auto" (0/4 tool calls measured 2026-10-22) and calls the tool every time when it is forced.
       // This applies to every tool the runner sends, the To-Be outline and step tools included.
       // thinking: true (an enabled DeepInfra thinking request) keeps "auto": a forced tool is not supported while thinking is on (DeepSeek docs; Anthropic's API rejects it too).
-      toolChoiceFor: (name: string, thinking = false): Anthropic.ToolChoice => (routeProvider === "deepinfra" || routeProvider === "openrouter") && !thinking
+      toolChoiceFor: (name: string, model: string, thinking = false): Anthropic.ToolChoice => (routeProvider === "deepinfra" || routeProvider === "openrouter") && !thinking && !/claude/i.test(model)
         ? { type: "tool", name, disable_parallel_tool_use: true } : { type: "auto", disable_parallel_tool_use: true } };
   };
   type Route = ReturnType<typeof makeRoute>;
@@ -390,7 +391,7 @@ export function createStageRunner(config: Config, options: Options = {}) {
           thinkingBudget = thinkingOn ? budget : undefined;
           const before = stepsDown > 0 && thinkingOn ? route.outlineThinkingBudgetFor(a.substage, routeModel, stepsDown - 1) : undefined;
           if (before !== undefined && budget !== undefined && before !== budget) logOutlineThinkingReduced(route.provider, routeModel, stage, a.substage!, before, budget);
-          const toolChoice = route.toolChoiceFor(a.tool.name, thinkingOn);
+          const toolChoice = route.toolChoiceFor(a.tool.name, routeModel, thinkingOn);
           if (a.guard) {
             const inputTokens = route.provider === "openrouter" ? estimateTokens(JSON.stringify({ system: a.system, messages, tools, tool_choice: toolChoice }))
               : (await transport(signal => route.client!.messages.countTokens({ model: routeModel, system: a.system, messages, tools, tool_choice: toolChoice }, { signal }), callTimeout, route)).input_tokens;

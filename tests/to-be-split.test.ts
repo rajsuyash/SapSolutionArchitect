@@ -193,6 +193,18 @@ describe("OpenRouter provider", () => {
       for (const request of (await spied({ AI_REASONING_EFFORT: "medium", AI_OUTLINE_REASONING_EFFORT: "low" })).requests) expect(request.body.output_config).toEqual({ effort: "medium" });
     });
   });
+  it("Claude on OpenRouter rejects a forced tool (measured 2026-11-01): auto tool choice plus effort, never thinking disabled; DeepSeek keeps the forced tool", async () => {
+    const claude = (await spied({ AI_MODEL: "anthropic/claude-sonnet-5.5", AI_REASONING_EFFORT: "medium" })).requests.filter(request => request.body.tools);
+    expect(claude.length).toBeGreaterThan(0);
+    for (const request of claude) {
+      expect(request.body.tool_choice).toEqual({ type: "auto", disable_parallel_tool_use: true });
+      expect(request.body.output_config).toEqual({ effort: "medium" });
+      expect(request.body.thinking).toBeUndefined();
+    }
+    const deepseek = (await spied({ AI_REASONING_EFFORT: "medium" })).requests.filter(request => request.body.tools);
+    expect(deepseek.length).toBeGreaterThan(0);
+    for (const request of deepseek) expect(request.body.tool_choice).toEqual({ type: "tool", name: request.body.tools[0]!.name, disable_parallel_tool_use: true });
+  });
   describe("DeepInfra DeepSeek outline thinking", () => {
     const DI = { AI_PROVIDER: "deepinfra", DEEPINFRA_API_KEY: "synthetic-di-key", AI_MODEL: "deepseek-ai/DeepSeek-V4.1-Flash-1017" };
     // count_tokens probes carry the tools too; only generation requests have max_tokens.
