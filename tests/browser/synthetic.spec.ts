@@ -146,6 +146,9 @@ for (const scenario of scenarios) test(`synthetic ${scenario.scenario}: browser 
     await expect(page.locator(".panel-description").filter({ hasText: project.clientName }).first()).toContainText("Scope proposed");
     await page.reload();
     await expect(page.getByTestId("analysis-result")).toContainText(row.payload.scopeSummary);
+    // A scope proposal must lead somewhere: the next step, and the tracker marking this one done.
+    await expect(page.locator('[data-action="next-step"]')).toHaveAttribute("href", `/projects/${projectId}/consultant`);
+    await expect(page.getByRole("list", { name: "Project steps" })).toContainText("Scope the problem (done)");
     await testInfo.attach("scope-review", { body: await page.screenshot({ fullPage: true }), contentType: "image/png" });
     await testInfo.attach("analysis-evidence", { contentType: "application/json", body: JSON.stringify({
       scenario: scenario.scenario, synthetic: true, aiProvider: "stub", scopeUiTested: true,

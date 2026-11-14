@@ -28,6 +28,22 @@ function Panel({ title, children, wide = false }: { title: string; children: Rea
   </section>;
 }
 
+const statusLabel = (status: string) => status === "ACTIVE" ? "Active" : status === "SCOPE_PROPOSED" ? "Scope proposed" : "Draft";
+
+/** Where a project stands. Only the scope step has a completion signal on the project record, so only it is ever marked done. */
+function ProjectSteps({ projectId, current, scoped }: { projectId: string; current: 1 | 2; scoped: boolean }) {
+  const steps = [
+    { label: "Scope the problem", href: `/projects/${projectId}`, done: scoped },
+    { label: "Map the current process", href: `/projects/${projectId}/consultant`, done: false },
+    { label: "Design the To-Be", done: false },
+  ];
+  return <ol className="steps" aria-label="Project steps">{steps.map((step, index) =>
+    <li key={step.label} aria-current={index + 1 === current ? "step" : undefined}>
+      {step.href && index + 1 !== current ? <Link href={step.href}>{step.label}</Link> : step.label}
+      {step.done && <span className="steps-done"> (done)</span>}
+    </li>)}</ol>;
+}
+
 export default async function WorkspacePage({ params }: Props) {
   const { path = [] } = await params;
   if (path.length === 0) {
@@ -78,6 +94,7 @@ export default async function WorkspacePage({ params }: Props) {
       // Data loads in the browser from the authorized API so the page resumes from server state on every visit.
       return <Panel title="Discovery conversation" wide>
         <p className="eyebrow">{project.name}</p>
+        <ProjectSteps projectId={project.id} current={2} scoped={project.setupStatus !== "DRAFT"} />
         <ConsultantPanel projectId={project.id} />
         <p className="signup-link"><Link href={`/projects/${project.id}/discovery`}>Enter process details manually instead</Link>
           {" · "}<Link href={`/projects/${project.id}`}>Back to project overview</Link></p>
@@ -115,6 +132,7 @@ export default async function WorkspacePage({ params }: Props) {
       }
       return <Panel title="Detailed process discovery">
         <p className="eyebrow">{project.name}</p>
+        <ProjectSteps projectId={project.id} current={2} scoped={project.setupStatus !== "DRAFT"} />
         <DiscoveryPanel projectId={project.id} initialVariants={variants} canCreate={canEdit} />
         <p className="signup-link"><Link href={`/projects/${project.id}/consultant`}>Describe the process in a conversation instead</Link>
           {" · "}<Link href={`/projects/${project.id}`}>Back to project overview</Link></p>
@@ -123,12 +141,14 @@ export default async function WorkspacePage({ params }: Props) {
     if (path.length !== 2) notFound(); // Unimplemented pages cannot bypass project authorization.
     return <Panel title={project.name}>
       <p className="eyebrow">Project overview</p>
-      <p className="panel-description">{project.clientName} · {project.setupStatus === "ACTIVE" ? "Active" : project.setupStatus === "SCOPE_PROPOSED" ? "Scope proposed" : "Draft"}</p>
-      <AnalysisPanel projectId={project.id} />
+      <p className="panel-description">{project.clientName} · {statusLabel(project.setupStatus)}</p>
+      <ProjectSteps projectId={project.id} current={1} scoped={project.setupStatus !== "DRAFT"} />
+      <AnalysisPanel projectId={project.id} next={{ href: `/projects/${project.id}/consultant`,
+        label: user.orgRole === "GUEST" ? "Next: view the current process" : "Next: map the current process" }} />
       <h2 style={{ fontSize: 22 }}>Detailed process discovery</h2>
       <p className="panel-description">Capture current steps, source notes and future requirements before designing the To-Be process.</p>
-      <p><Link href={`/projects/${project.id}/consultant`}>Describe the process in a guided conversation</Link></p>
-      <Link href={`/projects/${project.id}/discovery`}>Capture and review process details</Link>
+      <p><Link href={`/projects/${project.id}/consultant`}>Describe the process in a guided conversation</Link> (recommended)</p>
+      <p className="panel-description">Prefer a form? <Link href={`/projects/${project.id}/discovery`}>Capture and review process details</Link></p>
       <h2 style={{ fontSize: 22 }}>Project details</h2>
       <dl style={{ display: "grid", gridTemplateColumns: "minmax(100px, 1fr) 3fr", gap: "16px 20px", lineHeight: 1.5 }}>
         <dt>Target product</dt><dd style={{ margin: 0 }}>{({ S4HANA_CLOUD_PUBLIC: "SAP S/4HANA Cloud Public Edition", S4HANA_CLOUD_PRIVATE: "SAP S/4HANA Cloud Private Edition", S4HANA_ON_PREMISE: "SAP S/4HANA on-premise" } as Record<string, string>)[project.targetProduct] ?? project.targetProduct}</dd>
@@ -154,7 +174,7 @@ export default async function WorkspacePage({ params }: Props) {
     </div> : <ul aria-label="Projects" style={{ listStyle: "none", padding: 0, margin: "24px 0" }}>
       {projects.map((item) => <li key={item.id} style={{ borderTop: "1px solid var(--border)", padding: "20px 0" }}>
         <Link href={`/projects/${item.id}`} style={{ fontSize: 19, fontWeight: 600, overflowWrap: "anywhere" }}>{item.name}</Link>
-        <p className="panel-description" style={{ margin: "8px 0 0" }}>{item.clientName} · {item.setupStatus === "ACTIVE" ? "Active" : "Setup incomplete"}</p>
+        <p className="panel-description" style={{ margin: "8px 0 0" }}>{item.clientName} · {statusLabel(item.setupStatus)}</p>
       </li>)}
     </ul>}
     {user.orgRole !== "GUEST" && !review && <Link className="primary-button" href="/projects/new"

@@ -95,6 +95,12 @@ main:focus { outline: none; }
 .workflow strong { font-size: 14px; font-weight: 600; }
 .workflow span { display: block; margin-top: 5px; color: var(--muted); font-size: 13px; line-height: 1.5; }
 
+.steps { list-style: none; display: flex; flex-wrap: wrap; gap: 8px 28px; margin: 0 0 24px; padding: 0; counter-reset: step; font-size: 14px; color: var(--muted); }
+.steps li { counter-increment: step; }
+.steps li::before { content: counter(step) ". "; font-variant-numeric: tabular-nums; }
+.steps li[aria-current="step"] { color: var(--foreground); font-weight: 650; }
+.steps-done { color: var(--accent); font-weight: 400; }
+
 .access-panel {
   padding: 36px;
   border: 1px solid var(--border);

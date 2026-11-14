@@ -3,14 +3,17 @@
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import type { createJobService } from "../lib/jobs";
+import { SupportLink, isAccountBlocked, needsSupport } from "./support";
 
 type State = Awaited<ReturnType<ReturnType<typeof createJobService>["latest"]>>;
 
-export function AnalysisPanel({ projectId }: { projectId: string }) {
+/** `next` is the step that follows a scope proposal; the page decides its wording from the viewer's role. */
+export function AnalysisPanel({ projectId, next }: { projectId: string; next: { href: string; label: string } }) {
   const router = useRouter();
   const refreshedJob = useRef<string | null>(null);
   const [state, setState] = useState<State | null>(null);
   const [error, setError] = useState("");
+  const [errorCode, setErrorCode] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [version, setVersion] = useState(0);
   const endpoint = `/api/projects/${encodeURIComponent(projectId)}/analysis`;
@@ -41,12 +44,15 @@ export function AnalysisPanel({ projectId }: { projectId: string }) {
   }, [endpoint, projectId, version, router]);
 
   async function analyze() {
-    setSubmitting(true); setError("");
+    setSubmitting(true); setError(""); setErrorCode("");
     try {
       const target = state?.job?.status === "FAILED" ? `/api/jobs/${state.job.id}/retry` : endpoint;
       const response = await fetch(target, { method: "POST", signal: AbortSignal.timeout(15000) });
       const body = await response.json();
-      if (!response.ok && body.error?.code !== "JOB_ALREADY_RUNNING") throw new Error(body.error?.message ?? "Couldn't start analysis");
+      if (!response.ok && body.error?.code !== "JOB_ALREADY_RUNNING") {
+        setErrorCode(typeof body.error?.code === "string" ? body.error.code : "");
+        throw new Error(body.error?.message ?? "Couldn't start analysis");
+      }
       // Reload persisted state, including work started in another browser tab.
       setVersion((value) => value + 1);
     } catch (failure) { setError(failure instanceof Error ? failure.message : "Couldn't start analysis"); }
@@ -59,9 +65,13 @@ export function AnalysisPanel({ projectId }: { projectId: string }) {
     <p className="panel-description">Draft objectives, pain points, and an SAP process hierarchy from your problem statement. Review the proposal with your team before making design decisions.</p>
     {!state && !error && <p role="status">Loading analysis…</p>}
     {state?.job && <p role="status">{state.job.progressLabel}{busy ? " — you can leave this page and return later." : ""}</p>}
-    {state?.job?.status === "FAILED" && <p role="alert">{state.job.error?.message ?? "Analysis failed. Please retry."}</p>}
-    {error && <div role="alert"><p>{error}</p><button type="button" onClick={() => setVersion((value) => value + 1)}>Refresh analysis</button></div>}
-    {state?.canAnalyze && <button type="button" className="primary-button" onClick={() => void analyze()} disabled={busy}>
+    {state?.job?.status === "FAILED" && <p role="alert">{state.job.error?.message ?? "Analysis failed. Please retry."}
+      {" "}Still stuck? <SupportLink /></p>}
+    {error && <div role="alert"><p>{error} {needsSupport(errorCode) && <SupportLink />}</p>
+      {/* Refreshing cannot lift a trial or suspension, so do not offer it. */}
+      {!isAccountBlocked(errorCode) && <button type="button" onClick={() => setVersion((value) => value + 1)}>Refresh analysis</button>}</div>}
+    {/* Once a scope exists the next step is the primary action, so re-running is a plain button. An ended trial or suspension hides it: it can only fail again. */}
+    {state?.canAnalyze && !isAccountBlocked(errorCode) && <button type="button" className={result ? undefined : "primary-button"} onClick={() => void analyze()} disabled={busy}>
       {busy ? "Analyzing…" : state.job?.status === "FAILED" ? "Retry analysis" : result ? "Run a new analysis" : "Analyze business problem"}
     </button>}
     {result && <div data-testid="analysis-result" style={{ overflowWrap: "anywhere" }}>
@@ -78,7 +88,8 @@ export function AnalysisPanel({ projectId }: { projectId: string }) {
         <p style={{ margin: "4px 0" }}>{item.rationale}</p>
       </li>)}</ul>
       {result.clarifyingQuestions.length > 0 && <><h3>Questions for your team</h3><ul>{result.clarifyingQuestions.map((question, index) => <li key={index}>{question}</li>)}</ul></>}
-      <p className="panel-description">Demo: scope review is available here. Scope confirmation, detailed design, and blueprint export are still in development.</p>
+      <p className="panel-description" style={{ margin: "20px 0 12px" }}>This is a draft scope to discuss with your team. The To-Be design is built from the current process, so that comes next.</p>
+      <a className="primary-button" href={next.href} data-action="next-step">{next.label}</a>
     </div>}
   </section>;
 }

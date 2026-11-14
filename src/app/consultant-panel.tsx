@@ -6,6 +6,7 @@ import { ConsultantChat } from "./consultant-chat";
 import { ConsultantSummary } from "./consultant-summary";
 import { ReleaseSelect } from "./discovery-fields";
 import styles from "./consultant.module.css";
+import { SupportLink, isAccountBlocked, needsSupport } from "./support";
 
 type Tab = "chat" | "summary";
 const DEFAULT_CODE = "MAIN";
@@ -24,6 +25,7 @@ export function ConsultantPanel({ projectId }: { projectId: string }) {
   const [jobs, setJobs] = useState<JobView[]>([]);
   const [loadError, setLoadError] = useState("");
   const [error, setError] = useState("");
+  const [errorCode, setErrorCode] = useState("");
   const [pending, setPending] = useState(false);
   const [tab, setTab] = useState<Tab>("chat");
   const [attempt, setAttempt] = useState(0);
@@ -87,10 +89,11 @@ export function ConsultantPanel({ projectId }: { projectId: string }) {
   /** Serialises writes (each depends on the latest revision) and reports failures in one place. */
   async function guarded(work: () => Promise<boolean>): Promise<boolean> {
     if (busyRef.current) return false;
-    busyRef.current = true; setPending(true); setError("");
+    busyRef.current = true; setPending(true); setError(""); setErrorCode("");
     try { return await work(); }
     catch (failure) {
       const conflict = failure instanceof ApiError && failure.status === 409;
+      if (failure instanceof ApiError) setErrorCode(failure.code);
       setError(failure instanceof ApiError && failure.code === "WORKSPACE_CONFLICT"
         ? "This conversation was updated by someone else or by the consultant. The latest version is shown; your change was not saved, so please make it again."
         : messageOf(failure));
@@ -125,7 +128,11 @@ export function ConsultantPanel({ projectId }: { projectId: string }) {
       const fresh = await load(code).catch(() => null);
       const last = fresh?.state?.messages.at(-1);
       if (fresh?.state && fresh.state.revision > revision && last?.role === "user" && last.text === text) {
-        setError(`Your message was saved, but the consultant could not start replying (${messageOf(failure)}) Use “Ask the consultant to reply again”.`);
+        const code = failure instanceof ApiError ? failure.code : "";
+        setErrorCode(code);
+        // Asking again cannot lift a trial or suspension, so do not send the person to the retry button.
+        setError(isAccountBlocked(code) ? `Your message was saved. ${messageOf(failure)}`
+          : `Your message was saved, but the consultant could not start replying (${messageOf(failure)}) Use “Ask the consultant to reply again”.`);
         return true;
       }
       throw failure;
@@ -204,6 +211,8 @@ export function ConsultantPanel({ projectId }: { projectId: string }) {
         </section>
       </div>
     </>}
+    {(needsSupport(errorCode) || needsSupport(jobs[0]?.status === "FAILED" ? jobs[0].error?.code : null))
+      && <p className={styles.notice}>Need help with this? <SupportLink /></p>}
   </div>;
 }
 
