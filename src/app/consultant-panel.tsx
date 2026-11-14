@@ -15,6 +15,7 @@ const POLL_MS = 1500;
 const EXTRACTION_WAIT_MS = 90000;
 const withJob = (jobs: JobView[], job: JobView) => [job, ...jobs.filter(item => item.id !== job.id)];
 const messageOf = (error: unknown) => error instanceof Error ? error.message : "Something went wrong. Try again.";
+const CONFLICT_COPY = "This conversation was updated by someone else or by the consultant. The latest version is shown; your change was not saved, so please make it again.";
 
 const NARROW = "(max-width: 899px)"; // keep in step with the layout breakpoint in consultant.module.css
 const subscribeNarrow = (notify: () => void) => { const query = window.matchMedia(NARROW); query.addEventListener("change", notify); return () => query.removeEventListener("change", notify); };
@@ -30,6 +31,8 @@ export function ConsultantPanel({ projectId }: { projectId: string }) {
   const [loadError, setLoadError] = useState("");
   const [error, setError] = useState("");
   const [errorCode, setErrorCode] = useState("");
+  // A refused To-Be start is shown beside the To-Be button, not in the chat column (hidden on a narrow Summary tab).
+  const [generateError, setGenerateError] = useState<{ message: string; code: string } | null>(null);
   const [pending, setPending] = useState(false);
   const [tab, setTab] = useState<Tab>("chat");
   const [attempt, setAttempt] = useState(0);
@@ -95,13 +98,13 @@ export function ConsultantPanel({ projectId }: { projectId: string }) {
   async function guarded(work: () => Promise<boolean>): Promise<boolean> {
     if (busyRef.current) return false;
     busyRef.current = true; setPending(true); setError(""); setErrorCode("");
+    // Only a refusal that asking again cannot lift outlives the next action.
+    setGenerateError(shown => shown && (isAccountBlocked(shown.code) || shown.code === "RATE_LIMITED") ? shown : null);
     try { return await work(); }
     catch (failure) {
       const conflict = failure instanceof ApiError && failure.status === 409;
       if (failure instanceof ApiError) setErrorCode(failure.code);
-      setError(failure instanceof ApiError && failure.code === "WORKSPACE_CONFLICT"
-        ? "This conversation was updated by someone else or by the consultant. The latest version is shown; your change was not saved, so please make it again."
-        : messageOf(failure));
+      setError(failure instanceof ApiError && failure.code === "WORKSPACE_CONFLICT" ? CONFLICT_COPY : messageOf(failure));
       if (conflict) await load(code).catch(() => {});
       return false;
     } finally { busyRef.current = false; setPending(false); }
@@ -151,10 +154,18 @@ export function ConsultantPanel({ projectId }: { projectId: string }) {
     return true;
   });
   const generate = () => guarded(async () => {
+    setGenerateError(null);
     const revision = workspace!.state!.revision;
-    const result = await send<{ job: JobView }>(`tobe:${revision}`, "to-be", { expectedRevision: revision });
-    setJobs(items => withJob(items, result.job));
-    return true;
+    try {
+      const result = await send<{ job: JobView }>(`tobe:${revision}`, "to-be", { expectedRevision: revision });
+      setJobs(items => withJob(items, result.job));
+      return true;
+    } catch (failure) {
+      const known = failure instanceof ApiError;
+      setGenerateError({ code: known ? failure.code : "", message: known && failure.code === "WORKSPACE_CONFLICT" ? CONFLICT_COPY : messageOf(failure) });
+      if (known && failure.status === 409) await load(code).catch(() => {});
+      return false;
+    }
   });
   const start = (name: string, release: string) => guarded(async () => {
     const next = variantCodeFor(name, (variants ?? []).map(item => item.variantCode));
@@ -166,7 +177,7 @@ export function ConsultantPanel({ projectId }: { projectId: string }) {
     return true;
   });
   async function choose(next: string) {
-    setError(""); setCode(next); setWorkspace(null); setJobs([]);
+    setError(""); setGenerateError(null); setCode(next); setWorkspace(null); setJobs([]);
     try { await load(next); } catch (failure) { setLoadError(messageOf(failure)); }
   }
 
@@ -216,7 +227,7 @@ export function ConsultantPanel({ projectId }: { projectId: string }) {
           {/* On a narrow screen the chat (and its support line) is hidden while this tab is open. Only one copy is ever in the page. */}
           {support && narrow && tab === "summary" && <p className={styles.notice}>Need help with this? <SupportLink /></p>}
           {busy && <p className={styles.notice} role="status">Editing is paused while the consultant works, so nothing changes underneath you.</p>}
-          <ConsultantSummary workspace={{ ...workspace, state }} jobs={jobs} locked={busy || pending} run={run} onGenerate={generate}
+          <ConsultantSummary workspace={{ ...workspace, state }} jobs={jobs} locked={busy || pending} run={run} onGenerate={generate} generateError={generateError}
             reportHref={(jobId) => `/projects/${encodeURIComponent(projectId)}/consultant/${encodeURIComponent(code)}/to-be/${encodeURIComponent(jobId)}`} />
         </section>
       </div>

@@ -1,17 +1,18 @@
 "use client";
 
-import { useState, type ReactNode } from "react";
-import { REQUIREMENT_KIND_LABELS, STEP_KEYS, STEP_LABELS, WORKSPACE_FIELDS, carriedGaps, describeBlocker, describeField, describeProposal,
+import { useEffect, useState, type ReactNode } from "react";
+import { REQUIREMENT_KIND_LABELS, STEP_KEYS, STEP_LABELS, WORKSPACE_FIELDS, describeBlocker, describeField, describeProposal,
   requirementLabel, stepLabel } from "../lib/workspace-fields";
 import { isActive, type Command, type Fact, type JobView, type Workspace, type WorkspaceView } from "./consultant-api";
 import { FieldRow, type FactUpdate } from "./consultant-field";
 import { EditableGroup, type GroupField } from "./consultant-group";
 import { ObservationCard, ProposalCard } from "./consultant-review";
 import styles from "./consultant.module.css";
+import { SupportLink, isAccountBlocked, needsSupport } from "./support";
 
 export type Run = (commands: Command | Command[]) => Promise<boolean>;
 type Props = { workspace: Workspace & { state: WorkspaceView }; jobs: JobView[]; locked: boolean; run: Run;
-  onGenerate: () => Promise<boolean>; reportHref: (jobId: string) => string };
+  onGenerate: () => Promise<boolean>; reportHref: (jobId: string) => string; generateError: { message: string; code: string } | null };
 
 /** The command that records a fact depends on which kind of detail the id belongs to. */
 function setFact(state: WorkspaceView, fieldId: string, update: FactUpdate): Command {
@@ -57,7 +58,6 @@ function tally(fields: readonly { id: string; fact: { status: string } }[]) {
 
 function resultCopy(job: JobView | undefined, current: boolean) {
   if (!job) return null;
-  if (isActive(job)) return "Generating the To-Be design from your confirmed understanding. You can leave this page and return.";
   if (job.status === "FAILED") return job.error?.message ?? "The To-Be design could not be generated. Your confirmed answers are safe; you can retry.";
   if (job.status !== "SUCCEEDED") return null;
   const lead = job.result?.status === "BLOCKED"
@@ -66,7 +66,21 @@ function resultCopy(job: JobView | undefined, current: boolean) {
   return `${lead}${current ? "" : " Discovery changed after it was generated; confirm again before generating a new draft."}`;
 }
 
-export function ConsultantSummary({ workspace, jobs, locked, run, onGenerate, reportHref }: Props) {
+const PROGRESS_TICK_MS = 5000;
+const duration = (ms: number) => { const total = Math.floor(ms / 1000); return total < 60 ? `${total} s` : `${Math.floor(total / 60)} min ${total % 60} s`; };
+/** The job view carries no start time, so this counts from when this page first saw the job running; it never claims a total.
+ * The ticking figure sits outside the live region so screen readers hear the status once, not every few seconds. */
+function GenerationProgress() {
+  const [since] = useState(() => Date.now());
+  const [now, setNow] = useState(since);
+  useEffect(() => { const timer = setInterval(() => setNow(Date.now()), PROGRESS_TICK_MS); return () => clearInterval(timer); }, []);
+  return <>
+    <p id="to-be-status" role="status" data-testid="to-be-status" data-state="RUNNING">Generating the To-Be design from your confirmed understanding. This usually takes several minutes. You can leave this page and return.</p>
+    <p className={styles.muted} data-testid="to-be-elapsed">{duration(now - since)} watched on this page so far.</p>
+  </>;
+}
+
+export function ConsultantSummary({ workspace, jobs, locked, run, onGenerate, reportHref, generateError }: Props) {
   const { state, readiness } = workspace;
   const editable = workspace.canEdit && !locked;
   const confirmed = !!workspace.confirmedSnapshotId && !!state.confirmation;
@@ -100,18 +114,21 @@ export function ConsultantSummary({ workspace, jobs, locked, run, onGenerate, re
   const desired = tally(catalogFields("DESIRED"));
   const requirementCount = state.requirements.length + state.requirementDrafts.length;
   const softBlockers = readiness?.blockers.filter(blocker => blocker.soft) ?? [];
-  const carried = carriedGaps(state, readiness?.blockers ?? []);
+  const draftConfirmed = confirmed && !!state.confirmation?.withGaps && !readiness?.ready;
+  const generateBlocked = !!generateError && (isAccountBlocked(generateError.code) || generateError.code === "RATE_LIMITED"); // asking again cannot help
   const canConfirmDraft = !readiness?.ready && !!readiness?.draftReady && !confirmed;
   const unresolved = [...state.facts, ...state.stepDrafts.flatMap(draft => draft.fields), ...state.requirementDrafts.map(draft => draft.statement)]
     .filter(fact => fact.status === "UNKNOWN" || fact.status === "OWNER_PENDING");
 
   return <div className={styles.summary} data-testid="summary">
     {readiness && <p className={styles.headline} role="status" data-testid="progress">
-      {readiness.ready ? "Everything needed is answered." : `${plural(blockers.length, "thing")} still needed before you can confirm.`}</p>}
+      {readiness.ready ? "Everything needed is answered." : draftConfirmed
+        ? `Confirmed as a draft: ${plural(blockers.length, "open item")} carried into the To-Be as open questions.`
+        : `${plural(blockers.length, "thing")} still needed before you can confirm.`}</p>}
     <Section id="readiness-heading" title="Ready to confirm?">
       {readiness?.ready
         ? <p role="status" className={styles.ok}>Everything required is answered. {confirmed ? "You have confirmed this understanding." : "Review it once more, then confirm."}</p>
-        : <><p>Still needed before this can be confirmed:</p>
+        : <><p>{draftConfirmed ? "Open items carried into the To-Be:" : "Still needed before this can be confirmed:"}</p>
           <div data-testid="blockers"><ul>{blockers.slice(0, BLOCKER_PREVIEW).map(blockerItem)}</ul>
             {blockers.length > BLOCKER_PREVIEW && <details><summary className={styles.more}>Show all {blockers.length}</summary>
               <ul>{blockers.slice(BLOCKER_PREVIEW).map((blocker, index) => blockerItem(blocker, index + BLOCKER_PREVIEW))}</ul></details>}</div>
@@ -124,14 +141,16 @@ export function ConsultantSummary({ workspace, jobs, locked, run, onGenerate, re
             onClick={() => void run({ type: "CONFIRM" })}>{confirmed ? "Confirmed" : "Confirm current process"}</button>
           {canConfirmDraft && <button type="button" className={styles.small} data-testid="confirm-draft" aria-describedby="draft-gaps-note"
             disabled={!editable} onClick={() => void run({ type: "CONFIRM", allowGaps: true })}>Confirm as draft with gaps</button>}
-          {confirmed && <button type="button" className={styles.primary} disabled={!editable || isActive(toBe)} onClick={() => void onGenerate()}>
-            {toBe?.status === "FAILED" ? "Retry To-Be generation" : toBe ? "Generate a new To-Be draft" : "Generate To-Be design"}</button>}
+          {confirmed && <button type="button" className={styles.primary} disabled={!editable || isActive(toBe) || generateBlocked} onClick={() => void onGenerate()}>
+            {isActive(toBe) ? "Generating To-Be design…" : toBe?.status === "FAILED" ? "Retry To-Be generation" : toBe ? "Generate a new To-Be draft" : "Generate To-Be design"}</button>}
         </div>
         : <p className={styles.muted}>Only project leads and consultants can confirm. You can still answer questions and add details.</p>}
-      {confirmed && state.confirmation?.withGaps && <p className={styles.muted} data-testid="draft-confirmed">
-        Confirmed as a draft with gaps: {carried.total ? `${carried.parts} ${carried.total === 1 ? "is" : "are"}` : "some open items are"} carried into the To-Be as open questions.</p>}
       {confirmed && <p className={styles.muted}>Any change to the answers will require confirming again.</p>}
-      {toBe && <p id="to-be-status" role="status" data-testid="to-be-status" data-state={toBe.result?.status ?? toBe.status}>
+      {generateError && <div role="alert" className={styles.alert} data-testid="to-be-error"><p>{generateError.message}</p>
+        {needsSupport(generateError.code) && <p><SupportLink /></p>}</div>}
+      {/* A newer refusal replaces the older job's failure text instead of sitting beside it. */}
+      {!generateError && isActive(toBe) && <GenerationProgress key={toBe!.id} />}
+      {!generateError && toBe && !isActive(toBe) && <p id="to-be-status" role="status" data-testid="to-be-status" data-state={toBe.result?.status ?? toBe.status}>
         {resultCopy(toBe, toBe.result?.sourceRevision === state.confirmation?.revision)}</p>}
       {toBe?.status === "SUCCEEDED" && <p><a href={reportHref(toBe.id)} data-testid="report-link">Open the To-Be report</a>
         <span className={styles.muted}> — compare current and proposed steps, then print or download it.</span></p>}

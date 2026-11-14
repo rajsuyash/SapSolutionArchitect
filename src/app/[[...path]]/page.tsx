@@ -44,6 +44,22 @@ function ProjectSteps({ projectId, current, scoped }: { projectId: string; curre
     </li>)}</ol>;
 }
 
+/** The overview's next step follows the guided conversation: its first variant, whether it is confirmed, and its latest To-Be job.
+ * A failed lookup only costs the progress wording; the overview falls back to the default step. */
+async function nextStep(token: string | null, projectId: string, guest: boolean): Promise<{ href: string; label: string }> {
+  const consultant = `/projects/${projectId}/consultant`;
+  const fallback = { href: consultant, label: guest ? "Next: view the current process" : "Next: map the current process" };
+  try {
+    const variant = (await getRuntime().workspaces.list(token, projectId))[0];
+    if (!variant) return fallback;
+    if (!variant.confirmedSnapshotId) return { href: consultant, label: guest ? fallback.label : "Next: continue mapping the current process" };
+    const toBe = (await getRuntime().consultantJobs.latest(token, projectId, variant.variantCode)).jobs.find(job => job.kind === "TO_BE");
+    if (toBe?.status === "QUEUED" || toBe?.status === "RUNNING") return { href: consultant, label: "To-Be design is being generated" };
+    if (toBe?.status === "SUCCEEDED") return { href: `${consultant}/${encodeURIComponent(variant.variantCode)}/to-be/${toBe.id}`, label: "Open the To-Be report" };
+    return { href: consultant, label: guest ? fallback.label : "Next: generate the To-Be design" };
+  } catch { return fallback; }
+}
+
 export default async function WorkspacePage({ params }: Props) {
   const { path = [] } = await params;
   if (path.length === 0) {
@@ -143,8 +159,7 @@ export default async function WorkspacePage({ params }: Props) {
       <p className="eyebrow">Project overview</p>
       <p className="panel-description">{project.clientName} · {statusLabel(project.setupStatus)}</p>
       <ProjectSteps projectId={project.id} current={1} scoped={project.setupStatus !== "DRAFT"} />
-      <AnalysisPanel projectId={project.id} next={{ href: `/projects/${project.id}/consultant`,
-        label: user.orgRole === "GUEST" ? "Next: view the current process" : "Next: map the current process" }} />
+      <AnalysisPanel projectId={project.id} next={await nextStep(token, project.id, user.orgRole === "GUEST")} />
       <h2 style={{ fontSize: 22 }}>Detailed process discovery</h2>
       <p className="panel-description">Capture current steps, source notes and future requirements before designing the To-Be process.</p>
       <p><Link href={`/projects/${project.id}/consultant`}>Describe the process in a guided conversation</Link> (recommended)</p>

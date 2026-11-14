@@ -16,7 +16,7 @@
   border: 1px solid var(--border); border-radius: 6px; background: var(--surface); color: var(--foreground);
 }
 .root textarea { resize: vertical; min-height: 84px; }
-.row select { width: auto; margin: 0; }
+.row select { width: auto; max-width: 100%; margin: 0; }
 .check { display: inline-flex; align-items: center; gap: 8px; }
 .check input { width: 18px; height: 18px; margin: 0; }
 .variant { display: flex; align-items: center; gap: 10px; }
@@ -53,7 +53,7 @@
 .composer { display: grid; gap: 4px; }
 .composer label { font-weight: 600; }
 
-.summary { display: grid; gap: 6px; }
+.summary { display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; }
 .section { padding: 16px 0; border-top: 1px solid var(--border); }
 .section h3 { font-size: 18px; margin-bottom: 8px !important; }
 .headline { font-size: 17px; font-weight: 650; margin: 0 0 6px !important; }

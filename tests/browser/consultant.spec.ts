@@ -57,6 +57,34 @@ async function withWorker(work: () => Promise<void>) {
   }
 }
 
+const phase3a = "test-results/phase3a";
+const SNAPSHOT = "00000000-0000-4000-8000-000000000001";
+/** Presents the conversation as confirmed with gaps (and its To-Be jobs as given) by rewriting the two read responses only.
+ * Reaching "confirmed" through the real UI takes a full discovery walk-through, which the first test already covers end to end;
+ * these tests are about how the confirmed state is worded and how a refused To-Be start is shown. Writes still reach the server. */
+async function presentAsConfirmed(page: Page, jobs: unknown[]) {
+  await page.route(/\/api\/projects\/[^/]+\/consultant\/[^/]+$/, async route => {
+    if (route.request().method() !== "GET") return route.fallback();
+    const response = await route.fetch(); const body = await response.json();
+    body.data.confirmedSnapshotId = SNAPSHOT;
+    body.data.state.confirmation = { revision: body.data.state.revision, by: "synthetic", at: new Date().toISOString(), withGaps: true };
+    await route.fulfill({ response, json: body });
+  });
+  await page.route(/\/api\/projects\/[^/]+\/consultant\/[^/]+\/jobs$/, async route => {
+    if (route.request().method() !== "GET") return route.fallback();
+    await route.fulfill({ json: { success: true, data: { jobs } } });
+  });
+}
+const toBeJob = (status: string, extra: object = {}) => ({ id: "00000000-0000-4000-8000-0000000000aa", kind: "TO_BE", status, inputRevision: 1, error: null, result: null, ...extra });
+async function openConfirmedSummary(page: Page, jobs: unknown[]) {
+  await setup(page);
+  await startConversation(page);
+  await presentAsConfirmed(page, jobs);
+  await page.reload();
+  await page.getByRole("tab", { name: /^Summary/ }).click();
+  await expect(page.getByTestId("progress")).toBeVisible();
+}
+
 type Scope = Page | Locator;
 const group = (scope: Scope, name: string | RegExp) => scope.getByRole("group", { name });
 async function startConversation(page: Page) {
@@ -389,6 +417,88 @@ test.describe("small screens", () => {
     await page.screenshot({ path: `${phase2}/fresh-390-summary.png`, fullPage: true });
     await expandAll(page);
     expect(await fits()).toBe(true);
+  });
+
+  test("confirmed with gaps says one thing: confirmed as a draft, with the open items carried forward", async ({ page }) => {
+    test.setTimeout(60000);
+    await openConfirmedSummary(page, []);
+    const progress = page.getByTestId("progress");
+    await expect(progress).toContainText(/^Confirmed as a draft: \d+ open items? carried into the To-Be as open questions\.$/);
+    await expect(progress).not.toContainText("before you can confirm");
+    const summary = page.getByRole("tabpanel", { name: "Summary" });
+    await expect(summary.getByText("Open items carried into the To-Be:")).toBeVisible();
+    await expect(summary.getByText("Still needed before this can be confirmed:")).toHaveCount(0);
+    await expect(summary.getByRole("button", { name: "Confirmed", exact: true })).toBeDisabled();
+    mkdirSync(phase3a, { recursive: true });
+    await page.screenshot({ path: `${phase3a}/confirmed-draft-390.png`, fullPage: true });
+  });
+
+  test("a refused To-Be start is shown beside the button, replaces the old failure text and disables retry", async ({ page }) => {
+    test.setTimeout(60000);
+    await openConfirmedSummary(page, [toBeJob("FAILED", { error: { code: "TIMEOUT", message: "The To-Be design took too long to generate; you can retry." } })]);
+    const status = page.getByTestId("to-be-status");
+    await expect(status).toContainText("took too long");
+    await page.route(/\/api\/projects\/[^/]+\/consultant\/[^/]+\/to-be$/, route => route.fulfill({ status: 429,
+      json: { success: false, error: { code: "RATE_LIMITED", message: "Daily AI limit reached for this workspace. Try again tomorrow." } } }));
+    const retry = page.getByRole("button", { name: "Retry To-Be generation", exact: true });
+    await retry.click();
+    const summary = page.getByRole("tabpanel", { name: "Summary" });
+    const alert = summary.getByRole("alert");
+    await expect(alert).toBeVisible();
+    await expect(alert).toContainText("Daily AI limit reached for this workspace.");
+    await expect(page.getByRole("main").getByRole("alert")).toHaveCount(1); // not also in the (hidden) chat column
+    await expect(status).toHaveCount(0); // the older failure text is gone while the newer refusal is shown
+    await expect(retry).toBeDisabled();
+    // The refusal sits next to the button the person pressed.
+    const [alertBox, buttonBox] = [await alert.boundingBox(), await retry.boundingBox()];
+    expect(Math.abs(alertBox!.y - buttonBox!.y)).toBeLessThan(400);
+    mkdirSync(phase3a, { recursive: true });
+    await page.screenshot({ path: `${phase3a}/to-be-refused-390.png`, fullPage: true });
+  });
+
+  test("while the To-Be generates, the button and status say so and the elapsed time moves", async ({ page }) => {
+    test.setTimeout(60000);
+    await openConfirmedSummary(page, [toBeJob("RUNNING")]);
+    const summary = page.getByRole("tabpanel", { name: "Summary" });
+    const button = summary.getByRole("button", { name: "Generating To-Be design…", exact: true });
+    await expect(button).toBeDisabled();
+    await expect(summary.getByRole("button", { name: "Generate a new To-Be draft" })).toHaveCount(0);
+    const status = page.getByTestId("to-be-status");
+    await expect(status).toContainText("This usually takes several minutes");
+    const elapsed = page.getByTestId("to-be-elapsed");
+    await expect(elapsed).toHaveText(/^\d+ s watched on this page so far\.$/);
+    expect(await status.locator("[data-testid=to-be-elapsed]").count()).toBe(0); // the ticking figure is outside the live region
+    const first = await elapsed.innerText();
+    await expect.poll(() => elapsed.innerText(), { timeout: 15000 }).not.toBe(first);
+    mkdirSync(phase3a, { recursive: true });
+    await page.screenshot({ path: `${phase3a}/to-be-generating-390.png`, fullPage: true });
+  });
+
+  test("a populated summary with long step names and an unbroken token still fits the screen", async ({ page }) => {
+    test.setTimeout(90000);
+    const token = "AssetReturnReconciliationLogEntry_2026_Final_ReviewedCopy_v2"; // 60 characters, no break opportunity
+    const longName = `Reconcile the final hire invoice against the dispatch log, the signed return note and the depot damage report before release ${token}`;
+    const walkthrough = `Dispatch books the truck by phone. The clerk logs the return in a spreadsheet and later ${token} is copied across by hand into three other registers. Invoices are wrong when the return is late and nobody updates ${token} afterwards.`;
+    await setup(page);
+    await startConversation(page);
+    await withWorker(async () => {
+      await say(page, walkthrough, 1);
+      await page.getByRole("tab", { name: /^Summary/ }).click();
+      await expect.poll(() => page.getByTestId("proposal").count(), { timeout: 15000 }).toBeGreaterThanOrEqual(2); // several pending proposals, left unreviewed
+      await expandAll(page);
+      await page.getByRole("button", { name: "Add a current step", exact: true }).click();
+      await answer(page.getByRole("article", { name: /^Step 1/ }), "Step name", longName);
+      await page.getByRole("button", { name: "Add item", exact: true }).click();
+      await answer(page, /^(Pain point|Future requirement|.*requirement) 1 for Step 1/i, `${longName} ${longName}`);
+      const heading = page.getByRole("article", { name: /^Step 1/ }).getByRole("heading", { level: 4 }).first();
+      await expect(heading).toContainText(token);
+      const overflow = await page.evaluate(() => ({ page: document.documentElement.scrollWidth, window: window.innerWidth,
+        widest: [...document.querySelectorAll("main *")].map(el => ({ el, w: Math.round(el.getBoundingClientRect().right) })).filter(item => item.w > window.innerWidth)
+          .slice(0, 6).map(item => `${item.el.tagName.toLowerCase()}.${String(item.el.className).split(" ")[0]}:${item.w}`) }));
+      mkdirSync("test-results/phase3a", { recursive: true });
+      await page.screenshot({ path: "test-results/phase3a/summary-populated-390.png", fullPage: true });
+      expect(overflow.page, `page scrollWidth ${overflow.page} vs window ${overflow.window}; first overflowing: ${overflow.widest.join(", ")}`).toBeLessThanOrEqual(overflow.window);
+    });
   });
 });
 
