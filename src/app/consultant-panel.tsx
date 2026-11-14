@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type FormEvent, type KeyboardEvent } from "react";
 import { ApiError, api, isActive, isUncertain, variantCodeFor, type Command, type JobView, type VariantSummary, type Workspace } from "./consultant-api";
 import { ConsultantChat } from "./consultant-chat";
 import { ConsultantSummary } from "./consultant-summary";
@@ -15,6 +15,10 @@ const POLL_MS = 1500;
 const EXTRACTION_WAIT_MS = 90000;
 const withJob = (jobs: JobView[], job: JobView) => [job, ...jobs.filter(item => item.id !== job.id)];
 const messageOf = (error: unknown) => error instanceof Error ? error.message : "Something went wrong. Try again.";
+
+const NARROW = "(max-width: 899px)"; // keep in step with the layout breakpoint in consultant.module.css
+const subscribeNarrow = (notify: () => void) => { const query = window.matchMedia(NARROW); query.addEventListener("change", notify); return () => query.removeEventListener("change", notify); };
+const useNarrow = () => useSyncExternalStore(subscribeNarrow, () => window.matchMedia(NARROW).matches, () => false);
 
 /** Resumes from server state on every load; nothing but the unsent draft lives only in the browser. */
 export function ConsultantPanel({ projectId }: { projectId: string }) {
@@ -31,6 +35,7 @@ export function ConsultantPanel({ projectId }: { projectId: string }) {
   const [attempt, setAttempt] = useState(0);
   const [pollFailures, setPollFailures] = useState(0);
   const [starting, setStarting] = useState(false);
+  const narrow = useNarrow();
   // One user intent keeps one idempotency key until the server gives a definite answer.
   const keys = useRef(new Map<string, string>());
   const busyRef = useRef(false);
@@ -168,6 +173,9 @@ export function ConsultantPanel({ projectId }: { projectId: string }) {
   const state = workspace?.state ?? null;
   const lastMessage = state?.messages.at(-1);
   const failedJob = jobs[0]?.kind === "INTERVIEW" && jobs[0].status === "FAILED" ? jobs[0] : undefined;
+  const failedCode = jobs[0]?.status === "FAILED" ? jobs[0].error?.code : null;
+  const support = needsSupport(errorCode) || needsSupport(failedCode);
+  const blocked = isAccountBlocked(errorCode) || isAccountBlocked(failedCode); // asking again cannot lift a trial or suspension
   const summaryBadge = state ? state.proposals.filter(item => item.status === "PENDING").length + state.observations.filter(item => item.status === "PENDING").length : 0;
   function tabKeys(event: KeyboardEvent) {
     if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
@@ -187,7 +195,7 @@ export function ConsultantPanel({ projectId }: { projectId: string }) {
         </select></label>}
       {workspace.canEdit && !starting && <button type="button" className={styles.small} onClick={() => setStarting(true)}>Start another process variant</button>}
     </div>}
-    {workspace && (!state || starting) && <StartForm canEdit={workspace.canEdit} pending={pending} error={error} onStart={start}
+    {workspace && (!state || starting) && <StartForm canEdit={workspace.canEdit} pending={pending} error={error} support={support} onStart={start}
       onCancel={state ? () => setStarting(false) : undefined} />}
     {workspace && state && !starting && <>
       <div role="tablist" aria-label="Conversation sections" className={styles.tabs} onKeyDown={tabKeys}>
@@ -200,23 +208,23 @@ export function ConsultantPanel({ projectId }: { projectId: string }) {
         <section id="pane-chat" role="tabpanel" aria-labelledby="tab-chat" className={styles.chatPane} aria-label="Chat">
           <ConsultantChat problem={state.problemStatement} messages={state.messages} questions={state.questions}
             waiting={busy && jobs[0]?.kind === "INTERVIEW"} canEdit={workspace.canEdit} error={error}
-            needsRetry={lastMessage?.role === "user" && !busy && !pending}
-            failure={failedJob?.error?.message ?? null} onSend={sendMessage} onRetry={() => void retryReply()} />
+            needsRetry={lastMessage?.role === "user" && !busy && !pending && !blocked}
+            failure={failedJob?.error?.message ?? null} support={support} onSend={sendMessage} onRetry={() => void retryReply()} />
         </section>
         <section id="pane-summary" role="tabpanel" aria-labelledby="tab-summary" className={styles.summaryPane} aria-label="Summary">
           <h2 className={styles.paneTitle}>What I understand so far</h2>
+          {/* On a narrow screen the chat (and its support line) is hidden while this tab is open. Only one copy is ever in the page. */}
+          {support && narrow && tab === "summary" && <p className={styles.notice}>Need help with this? <SupportLink /></p>}
           {busy && <p className={styles.notice} role="status">Editing is paused while the consultant works, so nothing changes underneath you.</p>}
           <ConsultantSummary workspace={{ ...workspace, state }} jobs={jobs} locked={busy || pending} run={run} onGenerate={generate}
             reportHref={(jobId) => `/projects/${encodeURIComponent(projectId)}/consultant/${encodeURIComponent(code)}/to-be/${encodeURIComponent(jobId)}`} />
         </section>
       </div>
     </>}
-    {(needsSupport(errorCode) || needsSupport(jobs[0]?.status === "FAILED" ? jobs[0].error?.code : null))
-      && <p className={styles.notice}>Need help with this? <SupportLink /></p>}
   </div>;
 }
 
-function StartForm({ canEdit, pending, error, onStart, onCancel }: { canEdit: boolean; pending: boolean; error: string;
+function StartForm({ canEdit, pending, error, support, onStart, onCancel }: { canEdit: boolean; pending: boolean; error: string; support: boolean;
   onStart: (name: string, release: string) => Promise<boolean>; onCancel?: () => void }) {
   const [name, setName] = useState("");
   const [release, setRelease] = useState("");
@@ -228,10 +236,12 @@ function StartForm({ canEdit, pending, error, onStart, onCancel }: { canEdit: bo
     <label htmlFor="variant-name">Which process are we discussing?</label>
     <input id="variant-name" value={name} onChange={(e) => setName(e.target.value)} maxLength={200} required placeholder="For example: Equipment hire" />
     <ReleaseSelect id="target-release" value={release || null} change={(next) => setRelease(next ?? "")} />
-    {error && <div role="alert" className={styles.alert}><p>{error}</p></div>}
+    <p className={styles.help}>Optional. You can leave this as &ldquo;Not decided&rdquo; and set it later.</p>
+    {error && <div role="alert" className={styles.alert}><p>{error}</p>{support && <p><SupportLink /></p>}</div>}
     <div className={styles.row}>
-      <button type="submit" className={styles.primary} disabled={pending || !name.trim()}>{pending ? "Starting…" : "Start the conversation"}</button>
+      <button type="submit" className={styles.primary} disabled={pending || !name.trim()} aria-describedby={name.trim() ? undefined : "start-hint"}>{pending ? "Starting…" : "Start the conversation"}</button>
       {onCancel && <button type="button" className={styles.small} onClick={onCancel} disabled={pending}>Cancel</button>}
     </div>
+    {!name.trim() && <p id="start-hint" className={styles.help}>Enter a process name to start.</p>}
   </form>;
 }

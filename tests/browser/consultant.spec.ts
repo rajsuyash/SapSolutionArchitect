@@ -16,6 +16,8 @@ if (process.env.RUN_SYNTHETIC_E2E === "1" && (!database ||
 
 const password = "SyntheticConsultantOnly123!";
 const shots = "test-results/consultant-ui";
+const phase2 = "test-results/phase2";
+const SECTIONS = ["Business context", "Current process (As-Is)", "Pain points and requirements", "Desired future", "Open decisions"] as const;
 const firstMessage = "We track equipment returns in a spreadsheet. Invoices are often wrong when the return date is late.";
 
 async function setup(page: Page) {
@@ -62,6 +64,16 @@ async function startConversation(page: Page) {
   await page.getByRole("button", { name: "Start the conversation", exact: true }).click();
   await expect(page.getByLabel("Your message")).toBeFocused();
 }
+/** Reference sections fold. A real person opens one by pressing its summary row; this does nothing if it is already open. */
+async function expand(page: Page, title: string) {
+  const region = page.getByRole("region", { name: title, exact: true });
+  const details = region.locator("details").first();
+  if (!(await details.evaluate(element => (element as HTMLDetailsElement).open))) await region.locator("summary").first().click();
+  await expect(details).toHaveJSProperty("open", true);
+}
+const expandAll = async (page: Page) => { for (const title of SECTIONS) await expand(page, title); };
+/** The summary pane's rendered height, as the layout engine measures it. */
+const paneHeight = async (page: Page) => Math.round((await page.getByRole("tabpanel", { name: "Summary" }).boundingBox())!.height);
 async function say(page: Page, text: string, replies: number) {
   await page.getByLabel("Your message").fill(text);
   await page.getByRole("button", { name: "Send", exact: true }).click();
@@ -100,6 +112,7 @@ test("a consultant conversation builds, confirms and generates from reviewed dis
     await expect(reply).toContainText("Thank you for that context.");
     await expect(reply.getByText("Why this matters:")).toHaveCount(2);
     await expect(reply.getByText("Who owns the current process")).toBeVisible();
+    await expandAll(page); // a fresh conversation starts with every empty section folded
 
     // The suggestion is evidence-backed and nothing is recorded until accepted.
     const proposal = page.getByTestId("proposal");
@@ -139,6 +152,9 @@ test("a consultant conversation builds, confirms and generates from reviewed dis
     await page.reload();
     await expect(page.getByTestId("message-user")).toContainText(firstMessage);
     await expect(page.getByTestId("message-assistant").first().getByText("Why this matters:")).toHaveCount(2);
+    // Sections holding recorded answers reopen by themselves; the rest start folded again.
+    await expect(page.getByRole("region", { name: "Current process (As-Is)", exact: true }).locator("details").first()).toHaveJSProperty("open", true);
+    await expandAll(page);
     await expect(group(page, "Current business rules")).toContainText("Marked as not known yet.");
     await expect(group(page, "Current exceptions")).toContainText("Waiting for Dana Whitfield to answer.");
     await expect(group(page, "Current systems and handoffs")).toContainText("We track equipment returns in a spreadsheet.");
@@ -194,6 +210,9 @@ test("a consultant conversation builds, confirms and generates from reviewed dis
 
     // Confirm, then generate; the result is a draft for human review, never an approval.
     await expect(page.getByText("Everything required is answered.")).toBeVisible();
+    await expect(page.getByTestId("progress")).toHaveText("Everything needed is answered.");
+    mkdirSync(phase2, { recursive: true });
+    await page.screenshot({ path: `${phase2}/populated-desktop.png`, fullPage: true });
     await page.getByRole("button", { name: "Confirm current process", exact: true }).click();
     await expect(page.getByRole("button", { name: "Confirmed", exact: true })).toBeDisabled();
     await page.getByRole("button", { name: "Generate To-Be design", exact: true }).click();
@@ -202,6 +221,8 @@ test("a consultant conversation builds, confirms and generates from reviewed dis
     await expect(status).toContainText("has not been approved");
     expect(["BLOCKED", "HUMAN_REVIEW_REQUIRED"]).toContain(await status.getAttribute("data-state"));
     mkdirSync(shots, { recursive: true });
+    await expect(page.getByTestId("report-link")).toBeVisible();
+    await page.screenshot({ path: `${phase2}/confirmed-desktop.png`, fullPage: true });
     await page.screenshot({ path: `${shots}/consultant-desktop-v2.png`, fullPage: true });
     // The chat column stays in view while the summary scrolls.
     const chatPane = page.getByRole("tabpanel", { name: "Chat" });
@@ -259,6 +280,72 @@ test("a consultant conversation builds, confirms and generates from reviewed dis
   expect(errors).toEqual([]);
 });
 
+test.describe("a fresh conversation is short and oriented", () => {
+  test.use({ viewport: { width: 1280, height: 720 } });
+  test("it opens with a plain sentence, three blockers and folded sections, and stays under 1600px", async ({ page }) => {
+    test.setTimeout(60000);
+    await setup(page);
+    await startConversation(page);
+    const progress = page.getByTestId("progress");
+    await expect(progress).toHaveAttribute("role", "status"); // announced to screen readers when the count changes
+    await expect(progress).toHaveText(/^\d+ things? still needed before you can confirm\.$/);
+    const total = Number(/^(\d+)/.exec(await progress.innerText())![1]);
+    expect(total).toBeGreaterThan(3); // a fresh conversation has more blockers than the preview shows
+
+    const blockers = page.getByTestId("blockers");
+    const visible = await blockers.locator("li:visible").count();
+    expect(visible).toBeGreaterThan(0);
+    expect(visible).toBeLessThanOrEqual(3);
+    expect(await blockers.locator("li").count()).toBe(total); // every blocker is still in the page
+    await expect(blockers.getByText(`Show all ${total}`)).toBeVisible();
+
+    // The project's problem statement pre-fills "Business problem"; that alone does not open Business context.
+    for (const title of SECTIONS) {
+      await expect(page.getByRole("region", { name: title, exact: true }).locator("details").first(), title).toHaveJSProperty("open", false);
+    }
+    const collapsed = await paneHeight(page);
+    expect(collapsed).toBeLessThan(1600);
+    await page.screenshot({ path: `${phase2}/fresh-desktop.png`, fullPage: true });
+
+    await expandAll(page);
+    const expanded = await paneHeight(page);
+    expect(expanded).toBeGreaterThan(collapsed); // control: the measurement moves when the sections open
+    test.info().annotations.push({ type: "summary-pane-height", description: `collapsed ${collapsed}px, expanded ${expanded}px` });
+    console.log(`summary pane height: collapsed ${collapsed}px, all sections expanded ${expanded}px`);
+  });
+
+  test("a section with recorded answers is open after a reload and the others stay folded", async ({ page }) => {
+    test.setTimeout(60000);
+    await setup(page);
+    await startConversation(page);
+    const open = (title: string) => page.getByRole("region", { name: title, exact: true }).locator("details").first();
+    await expect(open("Desired future")).toHaveJSProperty("open", false);
+    await expand(page, "Desired future");
+    await answer(page, "Desired business outcome", "Accurate final invoices");
+    await page.reload();
+    await expect(open("Desired future")).toHaveJSProperty("open", true);
+    await expect(group(page, "Desired business outcome")).toContainText("Accurate final invoices");
+    await expect(page.getByRole("region", { name: "Desired future", exact: true }).locator("summary")).toContainText(/^Desired future1 of \d+ answered$/);
+    await expect(open("Current process (As-Is)")).toHaveJSProperty("open", false);
+  });
+
+  test("text typed into a field survives folding and reopening its section", async ({ page }) => {
+    test.setTimeout(60000);
+    await setup(page);
+    await startConversation(page);
+    await expand(page, "Business context");
+    const field = group(page, "Process owner");
+    await field.getByRole("button", { name: "Answer", exact: true }).click();
+    await field.getByRole("textbox").fill("Dana, not saved yet");
+    const region = page.getByRole("region", { name: "Business context", exact: true });
+    await region.locator("summary").click();
+    await expect(region.locator("details")).toHaveJSProperty("open", false);
+    await expect(field).toBeHidden();
+    await region.locator("summary").click();
+    await expect(field.getByRole("textbox")).toHaveValue("Dana, not saved yet");
+  });
+});
+
 test.describe("small screens", () => {
   test.use({ viewport: { width: 390, height: 844 } });
   test("chat and summary are tabs and the review count follows the conversation", async ({ page }) => {
@@ -289,6 +376,20 @@ test.describe("small screens", () => {
       await expect(page.getByLabel("Your message")).toBeVisible();
     });
   });
+
+  test("the fresh summary fits the screen with its sections folded and open", async ({ page }) => {
+    test.setTimeout(60000);
+    await setup(page);
+    await startConversation(page);
+    await page.getByRole("tab", { name: /^Summary/ }).click();
+    await expect(page.getByTestId("progress")).toBeVisible();
+    const fits = () => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth);
+    expect(await fits()).toBe(true);
+    mkdirSync(phase2, { recursive: true });
+    await page.screenshot({ path: `${phase2}/fresh-390-summary.png`, fullPage: true });
+    await expandAll(page);
+    expect(await fits()).toBe(true);
+  });
 });
 
 test("accepting every pending proposal at once records the field, the proposed step and the proposed requirement", async ({ page }) => {
@@ -305,11 +406,16 @@ test("accepting every pending proposal at once records the field, the proposed s
     await expect(proposals.filter({ hasText: "Current systems and handoffs" })).toHaveCount(1);
     const summary = page.getByRole("tabpanel", { name: "Summary" });
     await expect(summary.getByRole("article", { name: /^Step 1/ })).toHaveCount(0);
+    const folded = (title: string) => page.getByRole("region", { name: title, exact: true }).locator("details").first();
+    await expect(folded("Current process (As-Is)")).toHaveJSProperty("open", false);
 
     await page.getByTestId("accept-all").click();
 
     await expect(proposals).toHaveCount(0);
     await expect(page.getByTestId("accept-all")).toHaveCount(0);
+    // Content that just arrived is visible without the person having to open anything.
+    await expect(folded("Current process (As-Is)")).toHaveJSProperty("open", true);
+    await expect(folded("Pain points and requirements")).toHaveJSProperty("open", true);
     const step = summary.getByRole("article", { name: /^Step 1/ });
     await expect(step).toBeVisible();
     await expect(step).toContainText("The clerk logs the return in a spreadsheet.");
@@ -319,6 +425,27 @@ test("accepting every pending proposal at once records the field, the proposed s
     await page.reload();
     await expect(page.getByTestId("proposal")).toHaveCount(0);
     await expect(page.getByRole("tabpanel", { name: "Summary" }).getByRole("article", { name: /^Step 1/ })).toBeVisible();
+  });
+});
+
+test("a section the person closed stays closed when more content arrives", async ({ page }) => {
+  test.setTimeout(90000);
+  await setup(page);
+  await startConversation(page);
+  const folded = (title: string) => page.getByRole("region", { name: title, exact: true }).locator("details").first();
+  const asIs = page.getByRole("region", { name: "Current process (As-Is)", exact: true });
+  await asIs.locator("summary").click(); // open it, then close it again: an explicit choice
+  await expect(folded("Current process (As-Is)")).toHaveJSProperty("open", true);
+  await asIs.locator("summary").click();
+  await expect(folded("Current process (As-Is)")).toHaveJSProperty("open", false);
+  await withWorker(async () => {
+    await say(page, "Dispatch books the truck by phone. The clerk logs the return in a spreadsheet. Invoices are wrong when the return is late.", 1);
+    await expect(page.getByTestId("proposal")).toHaveCount(3);
+    await page.getByTestId("accept-all").click();
+    await expect(page.getByTestId("proposal")).toHaveCount(0);
+    await expect(folded("Pain points and requirements")).toHaveJSProperty("open", true); // control: untouched sections do open
+    await expect(folded("Current process (As-Is)")).toHaveJSProperty("open", false);
+    await expect(page.getByRole("region", { name: "Current process (As-Is)", exact: true }).locator("summary")).toContainText(/1 step/);
   });
 });
 

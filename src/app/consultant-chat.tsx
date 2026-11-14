@@ -3,11 +3,12 @@
 import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
 import type { WorkspaceView } from "./consultant-api";
 import styles from "./consultant.module.css";
+import { SupportLink } from "./support";
 
 type Message = WorkspaceView["messages"][number];
 type Question = WorkspaceView["questions"][number];
 type Props = { problem: string; messages: Message[]; questions: Question[]; waiting: boolean; canEdit: boolean;
-  needsRetry: boolean; failure: string | null; error: string; onSend: (text: string) => Promise<boolean>; onRetry: () => void };
+  needsRetry: boolean; failure: string | null; error: string; support: boolean; onSend: (text: string) => Promise<boolean>; onRetry: () => void };
 
 /** The stored reply is "acknowledgement\n\nquestion why-it-matters\n\n…". Re-pair each paragraph with its question. */
 function ConsultantMessage({ message, questions }: { message: Message; questions: Question[] }) {
@@ -24,7 +25,7 @@ function ConsultantMessage({ message, questions }: { message: Message; questions
   </>;
 }
 
-export function ConsultantChat({ problem, messages, questions, waiting, canEdit, needsRetry, failure, error, onSend, onRetry }: Props) {
+export function ConsultantChat({ problem, messages, questions, waiting, canEdit, needsRetry, failure, error, support, onSend, onRetry }: Props) {
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
   const input = useRef<HTMLTextAreaElement>(null);
@@ -61,8 +62,10 @@ export function ConsultantChat({ problem, messages, questions, waiting, canEdit,
       </div>)}
       {waiting && <p role="status" className={styles.thinking} data-testid="consultant-working">The consultant is reading your message… You can leave this page and return later.</p>}
     </div>
-    {failure && <div role="alert" className={styles.alert}><p>{failure}</p></div>}
-    {error && <div role="alert" className={styles.alert}><p>{error}</p></div>}
+    {/* The way to reach us sits inside the last alert shown, so it is read together with the failure it belongs to. */}
+    {failure && <div role="alert" className={styles.alert}><p>{failure}</p>{support && !error && <p><SupportLink /></p>}</div>}
+    {error && <div role="alert" className={styles.alert}><p>{error}</p>{support && <p><SupportLink /></p>}</div>}
+    {support && !failure && !error && <p className={styles.notice}>Need help with this? <SupportLink /></p>}
     {needsRetry && canEdit && <button type="button" className={styles.small} onClick={onRetry}>Ask the consultant to reply again</button>}
     {canEdit ? <form onSubmit={(event) => void submit(event)} className={styles.composer}>
       <label htmlFor="consultant-message">Your message</label>

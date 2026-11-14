@@ -11,6 +11,7 @@ if (process.env.RUN_SYNTHETIC_E2E === "1" && (!database ||
   !["127.0.0.1", "localhost"].includes(new URL(database).hostname))) throw new Error("Isolated local database required");
 
 const shots = "test-results/journey";
+const phase2 = "test-results/phase2";
 
 test("a new project shows where it stands, and an ended trial offers a way to reach us instead of a retry", async ({ page }) => {
   mkdirSync(shots, { recursive: true });
@@ -64,7 +65,22 @@ test("a new project shows where it stands, and an ended trial offers a way to re
     const chatAlert = page.getByRole("main").getByRole("alert");
     await expect(chatAlert).toContainText("Your trial has ended");
     await expect(chatAlert).not.toContainText("reply again");
-    await expect(page.getByRole("main").locator('a[href^="mailto:"]')).toBeVisible();
+    // The way out sits inside the alert it belongs to, appears once, and retrying is not offered.
+    await expect(chatAlert.locator('a[href^="mailto:"]')).toBeVisible();
+    await expect(page.getByRole("main").locator('a[href^="mailto:"]')).toHaveCount(1);
+    await expect(page.getByRole("button", { name: "Ask the consultant to reply again" })).toHaveCount(0);
+    mkdirSync(phase2, { recursive: true });
+    await page.screenshot({ path: `${phase2}/trial-ended-chat.png`, fullPage: true });
     await page.screenshot({ path: `${shots}/trial-ended-chat.png`, fullPage: true });
+
+    // Narrow screens show one pane at a time: the way out must be on screen on both tabs, still once at a time.
+    await page.setViewportSize({ width: 390, height: 844 });
+    const visibleMail = page.getByRole("main").locator('a[href^="mailto:"]:visible');
+    await expect(visibleMail).toHaveCount(1); // chat tab
+    await page.getByRole("tab", { name: /^Summary/ }).click();
+    await expect(page.getByRole("tabpanel", { name: "Summary" }).locator('a[href^="mailto:"]')).toBeVisible();
+    await expect(visibleMail).toHaveCount(1);
+    await page.getByRole("tab", { name: "Chat" }).click();
+    await expect(page.getByRole("tabpanel", { name: "Chat" }).locator('a[href^="mailto:"]')).toBeVisible();
   } finally { await db.end(); }
 });

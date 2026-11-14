@@ -56,6 +56,17 @@
 .summary { display: grid; gap: 6px; }
 .section { padding: 16px 0; border-top: 1px solid var(--border); }
 .section h3 { font-size: 18px; margin-bottom: 8px !important; }
+.headline { font-size: 17px; font-weight: 650; margin: 0 0 6px !important; }
+/* Folding reference sections: the whole summary row is the toggle, so it is a full-width 44px target. */
+.fold > summary, .more { cursor: pointer; }
+.foldRow { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 8px; min-height: 44px; padding: 4px 6px; margin: -4px -6px 4px; border-radius: 6px; }
+.foldRow:hover { background: #f3f8f6; }
+.foldRow:focus-visible, .more:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+.foldRow h3 { margin: 0 !important; flex: 1 1 auto; }
+.foldRow::before, .more::before { content: "\25B8"; margin-right: 8px; color: var(--muted); }
+details[open] > .foldRow::before, details[open] > .more::before { content: "\25BE"; }
+.figure { color: var(--muted); font-size: 14px; }
+.more { display: flex; align-items: center; min-height: 44px; color: var(--accent); font-weight: 600; }
 .subheading { font-size: 15px; margin: 18px 0 8px !important; }
 .list { list-style: none; padding: 0; margin: 0; display: grid; gap: 12px; }
 .card { padding: 12px 14px; margin: 10px 0; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); }

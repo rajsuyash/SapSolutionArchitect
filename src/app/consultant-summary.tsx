@@ -28,6 +28,33 @@ function Section({ id, title, children, hint }: { id: string; title: string; chi
   </section>;
 }
 
+/** A reference section that folds away. Native <details> keeps the children mounted, so drafts being typed survive a collapse.
+ * It is open while something is recorded in it, unless the person has chosen otherwise; their explicit choice always wins. */
+function Collapsible({ id, title, figure, recorded, hint, children }: { id: string; title: string; figure: string; recorded: boolean; hint?: string; children: ReactNode }) {
+  const [choice, setChoice] = useState<boolean | null>(null);
+  const open = choice ?? recorded;
+  return <section aria-labelledby={id} className={styles.section}>
+    <details open={open} onToggle={(event) => {
+      // React changing the attribute also fires "toggle"; only a state that differs from what was rendered is the person's doing.
+      if (event.currentTarget.open !== open) setChoice(event.currentTarget.open);
+    }} className={styles.fold}>
+      <summary className={styles.foldRow}><h3 id={id}>{title}</h3><span className={styles.figure}>{figure}</span></summary>
+      {hint && <p className={styles.muted}>{hint}</p>}{children}
+    </details>
+  </section>;
+}
+
+const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? "" : "s"}`;
+const BLOCKER_PREVIEW = 3;
+/** The project's problem statement is copied into "Business problem" when the conversation is created, so it says nothing about
+ * whether the person has started answering and must not, on its own, open a section. */
+const PREFILLED = new Set(["business_problem"]);
+/** "answered" counts real answers and explicit not-applicable; "recorded" also counts unknown / waiting-on-owner. */
+function tally(fields: readonly { id: string; fact: { status: string } }[]) {
+  return { answered: fields.filter(({ fact }) => fact.status === "KNOWN" || fact.status === "NOT_APPLICABLE").length, total: fields.length,
+    recorded: fields.some(({ id, fact }) => fact.status !== "EMPTY" && !PREFILLED.has(id)) };
+}
+
 function resultCopy(job: JobView | undefined, current: boolean) {
   if (!job) return null;
   if (isActive(job)) return "Generating the To-Be design from your confirmed understanding. You can leave this page and return.";
@@ -58,14 +85,20 @@ export function ConsultantSummary({ workspace, jobs, locked, run, onGenerate, re
   const saveGroup = (changes: { id: string; update: FactUpdate }[]) => run(changes.map(change => setFact(state, change.id, change.update)));
   const catalogFields = (domain: string): GroupField[] => WORKSPACE_FIELDS.filter(field => field.domain === domain)
     .map(field => ({ id: field.id, label: field.label, fact: state.facts.find(fact => fact.id === field.id)! }));
-  /** A catalog section: one heading, one edit toggle, answers shown as a definition list. */
-  const catalogGroup = (domain: string, headingId: string, title: string, toggleLabel: string) => {
+  /** A catalog section body: one edit toggle, answers shown as a definition list. The heading lives in the section's summary row. */
+  const catalogGroup = (domain: string, title: string, toggleLabel: string) => {
     const fields = catalogFields(domain);
-    return <EditableGroup heading={<h3 id={headingId}>{title}</h3>} toggleLabel={toggleLabel} formLabel={`Edit ${title.toLowerCase()}`}
+    return <EditableGroup heading={null} toggleLabel={toggleLabel} formLabel={`Edit ${title.toLowerCase()}`}
       fields={fields} disabled={!editable} onSave={saveGroup}>
       <dl className={styles.fieldList}>{fields.map(field => fieldRow(field.id, field.fact, undefined, true))}</dl>
     </EditableGroup>;
   };
+  const blockers = readiness?.blockers ?? [];
+  const blockerItem = (blocker: (typeof blockers)[number], index: number) => <li key={index}>{describeBlocker(state, blocker)}</li>;
+  const context = tally(catalogFields("CONTEXT"));
+  const asIs = tally(catalogFields("AS_IS"));
+  const desired = tally(catalogFields("DESIRED"));
+  const requirementCount = state.requirements.length + state.requirementDrafts.length;
   const softBlockers = readiness?.blockers.filter(blocker => blocker.soft) ?? [];
   const carried = carriedGaps(state, readiness?.blockers ?? []);
   const canConfirmDraft = !readiness?.ready && !!readiness?.draftReady && !confirmed;
@@ -73,11 +106,15 @@ export function ConsultantSummary({ workspace, jobs, locked, run, onGenerate, re
     .filter(fact => fact.status === "UNKNOWN" || fact.status === "OWNER_PENDING");
 
   return <div className={styles.summary} data-testid="summary">
+    {readiness && <p className={styles.headline} role="status" data-testid="progress">
+      {readiness.ready ? "Everything needed is answered." : `${plural(blockers.length, "thing")} still needed before you can confirm.`}</p>}
     <Section id="readiness-heading" title="Ready to confirm?">
       {readiness?.ready
         ? <p role="status" className={styles.ok}>Everything required is answered. {confirmed ? "You have confirmed this understanding." : "Review it once more, then confirm."}</p>
-        : <><p role="status">{readiness?.blockers.length ?? 0} thing{readiness?.blockers.length === 1 ? "" : "s"} still needed before this can be confirmed:</p>
-          <ul data-testid="blockers">{readiness?.blockers.map((blocker, index) => <li key={index}>{describeBlocker(state, blocker)}</li>)}</ul>
+        : <><p>Still needed before this can be confirmed:</p>
+          <div data-testid="blockers"><ul>{blockers.slice(0, BLOCKER_PREVIEW).map(blockerItem)}</ul>
+            {blockers.length > BLOCKER_PREVIEW && <details><summary className={styles.more}>Show all {blockers.length}</summary>
+              <ul>{blockers.slice(BLOCKER_PREVIEW).map((blocker, index) => blockerItem(blocker, index + BLOCKER_PREVIEW))}</ul></details>}</div>
           {canConfirmDraft && workspace.canConfirm && <>
             <p id="draft-gaps-note" className={styles.muted}>Nothing else blocks a draft. You can confirm now and the To-Be will carry these as &lsquo;to confirm&rsquo; or open questions:</p>
             <ul data-testid="draft-gaps">{softBlockers.map((blocker, index) => <li key={index}>{describeBlocker(state, blocker)}</li>)}</ul></>}</>}
@@ -124,10 +161,13 @@ export function ConsultantSummary({ workspace, jobs, locked, run, onGenerate, re
         onReview={(decision, rationale) => run({ type: "REVIEW_OBSERVATION", observationId: observation.id, decision, rationale })} />)}</ul>
     </Section>}
 
-    <section aria-labelledby="context-heading" className={styles.section}>{catalogGroup("CONTEXT", "context-heading", "Business context", "Edit answers")}</section>
+    <Collapsible id="context-heading" title="Business context" figure={`${context.answered} of ${context.total} answered`} recorded={context.recorded}>
+      {catalogGroup("CONTEXT", "Business context", "Edit answers")}
+    </Collapsible>
 
-    <section aria-labelledby="asis-heading" className={styles.section}>
-      {catalogGroup("AS_IS", "asis-heading", "Current process (As-Is)", "Edit answers")}
+    <Collapsible id="asis-heading" title="Current process (As-Is)" recorded={asIs.recorded || steps.length > 0}
+      figure={`${plural(steps.length, "step")}, ${asIs.answered} of ${asIs.total} answered`}>
+      {catalogGroup("AS_IS", "Current process (As-Is)", "Edit answers")}
       <h4 className={styles.subheading}>Current steps</h4>
       {steps.length === 0 && <p className={styles.muted}>No steps yet. Describe how the work happens today in the chat, or add a step here.</p>}
       {state.steps.map((step, index) => <article key={step.id} className={styles.card} aria-label={`Step ${index + 1}: ${step.name}`}>
@@ -152,9 +192,10 @@ export function ConsultantSummary({ workspace, jobs, locked, run, onGenerate, re
       })}
       {workspace.canEdit && <button type="button" className={styles.small} disabled={!editable}
         onClick={() => void run({ type: "START_STEP_DRAFT" })}>Add a current step</button>}
-    </section>
+    </Collapsible>
 
-    <Section id="requirements-heading" title="Pain points and requirements">
+    <Collapsible id="requirements-heading" title="Pain points and requirements" recorded={requirementCount > 0}
+      figure={requirementCount ? `${requirementCount} recorded` : "none yet"}>
       {state.requirements.length + state.requirementDrafts.length === 0 && <p className={styles.muted}>None recorded yet.</p>}
       {state.requirements.map(item => <article key={item.id} className={styles.card}>
         <h4 className={styles.fieldLabel}>{REQUIREMENT_KIND_LABELS[item.kind]} for {stepLabel(state, item.asIsStepId)}{item.critical ? " (critical)" : ""}</h4>
@@ -180,15 +221,18 @@ export function ConsultantSummary({ workspace, jobs, locked, run, onGenerate, re
           <button type="submit" className={styles.small} disabled={!editable || !stepId}>Add item</button>
         </div>
       </form>}
-    </Section>
+    </Collapsible>
 
-    <section aria-labelledby="desired-heading" className={styles.section}>{catalogGroup("DESIRED", "desired-heading", "Desired future", "Edit answers")}</section>
+    <Collapsible id="desired-heading" title="Desired future" figure={`${desired.answered} of ${desired.total} answered`} recorded={desired.recorded}>
+      {catalogGroup("DESIRED", "Desired future", "Edit answers")}
+    </Collapsible>
 
-    <Section id="open-heading" title="Open decisions" hint="Items marked unknown or waiting on someone. They stay visible until answered.">
+    <Collapsible id="open-heading" title="Open decisions" recorded={unresolved.length > 0} figure={unresolved.length ? `${unresolved.length} open` : "none"}
+      hint="Items marked unknown or waiting on someone. They stay visible until answered.">
       {unresolved.length === 0 ? <p className={styles.muted}>None.</p> : <ul data-testid="open-decisions">{unresolved.map(fact => {
         const info = describeField(state, fact.id);
         return <li key={fact.id}>{info.label} — {fact.status === "OWNER_PENDING" ? `waiting for ${fact.owner}` : "not known yet"}</li>;
       })}</ul>}
-    </Section>
+    </Collapsible>
   </div>;
 }
