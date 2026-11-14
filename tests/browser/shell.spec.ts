@@ -10,6 +10,7 @@ import { fixtureId } from "../../scripts/seed";
 const origin = process.env.PLAYWRIGHT_BASE_URL ?? "http://127.0.0.1:3017";
 if (!["127.0.0.1", "localhost"].includes(new URL(origin).hostname)) throw new Error("Browser fixtures require a local server");
 test.use({ ignoreHTTPSErrors: true }); // Also supports a local production TLS proxy.
+const shots = "test-results/phase2b";
 const createdEmails: string[] = [];
 const freshEmail = () => { const email = `fresh+${randomUUID()}@test.local`; createdEmails.push(email); return email; };
 async function credentials(page: Page, email = "lead@test.local", password = "LocalSeed123!") {
@@ -89,18 +90,47 @@ for (const width of [1280, 1024]) {
 test("shell navigation preserves destinations and returns from signup", async ({ page }) => {
   await page.goto(origin);
   await expect(page).toHaveURL(`${origin}/login`);
-  for (const [label, destination] of [
-    ["Projects", "/projects"],
-    ["Review", "/review"],
-    ["Reference library", "/admin/reference-library"],
-  ]) {
-    await page.getByRole("navigation").getByRole("link", { name: label, exact: true }).click();
+  const nav = page.getByRole("navigation", { name: "Primary navigation" });
+  await expect(nav.getByRole("link")).toHaveCount(1);
+  await expect(nav.getByRole("link", { name: "Review" })).toHaveCount(0);
+  await expect(nav.getByRole("link", { name: "Reference library" })).toHaveCount(0);
+  await page.getByTestId("app-shell-header").screenshot({ path: `${shots}/nav-signed-out.png` });
+  await nav.getByRole("link", { name: "Projects", exact: true }).click();
+  await expect(page).toHaveURL(`${origin}/login?${new URLSearchParams({ next: "/projects" })}`);
+  for (const destination of ["/review", "/admin/reference-library"]) {
+    await page.goto(`${origin}${destination}`);
     await expect(page).toHaveURL(`${origin}/login?${new URLSearchParams({ next: destination })}`);
   }
   await page.getByRole("link", { name: "Create account", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Create account", exact: true })).toBeVisible();
   await page.getByRole("link", { name: "Back to sign in" }).click();
   await expect(page).toHaveURL(`${origin}/login`);
+});
+
+test("signup says what is still needed while the button is disabled", async ({ page }) => {
+  await page.setViewportSize({ width: 1024, height: 900 });
+  await page.goto(`${origin}/signup`);
+  const hint = page.getByTestId("submit-hint");
+  const button = page.locator("[data-action=signup]");
+  await expect(button).toBeDisabled();
+  await expect(hint).toBeVisible();
+  await expect(hint).toContainText("Full name");
+  await expect(hint).toContainText("Password");
+  await expect(button).toHaveAttribute("aria-describedby", (await hint.getAttribute("id"))!);
+  await page.getByLabel("Full name").fill("Browser Tester");
+  await credentials(page, freshEmail(), "abc12");
+  await page.getByLabel("Organisation name").fill("Browser Test Organisation");
+  await expect(hint).toContainText("at least 10 characters, with a letter and a number");
+  await expect(hint).not.toContainText("Full name");
+  await page.screenshot({ path: `${shots}/signup-hint.png`, fullPage: true });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(hint).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await page.screenshot({ path: `${shots}/signup-hint-390.png`, fullPage: true });
+  await page.getByLabel("Password", { exact: true }).fill("ValidBrowser123!");
+  await expect(hint).toHaveCount(0);
+  await expect(button).toBeEnabled();
+  await expect(button).not.toHaveAttribute("aria-describedby", /.+/);
 });
 
 test("F1-AC1: signup sets an HttpOnly session, opens empty projects, and logout revokes it", async ({ page, context }, testInfo) => {
@@ -156,6 +186,8 @@ test("F1-AC2 and ERR7: login resumes a protected page, shows only own projects, 
   await expect(page.locator("body")).not.toContainText("Other Co");
   await page.reload();
   await expect(page.getByTestId("session-user")).toBeVisible();
+  await expect(page.getByRole("navigation", { name: "Primary navigation" }).getByRole("link", { name: "Review" })).toHaveCount(0);
+  await page.getByTestId("app-shell-header").screenshot({ path: `${shots}/nav-member.png` });
   await page.screenshot({ path: testInfo.outputPath("projects-list.png"), fullPage: true });
   await page.getByRole("link", { name: "Acme O2C Transformation" }).click();
   await expect(page).toHaveURL(`${origin}/projects/${fixtureId("acme-project")}`);
@@ -222,6 +254,8 @@ test("guest sees assigned projects only and cannot open another tenant or create
   await expect(page).toHaveURL(`${origin}/review`);
   await expect(page.getByRole("link", { name: "Acme O2C Transformation" })).toBeVisible();
   await expect(page.getByRole("link", { name: "Reference library" })).toHaveCount(0);
+  await expect(page.getByRole("navigation").getByRole("link", { name: "Review", exact: true })).toBeVisible();
+  await page.getByTestId("app-shell-header").screenshot({ path: `${shots}/nav-guest.png` });
   await page.getByRole("navigation").getByRole("link", { name: "Projects", exact: true }).click();
   await expect(page.locator("[data-action=new-project]")).toHaveCount(0);
   await expect(page.getByRole("list", { name: "Projects" }).getByRole("link")).toHaveCount(1);
@@ -248,7 +282,7 @@ test("a revoked session in another tab cannot reopen protected data", async ({ p
   await credentials(page);
   await page.locator("[data-action=login]").click();
   await expect(page).toHaveURL(`${origin}/projects`);
-  await page.getByRole("navigation").getByRole("link", { name: "Review", exact: true }).click();
+  await page.goto(`${origin}/review`);
   await expect(page).toHaveURL(`${origin}/review`);
   const other = await context.newPage();
   await other.goto(`${origin}/projects`);
@@ -297,23 +331,34 @@ test("route stubs guard project paths, expose no invite token, and reject unknow
   expect(unknown.status()).toBe(404);
 });
 
-async function projectFields(page: Page) {
+async function projectFields(page: Page, hintShot = false) {
   await page.goto(`${origin}/signup`);
   await signupFields(page);
   await page.locator("[data-action=signup]").click();
   await expect(page).toHaveURL(`${origin}/projects`);
   await page.locator("[data-action=new-project]").click();
-  await expect(page.locator("[data-action=create-project]")).toBeDisabled();
+  const save = page.locator("[data-action=create-project]");
+  const hint = page.getByTestId("submit-hint");
+  await expect(save).toBeDisabled();
+  await expect(hint).toBeVisible();
+  for (const label of ["Project name", "Client name", "Problem statement", "Target product"]) await expect(hint).toContainText(label);
+  await expect(save).toHaveAttribute("aria-describedby", (await hint.getAttribute("id"))!);
   await page.getByLabel("Project name", { exact: true }).fill("Order transformation");
   await page.getByLabel("Client name", { exact: true }).fill("Browser client");
+  await page.getByLabel("Problem statement", { exact: true }).fill("Too short!!");
+  await expect(hint).toContainText("Problem statement (at least 50 characters)");
+  await expect(hint).not.toContainText("Project name");
+  if (hintShot) await page.screenshot({ path: `${shots}/new-project-hint.png`, fullPage: true });
   await page.getByLabel("Problem statement", { exact: true }).fill("Our order processing relies on manual spreadsheets and delays deliveries to customers.");
   await page.getByLabel("Target product", { exact: true }).selectOption("S4HANA_CLOUD_PUBLIC");
+  await expect(hint).toHaveCount(0);
+  await expect(save).toBeEnabled();
 }
 
 test("project creation saves details and optional units with one pending submission", async ({ page }, testInfo) => {
   const errors = browserErrors(page);
   await page.setViewportSize({ width: 1024, height: 900 });
-  await projectFields(page);
+  await projectFields(page, true);
   await page.getByLabel("Modules (optional)").fill("SD, MM, SD");
   await page.getByRole("button", { name: "Add organisation unit" }).click();
   await page.getByLabel("Unit 1 type").selectOption("PLANT");

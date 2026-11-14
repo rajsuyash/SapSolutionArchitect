@@ -18,6 +18,7 @@ export const metadata: Metadata = {
 
 export default async function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   const { user } = await getPageSession();
+  const isPlatformAdmin = user !== null && getRuntime().platformAdmin.isAdminEmail(user.email);
   return (
     <html lang="en">
       <body>
@@ -29,9 +30,9 @@ export default async function RootLayout({ children }: Readonly<{ children: Reac
           </Link>
           <nav aria-label="Primary navigation">
             <Link href="/projects">Projects</Link>
-            <Link href="/review">Review</Link>
-            {user && getRuntime().platformAdmin.isAdminEmail(user.email) && <Link href="/admin">Admin</Link>}
-            {(!user || user.orgRole === "ADMIN") && <Link href="/admin/reference-library">Reference library</Link>}
+            {user?.orgRole === "GUEST" && <Link href="/review">Review</Link>}
+            {isPlatformAdmin && <Link href="/admin">Admin</Link>}
+            {isPlatformAdmin && user.orgRole === "ADMIN" && <Link href="/admin/reference-library">Reference library</Link>}
           </nav>
           <SessionMenu user={user ? { name: user.name } : null} />
         </header>

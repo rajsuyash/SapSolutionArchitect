@@ -10,6 +10,24 @@ const subscribeToHydration = () => () => {};
 const hydrated = () => true;
 const serverRendered = () => false;
 
+const FIELD_RULES: Record<string, string> = { password: "at least 10 characters, with a letter and a number", problemStatement: "at least 50 characters" };
+
+// Names the controls that still block submit, derived from live validity. Empty string when the form is valid.
+export function describeInvalidFields(form: HTMLFormElement | null): string {
+  if (!form) return "";
+  const needed = Array.from(form.elements).flatMap((control) => {
+    if (!(control instanceof HTMLInputElement || control instanceof HTMLTextAreaElement || control instanceof HTMLSelectElement)) return [];
+    const { validity } = control;
+    if (validity.valid || control.disabled) return [];
+    const label = control.labels?.[0]?.textContent?.trim() || control.name;
+    if (validity.valueMissing) return [label];
+    const rule = control.name.endsWith(".code") ? "letters, numbers, _ and - only" : control.type === "email" ? "a valid email address"
+      : FIELD_RULES[control.name] ?? (validity.patternMismatch ? "can't be blank" : "check this entry");
+    return [`${label} (${rule})`];
+  });
+  return needed.length ? `Still needed: ${needed.join(", ")}.` : "";
+}
+
 // Protected navigation refreshes both page authorization and the root layout.
 // A Next client navigation can retain the old signed-in header after revocation.
 export function WorkspaceLink(props: ComponentProps<"a"> & { href: string }) {
@@ -22,13 +40,15 @@ export function AuthForm({ mode, destination = "/projects", google = false, goog
   const form = useRef<HTMLFormElement>(null);
   const sending = useRef(false);
   const [valid, setValid] = useState(false);
+  const [hint, setHint] = useState("");
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<FormError | null>(null);
+  const check = () => { setValid(form.current?.checkValidity() ?? false); setHint(describeInvalidFields(form.current)); };
   const fields = signup ? ["name", "email", "password", "orgName"] : ["email", "password"];
   const labels: Record<string, string> = { name: "Full name", email: "Work email", password: "Password", orgName: "Organisation name" };
 
   // Covers restored form values and browser/password-manager autofill.
-  useEffect(() => { setValid(form.current?.checkValidity() ?? false); }, []);
+  useEffect(check, []);
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -65,8 +85,8 @@ export function AuthForm({ mode, destination = "/projects", google = false, goog
     }
   }
 
-  return <form ref={form} onSubmit={submit} onInput={() => setValid(form.current?.checkValidity() ?? false)}
-    onChange={() => setValid(form.current?.checkValidity() ?? false)} onFocus={() => setValid(form.current?.checkValidity() ?? false)} aria-busy={pending}>
+  return <form ref={form} onSubmit={submit} onInput={check}
+    onChange={check} onFocus={check} aria-busy={pending}>
     <fieldset disabled={pending}>
       {fields.map((field) => <div key={field}>
         <label htmlFor={field}>{labels[field]}</label>
@@ -85,9 +105,11 @@ export function AuthForm({ mode, destination = "/projects", google = false, goog
         </p>}
       </div>)}
       {error && !error.field && <p id="auth-error" role="alert" tabIndex={-1} style={errorStyle}>{error.message}</p>}
-      <button className="primary-button" type="submit" disabled={!valid || pending} data-action={mode} data-primary-cta>
+      <button className="primary-button" type="submit" disabled={!valid || pending} data-action={mode} data-primary-cta
+        aria-describedby={hint && !pending ? "submit-hint" : undefined}>
         {pending ? signup ? "Creating account…" : "Signing in…" : signup ? "Create account" : "Sign in"}
       </button>
+      {hint && !pending && <p id="submit-hint" data-testid="submit-hint" className="panel-description" style={{ margin: "12px 0 0" }}>{hint}</p>}
     </fieldset>
     {googleFailed && <p role="alert" style={errorStyle}>Google sign-in didn&apos;t complete. Try again, or use your email and password.</p>}
     {google && <WorkspaceLink className="primary-button google-button" href="/api/auth/google/start" data-action="google">Continue with Google</WorkspaceLink>}

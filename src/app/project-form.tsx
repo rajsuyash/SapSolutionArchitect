@@ -1,7 +1,7 @@
 "use client";
 
-import { useRef, useState, type CSSProperties, type FormEvent } from "react";
-import { WorkspaceLink as Link } from "./auth-ui";
+import { useEffect, useRef, useState, type CSSProperties, type FormEvent } from "react";
+import { WorkspaceLink as Link, describeInvalidFields } from "./auth-ui";
 
 const control: CSSProperties = { width: "100%", padding: 12, border: "1px solid var(--border)", borderRadius: 8,
   background: "var(--surface)", color: "var(--foreground)", font: "inherit", marginBottom: 20 };
@@ -21,7 +21,9 @@ export function ProjectForm() {
   const [uncertain, setUncertain] = useState(false);
   const [valid, setValid] = useState(false);
   const [error, setError] = useState<FormError | null>(null);
-  const check = () => setValid(form.current?.checkValidity() ?? false);
+  const [hint, setHint] = useState("");
+  const check = () => { setValid(form.current?.checkValidity() ?? false); setHint(describeInvalidFields(form.current)); };
+  useEffect(check, []);
   const fieldProps = (name: string) => ({ id: name, name, "aria-invalid": error?.field === name || undefined,
     "aria-describedby": error?.field === name ? "project-error" : undefined });
 
@@ -71,6 +73,8 @@ export function ProjectForm() {
     }
   }
 
+  const showHint = Boolean(hint) && !pending && !uncertain;
+
   return <form ref={form} onSubmit={submit} onInput={check} onChange={check} onFocus={check} aria-busy={pending}>
     <fieldset disabled={pending || uncertain}>
       <label htmlFor="name">Project name</label><input {...fieldProps("name")} required maxLength={160} pattern=".*\S.*" />
@@ -98,12 +102,14 @@ export function ProjectForm() {
         <label htmlFor={`orgUnits.${index}.name`}>Unit {index + 1} name</label><input {...fieldProps(`orgUnits.${index}.name`)} required maxLength={160} pattern=".*\S.*" />
         <button type="button" style={secondary} onClick={() => { setUnits((value) => value.filter((item) => item !== id)); requestAnimationFrame(check); }}>Remove unit {index + 1}</button>
       </fieldset>)}
-      <button type="button" style={secondary} disabled={units.length >= 50} onClick={() => { setUnits((value) => [...value, nextUnit.current++]); setValid(false); }}>Add organisation unit</button>
+      <button type="button" style={secondary} disabled={units.length >= 50} onClick={() => { setUnits((value) => [...value, nextUnit.current++]); setValid(false); requestAnimationFrame(check); }}>Add organisation unit</button>
     </fieldset>
     {error && <p id="project-error" role="alert" tabIndex={-1} style={{ color: "#a32626", lineHeight: 1.5 }}>{error.message}
       {error.signin && <> <Link href="/login" target="_blank" rel="noopener">Sign in in a new tab, then retry here</Link></>}</p>}
     <button type="submit" className="primary-button" data-primary-cta data-action="create-project" style={{ marginTop: 24 }}
-      disabled={pending || (!uncertain && !valid)}>{pending ? "Saving project…" : uncertain ? "Retry save" : "Save project"}</button>
+      disabled={pending || (!uncertain && !valid)} aria-describedby={showHint ? "submit-hint" : undefined}>
+      {pending ? "Saving project…" : uncertain ? "Retry save" : "Save project"}</button>
+    {showHint && <p id="submit-hint" data-testid="submit-hint" className="panel-description" style={{ margin: "12px 0 0" }}>{hint}</p>}
     <p className="signup-link"><Link href="/projects">Back to projects</Link></p>
   </form>;
 }
