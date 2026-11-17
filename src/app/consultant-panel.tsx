@@ -187,12 +187,13 @@ export function ConsultantPanel({ projectId }: { projectId: string }) {
   const failedCode = jobs[0]?.status === "FAILED" ? jobs[0].error?.code : null;
   const support = needsSupport(errorCode) || needsSupport(failedCode);
   const blocked = isAccountBlocked(errorCode) || isAccountBlocked(failedCode); // asking again cannot lift a trial or suspension
-  const summaryBadge = state ? state.proposals.filter(item => item.status === "PENDING").length + state.observations.filter(item => item.status === "PENDING").length : 0;
   const proposalCount = state?.proposals.filter(item => item.status === "PENDING").length ?? 0;
+  const pointCount = state?.observations.filter(item => item.status === "PENDING").length ?? 0;
+  const summaryBadge = proposalCount + pointCount;
   /** Narrow screens show one tab at a time; wide screens show both, so this only moves focus to the proposals. */
   function reviewProposals() {
     setTab("summary");
-    requestAnimationFrame(() => document.getElementById("proposals-heading")?.focus());
+    requestAnimationFrame(() => (document.getElementById("proposals-heading") ?? document.getElementById("observations-heading"))?.focus());
   }
   function tabKeys(event: KeyboardEvent) {
     if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
@@ -226,7 +227,7 @@ export function ConsultantPanel({ projectId }: { projectId: string }) {
           <ConsultantChat problem={state.problemStatement} messages={state.messages} questions={state.questions}
             waiting={busy && jobs[0]?.kind === "INTERVIEW"} canEdit={workspace.canEdit} error={error}
             needsRetry={lastMessage?.role === "user" && !busy && !pending && !blocked}
-            proposalCount={proposalCount} onReview={reviewProposals}
+            proposalCount={proposalCount} pointCount={pointCount} onReview={reviewProposals}
             failure={failedJob?.error?.message ?? null} support={support} onSend={sendMessage} onRetry={() => void retryReply()} />
         </section>
         <section id="pane-summary" role="tabpanel" aria-labelledby="tab-summary" className={styles.summaryPane} aria-label="Summary">

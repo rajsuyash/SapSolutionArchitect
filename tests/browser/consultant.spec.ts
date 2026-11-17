@@ -59,6 +59,7 @@ async function withWorker(work: () => Promise<void>) {
 
 const phase3a = "test-results/phase3a";
 const phase3b = "test-results/phase3b";
+const phase3c = "test-results/phase3c";
 const SNAPSHOT = "00000000-0000-4000-8000-000000000001";
 /** Presents the conversation as confirmed with gaps (and its To-Be jobs as given) by rewriting the two read responses only.
  * Reaching "confirmed" through the real UI takes a full discovery walk-through, which the first test already covers end to end;
@@ -421,9 +422,13 @@ test.describe("small screens", () => {
     await withWorker(async () => {
       await say(page, firstMessage, 1);
       const pointer = page.getByTestId("review-pointer");
-      await expect(pointer).toContainText(/^1 proposed answer is waiting for your review\./, { timeout: 15000 });
+      await expect(pointer).toContainText(/^1 proposed answer and 1 point to check are waiting for your review\./, { timeout: 15000 });
+      // The pointer's numbers add up to the tab's number (one pending proposal plus one pending point to check).
+      await expect(page.getByRole("tab", { name: /^Summary \(2 to review\)$/ })).toBeVisible();
       mkdirSync(phase3b, { recursive: true });
       await page.screenshot({ path: `${phase3b}/chat-pointer-390.png`, fullPage: true });
+      mkdirSync(phase3c, { recursive: true });
+      await page.screenshot({ path: `${phase3c}/pointer-both-390.png`, fullPage: true });
       await pointer.getByRole("button", { name: "Review them", exact: true }).click();
       await expect(page.getByRole("tab", { name: /^Summary/ })).toHaveAttribute("aria-selected", "true");
       await expect(page.getByRole("heading", { name: "Proposed answers to review" })).toBeFocused();
@@ -433,7 +438,9 @@ test.describe("small screens", () => {
       await page.getByTestId("proposal").getByRole("button", { name: "Accept", exact: true }).click();
       await expect(page.getByTestId("progress")).not.toContainText("waiting for your review");
       await page.getByRole("tab", { name: /^Chat/ }).click();
-      await expect(page.getByTestId("review-pointer")).toHaveCount(0);
+      // The point to check is still pending, so the pointer stays and now names only it; the tab agrees.
+      await expect(page.getByTestId("review-pointer")).toContainText(/^1 point to check is waiting for your review\./);
+      await expect(page.getByRole("tab", { name: /^Summary \(1 to review\)$/ })).toBeVisible();
     });
   });
 

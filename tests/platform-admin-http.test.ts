@@ -148,7 +148,7 @@ describe.skipIf(process.env.RUN_DB_TESTS !== "1")("platform admin HTTP boundary"
       expect(pricing).toEqual({ inputUsdPerMTok: 2, outputUsdPerMTok: 10, models: 0 });
       const byName = Object.fromEntries(organizations.map((o: { name: string }) => [o.name, o]));
       expect(byName.Alpha).toMatchObject({ id: alpha, userCount: 3, projectCount: 2, jobsToday: 3, jobs30d: 4,
-        inputTokens30d: 3_500_000, outputTokens30d: 150_000, dailyAiJobQuota: 10, suspendedAt: null });
+        inputTokens30d: 3_500_000, outputTokens30d: 150_000, dailyAiJobQuota: 30, suspendedAt: null });
       expect(byName.Alpha.estimatedCostUsd30d).toBeCloseTo(8.5, 6); // 3.5 * $2 + 0.15 * $10
       expect(byName.Beta).toMatchObject({ id: beta, userCount: 1, projectCount: 1, jobsToday: 1, jobs30d: 1,
         inputTokens30d: 1_000_000, outputTokens30d: 1_000_000 });
@@ -179,8 +179,8 @@ describe.skipIf(process.env.RUN_DB_TESTS !== "1")("platform admin HTTP boundary"
         expect((await org(beta)).trial_ends_at).not.toBeNull(); // signup default: 14-day trial
         const first = await patch(beta, { trialEndsAt: null });
         expect(first.status).toBe(200);
-        expect(first.body.data.organization).toEqual({ id: beta, trialEndsAt: null, dailyAiJobQuota: 10, suspendedAt: null });
-        expect(await org(beta)).toMatchObject({ trial_ends_at: null, daily_ai_job_quota: 10, suspended_at: null });
+        expect(first.body.data.organization).toEqual({ id: beta, trialEndsAt: null, dailyAiJobQuota: 30, suspendedAt: null });
+        expect(await org(beta)).toMatchObject({ trial_ends_at: null, daily_ai_job_quota: 30, suspended_at: null });
         const second = await patch(beta, { trialEndsAt: "2030-03-04", dailyAiJobQuota: 250, suspended: true });
         expect(second.body.data.organization).toMatchObject({ trialEndsAt: "2030-03-04T23:59:59.999Z", dailyAiJobQuota: 250 });
         const stored = await org(beta);

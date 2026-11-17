@@ -155,7 +155,7 @@ describe.skipIf(process.env.RUN_DB_TESTS !== "1")("migration 0008 on a database 
 
     expect((await db.query("SELECT version FROM sap_pm_migrations ORDER BY version")).rows.at(-1)!.version).toBe(files.at(-1));
     const existing = (await db.query("SELECT trial_ends_at,daily_ai_job_quota,suspended_at FROM organizations WHERE id=$1", [org])).rows[0];
-    expect(existing).toEqual({ trial_ends_at: null, daily_ai_job_quota: 10, suspended_at: null });
+    expect(existing).toEqual({ trial_ends_at: null, daily_ai_job_quota: 30, suspended_at: null });
     const fresh = (await db.query(`INSERT INTO organizations(id,name) VALUES($1,'Fresh') RETURNING
       extract(epoch FROM trial_ends_at-clock_timestamp()) AS seconds`, [randomUUID()])).rows[0];
     // "14 days" is calendar arithmetic in the session time zone, so a DST change adds or removes an hour.

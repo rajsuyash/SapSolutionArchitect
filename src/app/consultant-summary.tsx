@@ -46,8 +46,12 @@ function Collapsible({ id, title, figure, recorded, hint, children }: { id: stri
 }
 
 const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? "" : "s"}`;
-/** Shared by the Summary headline and the chat pointer so both say the same thing. */
-export const waitingCopy = (count: number) => `${plural(count, "proposed answer")} ${count === 1 ? "is" : "are"} waiting for your review.`;
+/** Shared by the Summary headline and the chat pointer so both say the same thing. The pointer also names the pending
+ * "points to check", so its numbers add up to the Summary tab's count. */
+export const waitingCopy = (answers: number, points = 0) => {
+  const parts = [answers > 0 && plural(answers, "proposed answer"), points > 0 && `${plural(points, "point")} to check`].filter(Boolean);
+  return `${parts.join(" and ")} ${answers + points === 1 ? "is" : "are"} waiting for your review.`;
+};
 const BLOCKER_PREVIEW = 3;
 /** The project's problem statement is copied into "Business problem" when the conversation is created, so it says nothing about
  * whether the person has started answering and must not, on its own, open a section. */
