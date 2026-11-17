@@ -13,7 +13,9 @@ const metrics = (stage: "interview_turn" | "extraction_turn" | "to_be") => ({ st
 function interviewTurn(input: InterviewInput) {
   const message = input.currentMessage;
   const quote = message.text.split(/(?<=\.)\s/)[0]!.trim();
-  const first = input.history.length === 0;
+  // "First" means no earlier user message. Not an empty history: the chat job and the extraction job run concurrently, so the
+  // assistant's reply may or may not be recorded yet when extraction reads the state, and that must not change what is proposed.
+  const first = !input.history.some(item => item.role === "user");
   const open = input.fields.find(field => field.id === "current_systems" && field.status === "EMPTY");
   // A walkthrough message (marked by its first sentence) also yields an interviewer-proposed step and requirement:
   // the 2nd sentence becomes the step, the 3rd a pain point on it. `new_0` is that step within this turn.

@@ -25,7 +25,7 @@ function setFact(state: WorkspaceView, fieldId: string, update: FactUpdate): Com
 
 function Section({ id, title, children, hint }: { id: string; title: string; children: ReactNode; hint?: string }) {
   return <section aria-labelledby={id} className={styles.section}>
-    <h3 id={id}>{title}</h3>{hint && <p className={styles.muted}>{hint}</p>}{children}
+    <h3 id={id} tabIndex={-1}>{title}</h3>{hint && <p className={styles.muted}>{hint}</p>}{children}
   </section>;
 }
 
@@ -46,6 +46,8 @@ function Collapsible({ id, title, figure, recorded, hint, children }: { id: stri
 }
 
 const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? "" : "s"}`;
+/** Shared by the Summary headline and the chat pointer so both say the same thing. */
+export const waitingCopy = (count: number) => `${plural(count, "proposed answer")} ${count === 1 ? "is" : "are"} waiting for your review.`;
 const BLOCKER_PREVIEW = 3;
 /** The project's problem statement is copied into "Business problem" when the conversation is created, so it says nothing about
  * whether the person has started answering and must not, on its own, open a section. */
@@ -76,7 +78,7 @@ function GenerationProgress() {
   useEffect(() => { const timer = setInterval(() => setNow(Date.now()), PROGRESS_TICK_MS); return () => clearInterval(timer); }, []);
   return <>
     <p id="to-be-status" role="status" data-testid="to-be-status" data-state="RUNNING">Generating the To-Be design from your confirmed understanding. This usually takes several minutes. You can leave this page and return.</p>
-    <p className={styles.muted} data-testid="to-be-elapsed">{duration(now - since)} watched on this page so far.</p>
+    <p className={styles.muted} data-testid="to-be-elapsed">Waiting on this page for {duration(now - since)}.</p>
   </>;
 }
 
@@ -124,8 +126,8 @@ export function ConsultantSummary({ workspace, jobs, locked, run, onGenerate, re
     {readiness && <p className={styles.headline} role="status" data-testid="progress">
       {readiness.ready ? "Everything needed is answered." : draftConfirmed
         ? `Confirmed as a draft: ${plural(blockers.length, "open item")} carried into the To-Be as open questions.`
-        : `${plural(blockers.length, "thing")} still needed before you can confirm.`}</p>}
-    <Section id="readiness-heading" title="Ready to confirm?">
+        : `${plural(blockers.length, "thing")} still needed before you can confirm.${pending.length ? ` ${waitingCopy(pending.length)}` : ""}`}</p>}
+    <Section id="readiness-heading" title={confirmed ? "Confirmed" : "Ready to confirm?"}>
       {readiness?.ready
         ? <p role="status" className={styles.ok}>Everything required is answered. {confirmed ? "You have confirmed this understanding." : "Review it once more, then confirm."}</p>
         : <><p>{draftConfirmed ? "Open items carried into the To-Be:" : "Still needed before this can be confirmed:"}</p>

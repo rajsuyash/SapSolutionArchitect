@@ -13,7 +13,7 @@
     "start": "next start --hostname 0.0.0.0",
     "typecheck": "tsc --noEmit",
     "lint": "eslint . --max-warnings 0",
-    "test": "vitest run --exclude 'tests/browser/**'",
+    "test": "vitest run --exclude 'tests/browser/**' --exclude '.claude/**'",
     "test:browser": "playwright test tests/browser",
     "test:browser:synthetic": "node --import tsx scripts/test-browser.ts",
     "test:infra": "RUN_INFRA_TESTS=1 vitest run tests/infrastructure.test.ts",

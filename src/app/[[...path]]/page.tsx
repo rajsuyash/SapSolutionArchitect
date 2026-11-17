@@ -30,11 +30,12 @@ function Panel({ title, children, wide = false }: { title: string; children: Rea
 
 const statusLabel = (status: string) => status === "ACTIVE" ? "Active" : status === "SCOPE_PROPOSED" ? "Scope proposed" : "Draft";
 
-/** Where a project stands. Only the scope step has a completion signal on the project record, so only it is ever marked done. */
-function ProjectSteps({ projectId, current, scoped }: { projectId: string; current: 1 | 2; scoped: boolean }) {
+/** Where a project stands. Scope is done once the project is no longer a draft; mapping is done once the first variant is confirmed.
+ * The To-Be step has no completion signal here, so it is never marked done. */
+function ProjectSteps({ projectId, current, scoped, mapped }: { projectId: string; current: 1 | 2; scoped: boolean; mapped: boolean }) {
   const steps = [
     { label: "Scope the problem", href: `/projects/${projectId}`, done: scoped },
-    { label: "Map the current process", href: `/projects/${projectId}/consultant`, done: false },
+    { label: "Map the current process", href: `/projects/${projectId}/consultant`, done: mapped },
     { label: "Design the To-Be", done: false },
   ];
   return <ol className="steps" aria-label="Project steps">{steps.map((step, index) =>
@@ -44,13 +45,18 @@ function ProjectSteps({ projectId, current, scoped }: { projectId: string; curre
     </li>)}</ol>;
 }
 
+type FirstVariant = Awaited<ReturnType<ReturnType<typeof getRuntime>["workspaces"]["list"]>>[number] | undefined;
+/** The project's first process variant; a failed lookup reads as "none yet" so the steps and next step fall back to not-done. */
+async function firstVariant(token: string | null, projectId: string): Promise<FirstVariant> {
+  try { return (await getRuntime().workspaces.list(token, projectId))[0]; } catch { return undefined; }
+}
+
 /** The overview's next step follows the guided conversation: its first variant, whether it is confirmed, and its latest To-Be job.
  * A failed lookup only costs the progress wording; the overview falls back to the default step. */
-async function nextStep(token: string | null, projectId: string, guest: boolean): Promise<{ href: string; label: string }> {
+async function nextStep(token: string | null, projectId: string, guest: boolean, variant: FirstVariant): Promise<{ href: string; label: string }> {
   const consultant = `/projects/${projectId}/consultant`;
   const fallback = { href: consultant, label: guest ? "Next: view the current process" : "Next: map the current process" };
   try {
-    const variant = (await getRuntime().workspaces.list(token, projectId))[0];
     if (!variant) return fallback;
     if (!variant.confirmedSnapshotId) return { href: consultant, label: guest ? fallback.label : "Next: continue mapping the current process" };
     const toBe = (await getRuntime().consultantJobs.latest(token, projectId, variant.variantCode)).jobs.find(job => job.kind === "TO_BE");
@@ -108,9 +114,10 @@ export default async function WorkspacePage({ params }: Props) {
   if (project) {
     if (path.length === 3 && path[2] === "consultant") {
       // Data loads in the browser from the authorized API so the page resumes from server state on every visit.
+      const first = await firstVariant(token, project.id);
       return <Panel title="Discovery conversation" wide>
         <p className="eyebrow">{project.name}</p>
-        <ProjectSteps projectId={project.id} current={2} scoped={project.setupStatus !== "DRAFT"} />
+        <ProjectSteps projectId={project.id} current={2} scoped={project.setupStatus !== "DRAFT"} mapped={!!first?.confirmedSnapshotId} />
         <ConsultantPanel projectId={project.id} />
         <p className="signup-link"><Link href={`/projects/${project.id}/discovery`}>Enter process details manually instead</Link>
           {" · "}<Link href={`/projects/${project.id}`}>Back to project overview</Link></p>
@@ -146,20 +153,22 @@ export default async function WorkspacePage({ params }: Props) {
         if (isAuthError(error) && error.status === 404) notFound();
         return <Panel title="Could not load discovery"><p>Please try again.</p><a href={route}>Retry</a></Panel>;
       }
+      const first = await firstVariant(token, project.id);
       return <Panel title="Detailed process discovery">
         <p className="eyebrow">{project.name}</p>
-        <ProjectSteps projectId={project.id} current={2} scoped={project.setupStatus !== "DRAFT"} />
+        <ProjectSteps projectId={project.id} current={2} scoped={project.setupStatus !== "DRAFT"} mapped={!!first?.confirmedSnapshotId} />
         <DiscoveryPanel projectId={project.id} initialVariants={variants} canCreate={canEdit} />
         <p className="signup-link"><Link href={`/projects/${project.id}/consultant`}>Describe the process in a conversation instead</Link>
           {" · "}<Link href={`/projects/${project.id}`}>Back to project overview</Link></p>
       </Panel>;
     }
     if (path.length !== 2) notFound(); // Unimplemented pages cannot bypass project authorization.
+    const first = await firstVariant(token, project.id);
     return <Panel title={project.name}>
       <p className="eyebrow">Project overview</p>
       <p className="panel-description">{project.clientName} · {statusLabel(project.setupStatus)}</p>
-      <ProjectSteps projectId={project.id} current={1} scoped={project.setupStatus !== "DRAFT"} />
-      <AnalysisPanel projectId={project.id} next={await nextStep(token, project.id, user.orgRole === "GUEST")} />
+      <ProjectSteps projectId={project.id} current={1} scoped={project.setupStatus !== "DRAFT"} mapped={!!first?.confirmedSnapshotId} />
+      <AnalysisPanel projectId={project.id} next={await nextStep(token, project.id, user.orgRole === "GUEST", first)} />
       <h2 style={{ fontSize: 22 }}>Detailed process discovery</h2>
       <p className="panel-description">Capture current steps, source notes and future requirements before designing the To-Be process.</p>
       <p><Link href={`/projects/${project.id}/consultant`}>Describe the process in a guided conversation</Link> (recommended)</p>

@@ -58,6 +58,7 @@ async function withWorker(work: () => Promise<void>) {
 }
 
 const phase3a = "test-results/phase3a";
+const phase3b = "test-results/phase3b";
 const SNAPSHOT = "00000000-0000-4000-8000-000000000001";
 /** Presents the conversation as confirmed with gaps (and its To-Be jobs as given) by rewriting the two read responses only.
  * Reaching "confirmed" through the real UI takes a full discovery walk-through, which the first test already covers end to end;
@@ -304,6 +305,14 @@ test("a consultant conversation builds, confirms and generates from reviewed dis
     await expect(page.getByRole("heading", { level: 1, name: /^To-Be design report/ })).toBeVisible();
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
     await page.screenshot({ path: `${shots}/report-mobile.png`, fullPage: true });
+
+    // A server-rendered page sees the confirmation: the overview and the conversation page both mark mapping done.
+    for (const href of [`${origin}/projects/${id}`, `${origin}/projects/${id}/consultant`]) {
+      await page.goto(href);
+      const mapping = page.getByRole("list", { name: "Project steps" }).getByRole("listitem").filter({ hasText: "Map the current process" });
+      await expect(mapping).toContainText("(done)");
+      await expect(page.getByRole("list", { name: "Project steps" }).getByRole("listitem").filter({ hasText: "Design the To-Be" })).not.toContainText("(done)");
+    }
   });
   expect(errors).toEqual([]);
 });
@@ -405,6 +414,29 @@ test.describe("small screens", () => {
     });
   });
 
+  test("proposed answers waiting in the Summary are pointed to from the chat, and the headline says so", async ({ page }) => {
+    test.setTimeout(90000);
+    await setup(page);
+    await startConversation(page);
+    await withWorker(async () => {
+      await say(page, firstMessage, 1);
+      const pointer = page.getByTestId("review-pointer");
+      await expect(pointer).toContainText(/^1 proposed answer is waiting for your review\./, { timeout: 15000 });
+      mkdirSync(phase3b, { recursive: true });
+      await page.screenshot({ path: `${phase3b}/chat-pointer-390.png`, fullPage: true });
+      await pointer.getByRole("button", { name: "Review them", exact: true }).click();
+      await expect(page.getByRole("tab", { name: /^Summary/ })).toHaveAttribute("aria-selected", "true");
+      await expect(page.getByRole("heading", { name: "Proposed answers to review" })).toBeFocused();
+      await expect(page.getByTestId("proposal")).toBeVisible();
+      await expect(page.getByTestId("progress")).toContainText(/still needed before you can confirm\. 1 proposed answer is waiting for your review\.$/);
+      await page.screenshot({ path: `${phase3b}/summary-headline-pending-390.png` });
+      await page.getByTestId("proposal").getByRole("button", { name: "Accept", exact: true }).click();
+      await expect(page.getByTestId("progress")).not.toContainText("waiting for your review");
+      await page.getByRole("tab", { name: /^Chat/ }).click();
+      await expect(page.getByTestId("review-pointer")).toHaveCount(0);
+    });
+  });
+
   test("the fresh summary fits the screen with its sections folded and open", async ({ page }) => {
     test.setTimeout(60000);
     await setup(page);
@@ -426,6 +458,10 @@ test.describe("small screens", () => {
     await expect(progress).toContainText(/^Confirmed as a draft: \d+ open items? carried into the To-Be as open questions\.$/);
     await expect(progress).not.toContainText("before you can confirm");
     const summary = page.getByRole("tabpanel", { name: "Summary" });
+    await expect(summary.getByRole("heading", { name: "Confirmed", level: 3 })).toBeVisible();
+    await expect(summary.getByRole("heading", { name: "Ready to confirm?" })).toHaveCount(0);
+    mkdirSync(phase3b, { recursive: true });
+    await page.screenshot({ path: `${phase3b}/confirmed-heading-390.png` });
     await expect(summary.getByText("Open items carried into the To-Be:")).toBeVisible();
     await expect(summary.getByText("Still needed before this can be confirmed:")).toHaveCount(0);
     await expect(summary.getByRole("button", { name: "Confirmed", exact: true })).toBeDisabled();
@@ -466,7 +502,7 @@ test.describe("small screens", () => {
     const status = page.getByTestId("to-be-status");
     await expect(status).toContainText("This usually takes several minutes");
     const elapsed = page.getByTestId("to-be-elapsed");
-    await expect(elapsed).toHaveText(/^\d+ s watched on this page so far\.$/);
+    await expect(elapsed).toHaveText(/^Waiting on this page for \d+ s\.$/);
     expect(await status.locator("[data-testid=to-be-elapsed]").count()).toBe(0); // the ticking figure is outside the live region
     const first = await elapsed.innerText();
     await expect.poll(() => elapsed.innerText(), { timeout: 15000 }).not.toBe(first);

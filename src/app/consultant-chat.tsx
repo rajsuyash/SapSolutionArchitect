@@ -2,13 +2,14 @@
 
 import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
 import type { WorkspaceView } from "./consultant-api";
+import { waitingCopy } from "./consultant-summary";
 import styles from "./consultant.module.css";
 import { SupportLink } from "./support";
 
 type Message = WorkspaceView["messages"][number];
 type Question = WorkspaceView["questions"][number];
 type Props = { problem: string; messages: Message[]; questions: Question[]; waiting: boolean; canEdit: boolean;
-  needsRetry: boolean; failure: string | null; error: string; support: boolean; onSend: (text: string) => Promise<boolean>; onRetry: () => void };
+  needsRetry: boolean; proposalCount: number; onReview: () => void; failure: string | null; error: string; support: boolean; onSend: (text: string) => Promise<boolean>; onRetry: () => void };
 
 /** The stored reply is "acknowledgement\n\nquestion why-it-matters\n\n…". Re-pair each paragraph with its question. */
 function ConsultantMessage({ message, questions }: { message: Message; questions: Question[] }) {
@@ -25,7 +26,7 @@ function ConsultantMessage({ message, questions }: { message: Message; questions
   </>;
 }
 
-export function ConsultantChat({ problem, messages, questions, waiting, canEdit, needsRetry, failure, error, support, onSend, onRetry }: Props) {
+export function ConsultantChat({ problem, messages, questions, waiting, canEdit, needsRetry, proposalCount, onReview, failure, error, support, onSend, onRetry }: Props) {
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
   const input = useRef<HTMLTextAreaElement>(null);
@@ -67,6 +68,10 @@ export function ConsultantChat({ problem, messages, questions, waiting, canEdit,
     {error && <div role="alert" className={styles.alert}><p>{error}</p>{support && <p><SupportLink /></p>}</div>}
     {support && !failure && !error && <p className={styles.notice}>Need help with this? <SupportLink /></p>}
     {needsRetry && canEdit && <button type="button" className={styles.small} onClick={onRetry}>Ask the consultant to reply again</button>}
+    {proposalCount > 0
+      ? <p className={styles.notice} data-testid="review-pointer">{waitingCopy(proposalCount)} <button type="button" className={styles.small} onClick={onReview}>Review them</button></p>
+      : !waiting && messages.at(-1)?.role === "assistant" && !messages.at(-1)!.text.includes("\n\n")
+        && <p className={styles.notice} data-testid="next-hint">The consultant has no new questions. Answer in your own words below, or open the Summary to fill in items directly.</p>}
     {canEdit ? <form onSubmit={(event) => void submit(event)} className={styles.composer}>
       <label htmlFor="consultant-message">Your message</label>
       <textarea id="consultant-message" ref={input} value={text} onChange={(e) => setText(e.target.value)} onKeyDown={onKey}
