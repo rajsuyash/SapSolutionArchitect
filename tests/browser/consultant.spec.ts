@@ -60,6 +60,7 @@ async function withWorker(work: () => Promise<void>) {
 const phase3a = "test-results/phase3a";
 const phase3b = "test-results/phase3b";
 const phase3c = "test-results/phase3c";
+const phase4e = "test-results/phase4e";
 const phase4b = "test-results/phase4b";
 const SNAPSHOT = "00000000-0000-4000-8000-000000000001";
 /** Presents the conversation as confirmed with gaps (and its To-Be jobs as given) by rewriting the two read responses only.
@@ -497,6 +498,37 @@ test.describe("small screens", () => {
       // The point to check is still pending, so the pointer stays and now names only it; the tab agrees.
       await expect(page.getByTestId("review-pointer")).toContainText(/^1 point to check is waiting for your review\./);
       await expect(page.getByRole("tab", { name: /^Summary \(1 to review\)$/ })).toBeVisible();
+    });
+  });
+
+  test("a substantial message that yields nothing is said so in the chat, and a short one or a fruitful one is not", async ({ page }) => {
+    test.setTimeout(90000);
+    await setup(page);
+    await startConversation(page);
+    const notice = page.getByTestId("nothing-recorded");
+    await withWorker(async () => {
+      // The first message yields proposals: no notice.
+      await say(page, firstMessage, 1);
+      await expect(page.getByTestId("review-pointer")).toBeVisible({ timeout: 15000 });
+      await expect(notice).toHaveCount(0);
+      mkdirSync(phase4e, { recursive: true });
+      await page.screenshot({ path: `${phase4e}/normal-390.png`, fullPage: true });
+      await page.setViewportSize({ width: 1440, height: 900 });
+      await page.screenshot({ path: `${phase4e}/normal-1440.png`, fullPage: true });
+      await page.setViewportSize({ width: 390, height: 844 });
+      // A long second message yields nothing once extraction has finished: the notice appears, with a way forward.
+      await say(page, "Dispatch also keeps a separate paper log at the gate, which the yard supervisor fills in by hand when a truck leaves, and nobody reads it afterwards.", 2);
+      await expect(notice).toContainText(/^Nothing was recorded from your last message\./, { timeout: 15000 });
+      await expect(notice).toContainText("Summary tab");
+      await page.screenshot({ path: `${phase4e}/nothing-recorded-390.png`, fullPage: true });
+      await page.setViewportSize({ width: 1440, height: 900 });
+      await page.screenshot({ path: `${phase4e}/nothing-recorded-1440.png`, fullPage: true });
+      await page.setViewportSize({ width: 390, height: 844 });
+      // A short reply that also yields nothing gets no notice, and the old one goes with the message it was about.
+      await say(page, "Yes.", 3);
+      await expect(page.getByTestId("message-assistant")).toHaveCount(3);
+      await page.waitForTimeout(3000); // let its (empty) extraction finish
+      await expect(notice).toHaveCount(0);
     });
   });
 

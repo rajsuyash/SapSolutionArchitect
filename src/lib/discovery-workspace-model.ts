@@ -69,6 +69,8 @@ export const WorkspaceStateSchema = z.strictObject({
   /** User messages whose extraction (proposals) is recorded, so a retried or replayed extraction is a no-op. Absent in
    * workspaces saved before extraction became a separate step. */
   extractedMessageIds: z.array(id).max(1000).optional(),
+  /** The subset of those whose extraction recorded nothing at all (no proposal, no observation), so the chat can say so. Absent on older workspaces. */
+  emptyExtractionMessageIds: z.array(id).max(1000).optional(),
   confirmation: ConfirmationSchema.nullable(),
 });
 export type WorkspaceState = z.infer<typeof WorkspaceStateSchema>;
@@ -445,6 +447,9 @@ export function recordInterviewTurn(rawState: WorkspaceState, rawTurn: unknown, 
   }
   const userTurn = state.messages.filter(m => m.role === "user").length;
   if (scope !== "chat") state.extractedMessageIds = [...(state.extractedMessageIds ?? []), currentMessageId];
+  if (scope !== "chat" && !turn.proposedUpdates.length && !turn.proposedSteps.length && !turn.proposedRequirements.length && !turn.observations.length) {
+    state.emptyExtractionMessageIds = [...(state.emptyExtractionMessageIds ?? []), currentMessageId];
+  }
   // One question may cover several field gaps of one step: each covered gap is recorded as asked (so none is offered again).
   for (const { gapKeys, ...question } of turn.questions) for (const gapKey of [question.gapKey, ...(gapKeys ?? [])]) {
     state.questions.push({ ...question, gapKey, fieldId: input.activeGaps.find(g => g.key === gapKey)!.fieldId,

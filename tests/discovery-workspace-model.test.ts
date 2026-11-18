@@ -470,6 +470,33 @@ describe("discovery workspace model", () => {
     }
   });
 
+  it("notes a message whose extraction recorded nothing, and only then", () => {
+    let state = start();
+    const first = meta(), second = meta(), third = meta();
+    for (const [m, text] of [[first, "We use Tally for finance."], [second, "Nothing else changed."], [third, "Credit is checked by phone."]] as const) {
+      state = applyWorkspaceCommand(state, { type: "SEND_MESSAGE", text }, m);
+    }
+    const found = { proposedUpdates: [{ fieldId: "current_systems", operation: "PROPOSE_SET", previousValue: null, sourceId: first.id,
+      quote: "We use Tally for finance.", value: "We use Tally for finance." }], observations: [] };
+    const none = { proposedUpdates: [], observations: [] };
+    // A chat turn never says anything about extraction.
+    state = recordInterviewTurn(state, { ...none, questions: ask() }, first.id, meta(), "chat");
+    expect(state.emptyExtractionMessageIds ?? []).toEqual([]);
+    state = recordInterviewTurn(state, found, first.id, meta(), "extraction");
+    expect(state.emptyExtractionMessageIds ?? []).toEqual([]); // recorded a proposal
+    state = recordInterviewTurn(state, none, second.id, meta(), "extraction");
+    expect(state.emptyExtractionMessageIds).toEqual([second.id]);
+    // An observation alone counts as something recorded.
+    state = recordInterviewTurn(state, { proposedUpdates: [], observations: [{ kind: "FOLLOW_UP_SUGGESTION", fieldIds: ["current_systems"],
+      detail: "Check how credit is checked." }] }, third.id, meta(), "extraction");
+    expect(state.emptyExtractionMessageIds).toEqual([second.id]);
+    expect(state.extractedMessageIds).toEqual([first.id, second.id, third.id]);
+    // Older rows, saved without the field, still parse.
+    const older = { ...state };
+    delete older.emptyExtractionMessageIds;
+    expect(WorkspaceStateSchema.safeParse(older).success).toBe(true);
+  });
+
   it("records the chat half and the extraction half of a turn separately, and extracts each message once", () => {
     let state = start();
     const m = meta();

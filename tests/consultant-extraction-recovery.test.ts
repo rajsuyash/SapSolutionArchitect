@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { Pool } from "pg";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { failureCode, missedExtractions, runExtractionJob, summarizeExtraction, extractionLogEvent } from "../src/lib/consultant-extraction";
+import { failureCode, missedExtractions, runExtractionJob, summarizeExtraction, extractionLogEvent, inputShape } from "../src/lib/consultant-extraction";
 import type { createStageRunner } from "../src/lib/ai/runStage";
 
 const users = (n: number) => Array.from({ length: n }, (_, i) => [{ id: `u${i + 1}`, role: "user" }, { id: `a${i + 1}`, role: "assistant" }]).flat();
@@ -83,10 +83,35 @@ describe("extractionLogEvent / runExtractionJob logging", () => {
     expect(await runExtractionJob({} as Pool, runner, { id: jobId, data: { nope: 1 } }, new AbortController().signal, 5)).toBeUndefined();
     expect(JSON.parse(log.mock.calls[0]![0] as string)).toEqual({ event: "extraction_skipped", jobId, durationMs: expect.any(Number), reason: "invalid_job_payload" });
   });
+  const marker = "SECRET_MARKER_TEXT";
+  const shape = { steps: 2, fields: 3, emptyFields: 1, pendingFields: 1, requirements: 4, currentSentences: 2, evidenceSentences: 3, totalSentences: 5, messageChars: 40 };
+  const recorded = (metrics: object) => ({ status: "RECORDED" as const, metrics: metrics as never, inputShape: shape, proposalsAdded: 0, observationsAdded: 0,
+    summary: summarizeExtraction({ proposedUpdates: [], proposedSteps: [], proposedRequirements: [], observations: [] }, undefined) });
+  it("logs provider diagnostics and the input shape as numbers", () => {
+    const event = extractionLogEvent("j1", 5, recorded({ provider: "deepinfra", model: "m1", inputTokens: 10, outputTokens: 2, attempts: 2, providerRetries: 1,
+      stopReasons: ["tool_use", null, `ignore ${marker}`, "length"], textFallbacks: 1, validationErrors: [{ path: marker, code: "x", detail: marker }, { path: "b", code: "y" }] }));
+    expect(event).toMatchObject({ provider: "deepinfra", model: "m1", inputTokens: 10, outputTokens: 2, attempts: 2, providerRetries: 1,
+      stopReasons: ["tool_use", null, "other", "length"], textFallbacks: 1, validationErrorCount: 2, input: shape });
+    expect(JSON.stringify(event)).not.toContain(marker);
+  });
+  it("defaults absent optional metrics to 0 and []", () => {
+    expect(extractionLogEvent("j1", 5, recorded({ provider: "p", model: "m", inputTokens: 1, outputTokens: 1, attempts: 1, validationErrors: [] })))
+      .toMatchObject({ providerRetries: 0, stopReasons: [], textFallbacks: 0, validationErrorCount: 0 });
+  });
+  it("describes the model input by counts and lengths only", () => {
+    const text = `First ${marker}. Second one.`;
+    const input = { currentMessage: { id: "m", text }, evidence: [{ id: "e", text: "One thing. Two things. Three things." }],
+      steps: [{ id: "s1" }, { id: "s2" }], requirements: [{ statement: marker }],
+      fields: [{ id: "a", value: marker, status: "KNOWN" }, { id: "b", value: null, status: "EMPTY", pending: true }, { id: "c", value: null, status: "EMPTY" }] };
+    const result = inputShape(input as never);
+    expect(result).toEqual({ steps: 2, fields: 3, emptyFields: 2, pendingFields: 1, requirements: 1, currentSentences: 2, evidenceSentences: 3,
+      totalSentences: 5, messageChars: text.length });
+    expect(JSON.stringify(result)).not.toContain(marker);
+  });
   it("describes a recorded extraction with counts only", () => {
     const summary = summarizeExtraction({ proposedUpdates: [1], proposedSteps: [], proposedRequirements: [], observations: [] },
       [{ path: "proposedSteps.0", code: "step_dropped", detail: "duplicate_step" }]);
-    const event = extractionLogEvent("j1", 12, { status: "RECORDED", metrics: {} as never, summary, proposalsAdded: 1, observationsAdded: 0 });
+    const event = extractionLogEvent("j1", 12, { status: "RECORDED", metrics: {} as never, inputShape: shape, summary, proposalsAdded: 1, observationsAdded: 0 });
     expect(event).toMatchObject({ event: "extraction_succeeded", durationMs: 12, returned: { updates: 1, steps: 1 }, dropped: { steps: 1 },
       dropReasons: { "step_dropped:duplicate_step": 1 }, proposalsAdded: 1, workspaceChanged: true });
     expect(extractionLogEvent("j1", 1, { status: "ALREADY_EXTRACTED" })).toMatchObject({ event: "extraction_skipped", reason: "already_extracted" });

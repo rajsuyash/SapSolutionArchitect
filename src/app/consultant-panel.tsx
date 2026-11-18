@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type Fo
 import { ApiError, api, isActive, isUncertain, variantCodeFor, type Command, type JobView, type VariantSummary, type Workspace } from "./consultant-api";
 import { ConsultantChat } from "./consultant-chat";
 import { ConsultantSummary } from "./consultant-summary";
+import { nothingRecordedFromLastMessage } from "../lib/workspace-fields";
 import { ReleaseSelect } from "./discovery-fields";
 import styles from "./consultant.module.css";
 import { SupportLink, isAccountBlocked, needsSupport } from "./support";
@@ -227,7 +228,7 @@ export function ConsultantPanel({ projectId }: { projectId: string }) {
           <ConsultantChat problem={state.problemStatement} messages={state.messages} questions={state.questions}
             waiting={busy && jobs[0]?.kind === "INTERVIEW"} canEdit={workspace.canEdit} error={error}
             needsRetry={lastMessage?.role === "user" && !busy && !pending && !blocked}
-            proposalCount={proposalCount} pointCount={pointCount} onReview={reviewProposals}
+            proposalCount={proposalCount} pointCount={pointCount} onReview={reviewProposals} nothingRecorded={nothingRecordedFromLastMessage(state)}
             failure={failedJob?.error?.message ?? null} support={support} onSend={sendMessage} onRetry={() => void retryReply()} />
         </section>
         <section id="pane-summary" role="tabpanel" aria-labelledby="tab-summary" className={styles.summaryPane} aria-label="Summary">

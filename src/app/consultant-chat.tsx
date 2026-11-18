@@ -9,7 +9,7 @@ import { SupportLink } from "./support";
 type Message = WorkspaceView["messages"][number];
 type Question = WorkspaceView["questions"][number];
 type Props = { problem: string; messages: Message[]; questions: Question[]; waiting: boolean; canEdit: boolean;
-  needsRetry: boolean; proposalCount: number; pointCount: number; onReview: () => void; failure: string | null; error: string; support: boolean; onSend: (text: string) => Promise<boolean>; onRetry: () => void };
+  needsRetry: boolean; proposalCount: number; pointCount: number; nothingRecorded: boolean; onReview: () => void; failure: string | null; error: string; support: boolean; onSend: (text: string) => Promise<boolean>; onRetry: () => void };
 
 /** The stored reply is "acknowledgement\n\nquestion why-it-matters\n\n…". Re-pair each paragraph with its question. */
 function ConsultantMessage({ message, questions }: { message: Message; questions: Question[] }) {
@@ -26,7 +26,7 @@ function ConsultantMessage({ message, questions }: { message: Message; questions
   </>;
 }
 
-export function ConsultantChat({ problem, messages, questions, waiting, canEdit, needsRetry, proposalCount, pointCount, onReview, failure, error, support, onSend, onRetry }: Props) {
+export function ConsultantChat({ problem, messages, questions, waiting, canEdit, needsRetry, proposalCount, pointCount, nothingRecorded, onReview, failure, error, support, onSend, onRetry }: Props) {
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
   const input = useRef<HTMLTextAreaElement>(null);
@@ -68,6 +68,7 @@ export function ConsultantChat({ problem, messages, questions, waiting, canEdit,
     {error && <div role="alert" className={styles.alert}><p>{error}</p>{support && <p><SupportLink /></p>}</div>}
     {support && !failure && !error && <p className={styles.notice}>Need help with this? <SupportLink /></p>}
     {needsRetry && canEdit && <button type="button" className={styles.small} onClick={onRetry}>Ask the consultant to reply again</button>}
+    {nothingRecorded && <p className={styles.notice} data-testid="nothing-recorded">Nothing was recorded from your last message. If it described a step or an answer, try saying it again in a sentence or two, or add it yourself on the Summary tab.</p>}
     {proposalCount + pointCount > 0
       ? <p className={styles.notice} data-testid="review-pointer">{waitingCopy(proposalCount, pointCount)} <button type="button" className={styles.small} onClick={onReview}>Review them</button></p>
       : !waiting && messages.at(-1)?.role === "assistant" && !messages.at(-1)!.text.includes("\n\n")

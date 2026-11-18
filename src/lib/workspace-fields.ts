@@ -127,3 +127,12 @@ export function describeBlocker(state: View, blocker: Blocker): string {
     default: return blocker.detail;
   }
 }
+
+/** A message shorter than this (a "yes", one short sentence) is not worth a notice when nothing was read out of it. */
+export const NOTICE_MIN_CHARS = 120;
+/** True when the latest user message was long enough to carry content and its finished extraction recorded nothing. A message still
+ * being extracted is not yet in `emptyExtractionMessageIds`, so it never matches. */
+export function nothingRecordedFromLastMessage(state: { messages: readonly { id: string; role: string; text: string }[]; emptyExtractionMessageIds?: readonly string[] }): boolean {
+  const last = state.messages.findLast(message => message.role === "user");
+  return Boolean(last) && last!.text.trim().length >= NOTICE_MIN_CHARS && (state.emptyExtractionMessageIds ?? []).includes(last!.id);
+}

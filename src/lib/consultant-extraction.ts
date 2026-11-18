@@ -6,6 +6,8 @@ import { loadWorkspaceForWorker, persistWorkspaceTurn, type WorkspaceWorkerArgs 
 import { buildInterviewInput } from "./discovery-workspace-model";
 import type { createStageRunner, StageMetrics } from "./ai/runStage";
 import type { ValidationIssue } from "./ai/problem-analysis";
+import type { InterviewInput } from "./ai/discovery-interview";
+import { splitSentences } from "./ai/interview-sentences";
 
 /** Extraction (reading facts, steps and requirements out of one user message) runs on its own queue, in the background,
  * so a chat turn never waits for it. One job per user message; jobs of one workspace run strictly in message order. */
@@ -22,7 +24,9 @@ export type ExtractJob = z.infer<typeof ExtractJobSchema>;
 export const extractionScope = (w: Pick<WorkspaceWorkerArgs, "orgId" | "projectId" | "variantCode">) => `${w.orgId}:${w.projectId.toLowerCase()}:${w.variantCode}`;
 
 type Runner = ReturnType<typeof createStageRunner>;
-export type ExtractionOutcome = { status: "RECORDED"; metrics: StageMetrics; summary: ExtractionSummary; proposalsAdded: number; observationsAdded: number }
+export type InputShape = { steps: number; fields: number; emptyFields: number; pendingFields: number; requirements: number;
+  currentSentences: number; evidenceSentences: number; totalSentences: number; messageChars: number };
+export type ExtractionOutcome = { status: "RECORDED"; metrics: StageMetrics; summary: ExtractionSummary; inputShape: InputShape; proposalsAdded: number; observationsAdded: number }
   | { status: "ALREADY_EXTRACTED" };
 
 export type ExtractionCounts = { updates: number; steps: number; requirements: number; observations: number };
@@ -57,6 +61,15 @@ export function summarizeExtraction(payload: { [K in keyof typeof GROUPS]: reado
   return { returned, kept, dropped, dropReasons, answerFallbacks };
 }
 
+/** What the model was given, as counts and lengths only (never text), to tell an odd input from an odd answer. */
+export function inputShape(input: InterviewInput): InputShape {
+  const currentSentences = splitSentences(input.currentMessage.text).length;
+  const evidenceSentences = input.evidence.reduce((total, source) => total + splitSentences(source.text).length, 0);
+  return { steps: input.steps.length, fields: input.fields.length, emptyFields: input.fields.filter(f => f.status === "EMPTY").length,
+    pendingFields: input.fields.filter(f => f.pending).length, requirements: input.requirements.length, currentSentences, evidenceSentences,
+    totalSentences: currentSentences + evidenceSentences, messageChars: input.currentMessage.text.length };
+}
+
 /** Extract one user message against the latest workspace and record the proposals. Safe to repeat: a message that is
  * already extracted is skipped, and a replay of the same request key returns the stored result. The model call is made
  * outside any transaction. Used by the queue worker, and called directly (and awaited) by the evaluation runner. */
@@ -86,7 +99,7 @@ export async function extractMessage(pool: Pool, runStage: Runner, worker: Works
     return result;
   });
   // Proposals are never removed from a workspace, so the growth is what this call added (0: nothing was proposed, or it was already recorded).
-  return { status: "RECORDED", metrics: generated.metrics, summary: summarizeExtraction(generated.payload, generated.metrics.warnings),
+  return { status: "RECORDED", metrics: generated.metrics, summary: summarizeExtraction(generated.payload, generated.metrics.warnings), inputShape: inputShape(input),
     proposalsAdded: saved.state.proposals.length - loaded.proposals, observationsAdded: saved.state.observations.length - loaded.observations };
 }
 
@@ -128,14 +141,21 @@ export async function executeExtraction(pool: Pool, runStage: Runner, job: { id:
     requestedBy: data.data.requestedBy }, data.data.messageId, job.id, signal);
 }
 
-/** The one log line per finished extraction: ran (counts and drop codes) or skipped (reason code). Never message text or values. */
+/** Provider stop reasons are short enum-like strings; anything else is logged as "other", never as text. */
+const safeStopReason = (reason: string | null) => reason === null ? null : /^[A-Za-z_]{1,40}$/.test(reason) ? reason : "other";
+
+/** The one log line per finished extraction: ran (counts, drop codes, provider/model, token counts, attempts, stop reasons, the
+ * shape of the input as counts and lengths) or skipped (reason code). Never message text, field values, names or sentences. */
 export function extractionLogEvent(jobId: string, durationMs: number, outcome: ExtractionOutcome | undefined) {
   if (!outcome) return { event: "extraction_skipped", jobId, durationMs, reason: "invalid_job_payload" };
   if (outcome.status === "ALREADY_EXTRACTED") return { event: "extraction_skipped", jobId, durationMs, reason: "already_extracted" };
-  const { summary, proposalsAdded, observationsAdded } = outcome;
+  const { summary, metrics, inputShape: input, proposalsAdded, observationsAdded } = outcome;
   return { event: "extraction_succeeded", jobId, durationMs, returned: summary.returned, kept: summary.kept, dropped: summary.dropped,
     dropReasons: summary.dropReasons, answerFallbacks: summary.answerFallbacks, proposalsAdded, observationsAdded,
-    workspaceChanged: proposalsAdded + observationsAdded > 0 };
+    workspaceChanged: proposalsAdded + observationsAdded > 0, provider: metrics.provider, model: metrics.model,
+    inputTokens: metrics.inputTokens, outputTokens: metrics.outputTokens, attempts: metrics.attempts, providerRetries: metrics.providerRetries ?? 0,
+    stopReasons: (metrics.stopReasons ?? []).map(safeStopReason), textFallbacks: metrics.textFallbacks ?? 0,
+    validationErrorCount: metrics.validationErrors?.length ?? 0, input };
 }
 
 /** The queue entry point: runs the job, and on failure logs one line with a fixed code (never user text) before rethrowing, so
