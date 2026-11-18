@@ -85,6 +85,7 @@ details[open] > .foldRow::before, details[open] > .more::before { content: "\25B
 .value { white-space: pre-wrap; }
 .quote { margin: 4px 0 10px; padding: 8px 12px; border-left: 3px solid var(--accent); background: #f3f8f6; white-space: pre-wrap; }
 .inline { display: block; }
+.details { margin: 0 0 10px; padding-left: 18px; overflow-wrap: anywhere; }
 
 @media (max-width: 899px) {
   .tabs { display: flex; }

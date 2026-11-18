@@ -1,6 +1,7 @@
 "use client";
 
 import { useId, useState, type FormEvent } from "react";
+import { STEP_LABELS } from "../lib/workspace-fields";
 import type { WorkspaceView } from "./consultant-api";
 import styles from "./consultant.module.css";
 
@@ -28,6 +29,11 @@ export function ProposalCard({ label, proposal, disabled, onAccept, onReject, on
       <p className={styles.help}>Suggested answer, taken from what you shared</p>
       <blockquote className={styles.quote}>{proposal.value}</blockquote>
       {proposal.value !== proposal.quote && <p className={styles.muted} data-testid="proposal-source">From: {proposal.quote}</p>}
+      {/* Accepting a step records all of its details; there is no per-detail accept or reject (known ceiling: reject the step, or edit the answers afterwards). */}
+      {proposal.operation === "PROPOSE_STEP" && !!proposal.details?.length && <div data-testid="proposal-step-details">
+        <p className={styles.help}>Accepting this step also records</p>
+        <ul className={styles.details}>{proposal.details.map(detail => <li key={detail.key}><strong>{STEP_LABELS[detail.key]}:</strong> {detail.value}</li>)}</ul>
+      </div>}
       <div className={styles.row}>
         <button type="button" className={styles.primary} disabled={off} onClick={() => void act(onAccept)}>Accept</button>
         {onEdit && <button type="button" className={styles.small} disabled={off} onClick={() => setEditing(true)}>Edit</button>}

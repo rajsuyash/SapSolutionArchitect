@@ -107,7 +107,13 @@ if (NEW_STEP) {
     const warnings = metrics.warnings ?? [];
     console.log(`run ${run}/${REPEAT} | provider ${metrics.provider} model ${metrics.model}; message length ${input.currentMessage.text.length}`);
     console.log(`  returned: ${payload.proposedUpdates.length} updates, ${payload.proposedSteps.length} steps, ${payload.proposedRequirements.length} requirements, ${payload.observations.length} observations`);
-    for (const step of payload.proposedSteps) console.log(`  step | name hint: ${step.nameHint ?? "(none)"} | value length ${step.value.length}`);
+    for (const step of payload.proposedSteps) {
+      console.log(`  step | name hint: ${step.nameHint ?? "(none)"} | value length ${step.value.length} | details kept: ${step.details?.length ?? 0}`);
+      for (const detail of step.details ?? []) console.log(`    detail | ${detail.key} = ${detail.value}`);
+    }
+    const droppedDetails = warnings.filter(w => w.code === "step_detail_dropped");
+    console.log(`  dropped step details: ${droppedDetails.length}`);
+    for (const w of droppedDetails) console.log(`    ${w.path} | ${w.detail ?? ""}`);
     console.log(`  warnings: ${warnings.length}`);
     for (const w of warnings) console.log(`    ${w.path} | ${w.code}${w.detail ? ` | ${w.detail}` : ""}`);
   }

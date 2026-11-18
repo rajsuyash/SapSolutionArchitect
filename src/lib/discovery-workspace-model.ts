@@ -2,7 +2,7 @@ import { z } from "zod";
 import type { CompanyContext } from "./company-context";
 import { MAX_OPEN_QUESTIONS, validateDiscovery, type DiscoveryInput } from "./discovery";
 import { describeField, REASK_AFTER_USER_TURNS, REASK_SUFFIX, STEP_GAP_PREFIX, STEP_KEYS as stepKeys, STEP_LABELS, STEP_QUESTIONS as stepQuestions,
-  carriedGaps, describeBlocker, stepLabel, TO_CONFIRM, WORKSPACE_FIELDS } from "./workspace-fields";
+  CORE_STEP_KEYS, LIST_STEP_KEYS, STEP_DETAIL_KEYS, carriedGaps, describeBlocker, missingStepKeys, stepLabel, TO_CONFIRM, WORKSPACE_FIELDS } from "./workspace-fields";
 import { parseInterviewInput, revalidateStoredTurn, spanOfQuote, type InterviewInput, type InterviewTurn, type Scope } from "./ai/discovery-interview";
 
 // Re-exported for server callers; the client imports ./workspace-fields directly.
@@ -41,7 +41,10 @@ const requirementKind = z.enum(["PAIN_POINT", "TO_BE_REQUIREMENT", "CONTROL"]);
 const ProposalSchema = z.strictObject({
   id, fieldId: id, operation: z.enum(["PROPOSE_SET", "PROPOSE_REPLACE", "PROPOSE_STEP", "PROPOSE_REQUIREMENT"]),
   previousValue: text().nullable(), value: text(), sourceId: id, quote: text(),
-  nameHint: text(200).nullable().optional(), stepRef: id.optional(), kind: requirementKind.optional(), critical: z.boolean().optional(),
+  nameHint: text(200).nullable().optional(),
+  /** PROPOSE_STEP only: details of the step that its source message states; accepting the step records them as known facts. Absent on older proposals. */
+  details: z.array(z.strictObject({ key: z.enum(STEP_DETAIL_KEYS), value: text(), quote: text() })).max(STEP_DETAIL_KEYS.length).optional(),
+  stepRef: id.optional(), kind: requirementKind.optional(), critical: z.boolean().optional(),
   status: z.enum(["PENDING", "ACCEPTED", "REJECTED"]), createdAt: z.iso.datetime(), decidedBy: id.nullable(),
 });
 const MessageSchema = z.strictObject({ id, role: z.enum(["user", "assistant"]), text: text(20000),
@@ -150,7 +153,9 @@ function checked(state: WorkspaceState): WorkspaceState {
     (f.status === "NOT_APPLICABLE" && !f.rationale) || (f.status === "OWNER_PENDING" && !f.owner)) ||
     state.steps.some(s => !validEvidence(s.evidence)) || state.requirements.some(r => !validEvidence(r.evidence)) ||
     state.proposals.some(p => !sources.get(p.sourceId)?.includes(p.quote) || (p.value !== p.quote && spanOfQuote(p.quote, p.value) !== p.value) ||
-      (!!p.nameHint && !sources.get(p.sourceId)?.includes(p.nameHint)))) fail("INVALID_WORKSPACE_EVIDENCE");
+      (!!p.nameHint && !sources.get(p.sourceId)?.includes(p.nameHint)) ||
+      (p.details ?? []).some(d => !sources.get(p.sourceId)?.includes(d.quote) || (d.value !== d.quote && spanOfQuote(d.quote, d.value) !== d.value)) ||
+      !unique((p.details ?? []).map(d => d.key)))) fail("INVALID_WORKSPACE_EVIDENCE");
   return backfillCatalog(state);
 }
 
@@ -217,15 +222,10 @@ function setFact(state: WorkspaceState, fact: WorkspaceState["facts"][number], c
   fact.acceptedBy = meta.actorId;
   fact.acceptedAt = meta.at;
 }
-const CORE_STEP_KEYS = ["name", "actor", "system", "trigger", "description"] as const;
-const LIST_STEP_KEYS = ["inputs", "outputs", "controls", "exceptions"] as const;
 type StepDraft = WorkspaceState["stepDrafts"][number];
 const draftFact = (draft: StepDraft, key: (typeof stepKeys)[number]) => draft.fields.find(f => f.id === `${draft.id}_${key}`)!;
-/** The step details still missing: core ones must be KNOWN, list ones KNOWN or NOT_APPLICABLE. */
-const missingKeys = (draft: StepDraft) => [
-  ...CORE_STEP_KEYS.filter(key => draftFact(draft, key).status !== "KNOWN"),
-  ...LIST_STEP_KEYS.filter(key => !["KNOWN", "NOT_APPLICABLE"].includes(draftFact(draft, key).status)),
-];
+/** The step details still missing (the rule lives in workspace-fields, shared with the "Finish Step" sentence). */
+const missingKeys = missingStepKeys;
 const draftComplete = (draft: StepDraft) => missingKeys(draft).length === 0;
 /** Evidence a gap-tolerant compile can cite: the description's, else the first known detail that has some. */
 const draftEvidence = (draft: StepDraft) => ["description", ...stepKeys].map(key => draftFact(draft, key as (typeof stepKeys)[number])).find(f => f.status === "KNOWN" && f.evidence)?.evidence ?? null;
@@ -258,6 +258,8 @@ function acceptProposal(state: WorkspaceState, proposal: WorkspaceState["proposa
     state.stepDrafts.push({ id: draftId, fields: stepKeys.map(key => {
       const factId = `${draftId}_${key}`;
       if (key === "description") return knownFact(factId, proposal.value, evidence, meta);
+      const detail = proposal.details?.find(item => item.key === key);
+      if (detail) return knownFact(factId, detail.value, { sourceId: proposal.sourceId, quote: detail.quote }, meta);
       return key === "name" && proposal.nameHint ? knownFact(factId, proposal.nameHint, { sourceId: proposal.sourceId, quote: proposal.nameHint }, meta)
         : emptyFact(factId);
     }) });
@@ -461,7 +463,7 @@ export function recordInterviewTurn(rawState: WorkspaceState, rawTurn: unknown, 
   turn.proposedUpdates.forEach((proposal, index) => state.proposals.push({ id: proposalId(index), ...proposal, ...base }));
   turn.proposedSteps.forEach((step, index) => state.proposals.push({ id: proposalId(fieldCount + index), fieldId: "step",
     operation: "PROPOSE_STEP", previousValue: null, value: step.value, sourceId: step.sourceId, quote: step.quote,
-    nameHint: step.nameHint, ...base }));
+    nameHint: step.nameHint, ...(step.details?.length ? { details: step.details } : {}), ...base }));
   turn.proposedRequirements.forEach((item, index) => {
     // new_<n> names the n-th step proposed in this same turn: store the id that proposal received.
     const fresh = /^new_(\d+)$/.exec(item.stepRef);

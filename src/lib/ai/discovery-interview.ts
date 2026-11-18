@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { STEP_GAP_PREFIX, STEP_KEYS, type StepKey } from "../workspace-fields";
+import { STEP_DETAIL_KEYS, STEP_GAP_PREFIX, STEP_KEYS, type StepDetailKey, type StepKey } from "../workspace-fields";
 import { indexSentences, resolveSentenceIds, type Citation } from "./interview-sentences";
 
 const identifier = z.string().regex(/^[A-Za-z0-9_-]{1,64}$/);
@@ -72,6 +72,15 @@ const updateBase = { fieldId: identifier, operation: z.enum(["PROPOSE_SET", "PRO
 /** PROPOSE_STEP: a new current step. The cited sentences become its description; nameHint is a short label, kept only if
  * it is a phrase of the source and otherwise dropped with a warning. */
 const stepBase = { nameHint: content(200).nullable().optional() };
+/** A detail of a proposed step as the model writes it: the key it answers, the sentences that state it and the fewest exact words
+ * that answer it. Unlike a field update's `answer`, it has no whole-sentence fallback: a detail without a valid span is dropped. */
+const stepDetailCite = z.strictObject({ key: z.enum(STEP_DETAIL_KEYS), sentenceIds,
+  answer: z.string().min(1).max(2000).describe("The fewest exact words copied from the cited sentences that answer this key. Never reword.") });
+const maxDetails = STEP_DETAIL_KEYS.length;
+const stepToolBase = { ...stepBase, details: z.array(stepDetailCite).max(maxDetails).optional()
+  .describe("Which of actor, system, trigger, inputs, outputs, controls, exceptions this message states for this step. Leave out any it does not state.") };
+/** What the server stores for one detail: `quote` is the exact source slice (the step's source), `value` a span of it. */
+const storedDetail = z.strictObject({ key: z.enum(STEP_DETAIL_KEYS), value: fieldValue, quote: content(8000) });
 /** PROPOSE_REQUIREMENT: `stepRef` is an existing step id or `new_<n>`, the n-th entry (from 0) of this turn's proposedSteps. */
 const requirementBase = { stepRef: identifier, kind: requirementKind, critical: z.boolean() };
 
@@ -87,7 +96,7 @@ export const InterviewTurnSchema = z.strictObject({
     gapKey: identifier, question: content(500), whyItMatters: content(500), gapKeys: alsoGaps,
   })).max(3),
   proposedUpdates: z.array(z.strictObject({ ...updateBase, ...storedCite, value: fieldValue })).max(MAX_PROPOSALS),
-  proposedSteps: z.array(z.strictObject({ ...storedCite, value: fieldValue, nameHint: content(200).nullable() })).max(MAX_NEW_STEPS),
+  proposedSteps: z.array(z.strictObject({ ...storedCite, value: fieldValue, nameHint: content(200).nullable(), details: z.array(storedDetail).max(maxDetails).optional() })).max(MAX_NEW_STEPS),
   proposedRequirements: z.array(z.strictObject({ ...requirementBase, ...storedCite, value: fieldValue })).max(MAX_NEW_REQUIREMENTS),
   observations: z.array(observationShape).max(6),
 });
@@ -99,7 +108,7 @@ export const InterviewChatToolSchema = z.strictObject({
 /** The extraction call's contract: facts and structure found in one user message, each citing sentence IDs. */
 export const ExtractionToolSchema = z.strictObject({
   proposedUpdates: z.array(z.strictObject({ ...updateBase, ...updateCite })).max(MAX_PROPOSALS),
-  proposedSteps: z.array(z.strictObject({ ...stepBase, sentenceIds })).max(MAX_NEW_STEPS),
+  proposedSteps: z.array(z.strictObject({ ...stepToolBase, sentenceIds })).max(MAX_NEW_STEPS),
   proposedRequirements: z.array(z.strictObject({ ...requirementBase, sentenceIds })).max(MAX_NEW_REQUIREMENTS),
   observations: z.array(observationShape).max(6),
 });
@@ -108,7 +117,7 @@ export const InterviewTurnToolSchema = z.strictObject({
   reply: z.enum(REPLIES),
   questions: z.array(z.strictObject({ gapKey: identifier, question: content(500), whyItMatters: content(500), gapKeys: alsoGaps })).max(3),
   proposedUpdates: z.array(z.strictObject({ ...updateBase, ...updateCite })).max(MAX_PROPOSALS),
-  proposedSteps: z.array(z.strictObject({ ...stepBase, sentenceIds })).max(MAX_NEW_STEPS),
+  proposedSteps: z.array(z.strictObject({ ...stepToolBase, sentenceIds })).max(MAX_NEW_STEPS),
   proposedRequirements: z.array(z.strictObject({ ...requirementBase, sentenceIds })).max(MAX_NEW_REQUIREMENTS),
   observations: z.array(observationShape).max(6),
 });
@@ -119,7 +128,7 @@ const rawTurn = <C extends z.ZodRawShape>(cite: C) => z.strictObject({
   schemaVersion: z.unknown().optional(), contextRevision: z.unknown().optional(), reply: z.unknown().optional(),
   questions: z.array(z.strictObject({ gapKey: identifier, question: content(500), whyItMatters: z.unknown().optional(), gapKeys: alsoGaps })).max(3).default([]),
   proposedUpdates: z.array(z.strictObject({ ...updateBase, ...cite, value: z.unknown().optional(), answer: z.unknown().optional() })).max(MAX_PROPOSALS).default([]),
-  proposedSteps: z.array(z.strictObject({ ...stepBase, ...cite, value: z.unknown().optional() })).max(MAX_NEW_STEPS).default([]),
+  proposedSteps: z.array(z.strictObject({ ...stepBase, ...cite, value: z.unknown().optional(), details: z.array(z.unknown()).optional() })).max(MAX_NEW_STEPS).default([]),
   proposedRequirements: z.array(z.strictObject({ ...requirementBase, ...cite, value: z.unknown().optional() })).max(MAX_NEW_REQUIREMENTS).default([]),
   observations: z.array(observationShape).max(6).default([]),
 });
@@ -199,6 +208,15 @@ function tidy(raw: unknown, warnings: InterviewWarning[]): unknown {
       return [u.previousValue === undefined ? { ...u, previousValue: null } : u];
     });
   }
+  if (Array.isArray(out.proposedSteps)) {
+    // A step's details are optional extras: more than one per key is impossible, so a longer list is cut, and a malformed one is not an error.
+    out.proposedSteps = out.proposedSteps.map((step, index) => {
+      if (!isObject(step) || step.details === undefined) return step;
+      if (!Array.isArray(step.details)) { warnings.push({ path: `proposedSteps.${index}.details`, code: "step_detail_dropped", detail: "malformed" }); return { ...step, details: undefined }; }
+      if (step.details.length > maxDetails) warnings.push({ path: `proposedSteps.${index}.details`, code: "step_detail_dropped", detail: "too_many" });
+      return { ...step, details: step.details.slice(0, maxDetails) };
+    });
+  }
   if (Array.isArray(out.observations)) {
     out.observations = out.observations.filter((o, index) => {
       if (observationShape.safeParse(o).success) return true;
@@ -212,7 +230,7 @@ function tidy(raw: unknown, warnings: InterviewWarning[]): unknown {
 type Cited = { sentenceIds?: string[]; sourceId?: string; quote?: string };
 type RawTurn = { reply?: unknown; questions: { gapKey: string; question: string; whyItMatters?: unknown; gapKeys?: string[] }[];
   proposedUpdates: (Cited & { fieldId: string; operation: "PROPOSE_SET" | "PROPOSE_REPLACE"; previousValue: string | null; answer?: unknown; value?: unknown })[];
-  proposedSteps: (Cited & { nameHint?: string | null })[];
+  proposedSteps: (Cited & { nameHint?: string | null; details?: unknown[] })[];
   proposedRequirements: (Cited & { stepRef: string; kind: z.infer<typeof requirementKind>; critical: boolean })[];
   observations: z.infer<typeof observationShape>[] };
 type TurnResult = { success: true; data: InterviewTurn; warnings: InterviewWarning[] } | { success: false; errors: InterviewIssue[] };
@@ -387,10 +405,37 @@ function validate(input: InterviewInput, raw: unknown, mode: "model" | "stored",
     if (detail) warnings.push({ path: `proposedUpdates.${update.fieldId}`, code: "update_dropped", detail });
     return !detail;
   });
+  /** The details of one kept step: each a span of a sentence of the step's own source. A detail that fails any check is dropped with a
+   * warning and the step stays; there is no whole-sentence fallback, so a field is filled only by words the participant used. */
+  const detailsOf = (step: { details?: unknown[] }, stepIndex: number, resolved: { sourceId: string; quote: string }) => {
+    const kept: { key: StepDetailKey; value: string; quote: string }[] = [];
+    (step.details ?? []).forEach((raw, at) => {
+      const path = `proposedSteps.${stepIndex}.details.${at}`;
+      const drop = (reason: string) => { warnings.push({ path, code: "step_detail_dropped", detail: reason }); };
+      const parsed = z.strictObject({ key: z.enum(STEP_DETAIL_KEYS), sentenceIds: sentenceIds.optional(), answer: z.string().max(2000).optional(),
+        quote: z.string().optional(), value: z.string().optional() }).safeParse(raw);
+      if (!parsed.success) return drop("malformed");
+      const { key, sentenceIds: ids, answer: given, quote, value: storedValue } = parsed.data;
+      if (kept.some(item => item.key === key)) return drop("duplicate_key");
+      const found = mode === "model" ? (ids ? resolveCitation({ sentenceIds: ids }) : { problem: "malformed" })
+        : quote && sources.get(resolved.sourceId)?.includes(quote) ? { sourceId: resolved.sourceId, quote } : { problem: "quote_not_in_source" };
+      if ("problem" in found) return drop(found.problem);
+      if (found.sourceId !== resolved.sourceId) return drop("other_source");
+      const value = spanOfQuote(found.quote, mode === "model" ? given : storedValue);
+      if (!value) return drop(mode === "model" ? "answer_not_in_quote" : "value_not_in_quote");
+      // The same guards as a field update's answer, for a model turn only (a stored one passed them when it was made).
+      if (mode === "model") {
+        if (value.length > (STEP_FIELD_MAX[key] ?? Infinity)) return drop("too_long_for_field");
+        if (value.length >= ECHO_MIN_LENGTH && (similar(value, resolved.quote) || kept.some(item => questionKey(item.value) === questionKey(value)))) return drop("echoed_value");
+      }
+      kept.push({ key, value, quote: found.quote });
+    });
+    return kept;
+  };
   const knownSteps = new Map(input.steps.map(step => [step.id, step]));
   // Where each proposed step ended up: kept as the n-th new step, merged into a step that already exists, or refused.
   const stepFate: ({ new: number } | { existing: string } | null)[] = [];
-  const steps: { sourceId: string; quote: string; value: string; nameHint: string | null }[] = [];
+  const steps: { sourceId: string; quote: string; value: string; nameHint: string | null; details?: { key: StepDetailKey; value: string; quote: string }[] }[] = [];
   model.proposedSteps.forEach((step, index) => {
     const path = `proposedSteps.${index}`;
     const resolved = cite(path, step);
@@ -411,7 +456,8 @@ function validate(input: InterviewInput, raw: unknown, mode: "model" | "stored",
       stepFate.push(existing ? { existing: existing.id } : { new: earlier });
       return;
     }
-    steps.push({ sourceId: resolved.sourceId, quote: resolved.quote, value: resolved.quote, nameHint });
+    const details = detailsOf(step, index, resolved);
+    steps.push({ sourceId: resolved.sourceId, quote: resolved.quote, value: resolved.quote, nameHint, ...(details.length ? { details } : {}) });
     stepFate.push({ new: steps.length - 1 });
   });
   const takenRequirements = input.requirements.map(item => item.statement);

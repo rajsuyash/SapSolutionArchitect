@@ -22,7 +22,9 @@ function interviewTurn(input: InterviewInput) {
   // A walkthrough message (marked by its first sentence) also yields an interviewer-proposed step and requirement:
   // the 2nd sentence becomes the step, the 3rd a pain point on it. `new_0` is that step within this turn.
   const sentences = message.text.split(/(?<=\.)\s/).map(sentence => sentence.trim());
-  const walkthrough = sentences[0] === "Dispatch books the truck by phone." && sentences.length >= 3;
+  // "...with details." marks a walkthrough whose step sentence also states who does it, in which system and what starts it.
+  const detailed = sentences[0] === "Dispatch books the truck by phone, with details." && sentences.length >= 3;
+  const walkthrough = (sentences[0] === "Dispatch books the truck by phone." || detailed) && sentences.length >= 3;
   return {
     schemaVersion: 1 as const, contextRevision: input.contextRevision,
     reply: "Thank you for that context." as const,
@@ -31,7 +33,9 @@ function interviewTurn(input: InterviewInput) {
       whyItMatters: "This lets me describe the current process accurately before we design anything." })),
     proposedUpdates: first && open ? [{ fieldId: open.id, operation: "PROPOSE_SET" as const, previousValue: null,
       value: short ?? quote, sourceId: message.id, quote }] : [],
-    proposedSteps: walkthrough ? [{ sourceId: message.id, quote: sentences[1]!, value: sentences[1]!, nameHint: "logs the return" }] : [],
+    proposedSteps: walkthrough ? [{ sourceId: message.id, quote: sentences[1]!, value: sentences[1]!, nameHint: "logs the return",
+      ...(detailed ? { details: [{ key: "actor" as const, value: "The clerk", quote: sentences[1]! }, { key: "system" as const, value: "a spreadsheet", quote: sentences[1]! },
+        { key: "trigger" as const, value: "when the truck arrives", quote: sentences[1]! }] } : {}) }] : [],
     proposedRequirements: walkthrough ? [{ stepRef: "new_0", kind: "PAIN_POINT" as const, critical: false,
       sourceId: message.id, quote: sentences[2]!, value: sentences[2]! }] : [],
     observations: first && open ? [{ kind: "FOLLOW_UP_SUGGESTION" as const, fieldIds: [open.id],

@@ -53,7 +53,8 @@ async function withWorker(work: () => Promise<void>) {
   try { await work(); }
   finally {
     if (worker.exitCode === null) { const exited = once(worker, "exit"); worker.kill("SIGTERM"); await exited; }
-    expect(logs.join("")).not.toMatch(/Error|failed/i);
+    // The extraction log line carries a `validationErrorCount` counter; only the word "Error" outside that key is a failure.
+    expect(logs.join("").replaceAll("validationErrorCount", "")).not.toMatch(/Error|failed/i);
   }
 }
 
@@ -62,6 +63,7 @@ const phase3b = "test-results/phase3b";
 const phase3c = "test-results/phase3c";
 const phase4e = "test-results/phase4e";
 const phase4b = "test-results/phase4b";
+const phase4g = "test-results/phase4g";
 const SNAPSHOT = "00000000-0000-4000-8000-000000000001";
 /** Presents the conversation as confirmed with gaps (and its To-Be jobs as given) by rewriting the two read responses only.
  * Reaching "confirmed" through the real UI takes a full discovery walk-through, which the first test already covers end to end;
@@ -666,6 +668,49 @@ test("accepting every pending proposal at once records the field, the proposed s
     await page.reload();
     await expect(page.getByTestId("proposal")).toHaveCount(0);
     await expect(page.getByRole("tabpanel", { name: "Summary" }).getByRole("article", { name: /^Step 1/ })).toBeVisible();
+  });
+});
+
+test("a proposed step lists the details accepting it records, and the still-needed list no longer asks for them", async ({ page }) => {
+  test.setTimeout(90000);
+  const walkthrough = "Dispatch books the truck by phone, with details. The clerk logs the return in a spreadsheet when the truck arrives. Invoices are wrong when the return is late.";
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await setup(page);
+  await startConversation(page);
+  await withWorker(async () => {
+    await say(page, walkthrough, 1);
+    const proposals = page.getByTestId("proposal");
+    await expect(proposals).toHaveCount(3);
+    const stepCard = proposals.filter({ hasText: "New current step: logs the return" });
+    const details = stepCard.getByTestId("proposal-step-details");
+    await expect(details).toBeVisible();
+    await expect(details).toContainText("Who does it: The clerk");
+    await expect(details).toContainText("System or record used: a spreadsheet");
+    await expect(details).toContainText("What starts it: when the truck arrives");
+    await expect(details.getByRole("listitem")).toHaveCount(3);
+    // Only the step card carries details; a field or requirement card does not.
+    await expect(page.getByTestId("proposal-step-details")).toHaveCount(1);
+    mkdirSync(phase4g, { recursive: true });
+    await stepCard.screenshot({ path: `${phase4g}/step-details-1440.png` });
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.getByRole("tab", { name: /^Summary/ }).click();
+    await expect(details).toBeVisible();
+    await stepCard.scrollIntoViewIfNeeded();
+    await stepCard.screenshot({ path: `${phase4g}/step-details-390.png` });
+    const overflow = await page.evaluate(() => ({ page: document.documentElement.scrollWidth, window: window.innerWidth }));
+    expect(overflow.page).toBeLessThanOrEqual(overflow.window);
+
+    await stepCard.getByRole("button", { name: "Accept", exact: true }).click();
+    await expect(proposals.filter({ hasText: "New current step" })).toHaveCount(0);
+    const still = page.getByTestId("blockers");
+    await expect(still).toContainText("Finish Step 1 (logs the return): inputs, outputs, controls and exceptions.");
+    await expect(still).not.toContainText("who does it");
+    await expand(page, "Current process (As-Is)");
+    const step = page.getByRole("article", { name: /^Step 1/ });
+    await expect(step).toContainText("The clerk");
+    await expect(step).toContainText("a spreadsheet");
+    await expect(step).toContainText("when the truck arrives");
+    await page.screenshot({ path: `${phase4g}/after-accept-390.png`, fullPage: true });
   });
 });
 

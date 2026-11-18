@@ -53,6 +53,22 @@ export const STEP_LABELS: Record<StepKey, string> = {
   name: "Step name", actor: "Who does it", system: "System or record used", trigger: "What starts it",
   description: "What happens", inputs: "Inputs", outputs: "Outputs", controls: "Checks and approvals", exceptions: "Exceptions",
 };
+/** The step details a finished step needs: core ones must be KNOWN, list ones KNOWN or NOT_APPLICABLE. One rule for readiness,
+ * the To-Be compile and the "Finish Step" sentence. */
+export const CORE_STEP_KEYS = ["name", "actor", "system", "trigger", "description"] as const;
+export const LIST_STEP_KEYS = ["inputs", "outputs", "controls", "exceptions"] as const;
+/** The details a proposed step may carry (everything but its name and description, which its own text provides). */
+export const STEP_DETAIL_KEYS = ["actor", "system", "trigger", "inputs", "outputs", "controls", "exceptions"] as const;
+export type StepDetailKey = (typeof STEP_DETAIL_KEYS)[number];
+export const missingStepKeys = (draft: { id: string; fields: readonly { id: string; status: string }[] }): StepKey[] => {
+  const status = (key: StepKey) => draft.fields.find(field => field.id === `${draft.id}_${key}`)?.status;
+  return [...CORE_STEP_KEYS.filter(key => status(key) !== "KNOWN"), ...LIST_STEP_KEYS.filter(key => status(key) !== "KNOWN" && status(key) !== "NOT_APPLICABLE")];
+};
+/** Plain words for the "Finish Step" sentence, in the order a person would say them. */
+const SENTENCE_WORDS: Record<StepKey, string> = { name: "name", actor: "who does it", system: "system", trigger: "trigger", description: "what happens",
+  inputs: "inputs", outputs: "outputs", controls: "controls", exceptions: "exceptions" };
+const SENTENCE_ORDER: readonly StepKey[] = ["name", "description", "actor", "system", "trigger", "inputs", "outputs", "controls", "exceptions"];
+const joinWords = (words: string[]) => words.length < 2 ? words.join("") : `${words.slice(0, -1).join(", ")} and ${words.at(-1)}`;
 export const REQUIREMENT_KIND_LABELS = { PAIN_POINT: "Pain point", TO_BE_REQUIREMENT: "Future requirement", CONTROL: "Control" } as const;
 
 type View = Pick<WorkspaceState, "steps" | "stepDrafts" | "requirements" | "requirementDrafts">;
@@ -119,7 +135,12 @@ export function describeBlocker(state: View, blocker: Blocker): string {
     case "FIELD_UNANSWERED": return `Answer: ${blocker.detail}`;
     case "CRITICAL_FIELD_UNRESOLVED": return `${blocker.detail} needs an answer. “I don’t know”, “Not applicable” or “Ask the process owner” cannot be confirmed yet.`;
     case "AS_IS_STEP_MISSING": return "Describe at least one current process step.";
-    case "AS_IS_STEP_INCOMPLETE": return `Finish ${stepLabel(state, id)}: name, who does it, system, trigger and what happens.`;
+    case "AS_IS_STEP_INCOMPLETE": {
+      const draft = state.stepDrafts.find(item => item.id === id);
+      const missing = draft ? missingStepKeys(draft) : [];
+      return missing.length ? `Finish ${stepLabel(state, id)}: ${joinWords(SENTENCE_ORDER.filter(key => missing.includes(key)).map(key => SENTENCE_WORDS[key]))}.`
+        : `Finish ${stepLabel(state, id)}.`;
+    }
     case "REQUIREMENT_MISSING": return "Record at least one pain point or desired requirement.";
     case "REQUIREMENT_INCOMPLETE": return `Finish ${requirementLabel(state, id)}.`;
     case "PROPOSALS_PENDING": return "Accept, edit or reject the proposed answers.";
