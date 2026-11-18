@@ -96,7 +96,80 @@ export const REVIEW_FINDINGS: Record<string, string> = {
   CRITICAL_REQUIREMENT_PARTLY_TESTED: "A critical requirement is tested in one step but a variant step that also traces it has no acceptance test for it. Add a test to that step.",
   ...REVIEW_PASS_FINDINGS,
 };
+/** Checks the design failed that are neither review findings nor business blockers: content gaps in the generated design (saved as blockers when the design is kept). */
+export const DESIGN_GAPS_CATEGORY = "Design gaps";
+const DESIGN_GAPS: Record<string, string> = {
+  AS_IS_DISPOSITION_CONFLICT: "A current step is both kept in a To-Be step and listed as eliminated.",
+  AS_IS_TRACE_MISMATCH: "A To-Be step cites a requirement that belongs to a current step it does not replace.",
+  AS_IS_UNCOVERED: "A current step is neither redesigned nor eliminated by any To-Be step.",
+  CONDITIONAL_UNLINKED: "A conditional requirement names neither an open question nor a decision.",
+  CONFIG_CATALOGUE_MISSING: "The design has no configuration catalogue.",
+  CONFIG_CONFIRMATION_MISSING: "A configuration item marked as confirmed cites no SAP catalog reference.",
+  CONFLICT_UNDISPOSITIONED: "A source conflict has no decision entry in the design.",
+  CONTROL_RULE_MISSING: "A control mapping that relies on a business rule names no rule.",
+  CONTROL_RULE_UNKNOWN: "A control mapping names a business rule that does not exist.",
+  COVERAGE_TRACE_MISMATCH: "A requirement's coverage row and the steps that cite it do not match.",
+  CRITICAL_REQUIREMENT_UNTESTED: "A critical requirement has no acceptance test in any step.",
+  DECISION_NOT_APPROVED: "The design relies on a decision that has not been approved.",
+  DUPLICATE_OUTPUT_ID: "Two entries of the design share the same id.",
+  DUPLICATE_STATUS: "A document status model lists the same status twice.",
+  ENABLING_STEP_UNLINKED: "An enabling step is not linked to the step it enables.",
+  ENABLING_TARGET_INVALID: "An enabling step points at a step that cannot be enabled.",
+  EXCEPTION_SCOPE_CONFLICT: "A step lists exceptions and also says exceptions are not applicable.",
+  EXCEPTION_SCOPE_MISSING: "A step neither lists exceptions nor says why there are none.",
+  EXCEPTION_TEST_MISSING: "A step with exceptions has no acceptance test for an exception path.",
+  FIT_GAP_MISSING: "A requirement has no fit-gap row.",
+  INTERFACE_FAILURE_HANDLING_MISSING: "An in-scope interface does not say how a failed transfer is seen, alerted and rerun.",
+  INVALID_SEQUENCE: "The step numbers are not in a valid order.",
+  KPI_TARGET_UNCOVERED: "A KPI target given in the company context is not carried into the design.",
+  KPI_VALUE_NOT_FOR_MEASURE: "A KPI baseline or target is a value that was given for a different measure.",
+  KPI_VALUE_NOT_VERBATIM: "A KPI baseline or target does not match the value in the company-context answers.",
+  MITIGATION_CLASS_MISMATCH: "A fit-gap row's mitigation does not match its classification.",
+  NORMAL_TEST_MISSING: "A step has no acceptance test for the normal path.",
+  OBJECTIVE_MISSING: "The design states no objective.",
+  OBJECTIVE_NO_STEPS: "An objective is not served by any step.",
+  ORG_CODE_INCONSISTENT: "The same organisation unit is given different codes in different places.",
+  ORG_PARENT_CYCLE: "The organisation structure contains a unit that is its own parent.",
+  ORG_PARENT_UNKNOWN: "An organisation unit names a parent that does not exist.",
+  ORG_SOURCE_MISSING: "An organisation unit cites no company-context answer, requirement or step.",
+  PLACEHOLDER_TEXT: "A text field still holds placeholder text.",
+  RECOMMENDATION_NOT_AN_OPTION: "A key design decision recommends something that is not among its options.",
+  REGISTER_FIELD_MISSING: "A register row has an empty required field.",
+  REGISTER_MISSING: "A register the design needs is missing.",
+  REGISTER_TRACE_MISSING: "A register row is not traced to a requirement or step.",
+  REGISTER_VERSION_MISMATCH: "A register is in the wrong design version.",
+  REPORT_MISSING: "The design lists no report.",
+  REQUIREMENT_UNDISPOSITIONED: "A requirement has no coverage row saying what happens to it.",
+  RETAINED_SYSTEM_UNCOVERED: "A current system that stays in use has no interface entry.",
+  RICEFW_TYPE_MISSING: "A custom-build item has no RICEFW type.",
+  RICEFW_TYPE_UNEXPECTED: "A row that is not a custom build carries a RICEFW type.",
+  ROLE_MISSING: "The design has no role catalogue.",
+  SAP_APPLICABILITY_UNVERIFIED: "A step claims standard SAP or configuration but cites no verified reference for this release.",
+  SAP_BASIS_MISSING: "A register row marked as standard SAP cites no reference and is not marked for validation.",
+  SAP_FIT_MISMATCH: "A step's SAP realization does not match the fit type of the reference it cites.",
+  SCOPE_STATEMENT_MISSING: "The design states no scope.",
+  SOD_ASSESSMENT_MISSING: "The design has no segregation-of-duties assessment.",
+  STATUS_MODEL_MISSING: "The design has no document status model.",
+  STATUS_UNKNOWN: "A status change names a status that the document's status model does not list.",
+  STEP_INTERIM_MISSING: "A step does not say how it is handled until it is live.",
+  STEP_PHASE_MISSING: "A step has no phase.",
+  STEP_TYPE_MISSING: "A step does not say how it is performed.",
+  TEST_TRACE_MISMATCH: "An acceptance test cites a requirement its step does not trace.",
+  TEST_TRACE_MISSING: "An acceptance test cites no requirement.",
+  UNEXPECTED_DECISION: "A coverage row names a decision it should not have.",
+  UNKNOWN_AS_IS: "A To-Be step cites a current step that does not exist.",
+  UNKNOWN_CONFLICT: "A decision names a source conflict that does not exist.",
+  UNKNOWN_CONTEXT_FIELD: "A row cites a company-context field that does not exist.",
+  UNKNOWN_DECISION: "A row cites a decision that does not exist.",
+  UNKNOWN_QUESTION: "A row cites an open question that is not in the design.",
+  UNKNOWN_REFERENCE: "A step cites an SAP reference that is not in the catalog.",
+  UNKNOWN_REQUIREMENT: "A row cites a requirement that does not exist.",
+  UNKNOWN_SAP_OBJECT: "Text names an SAP object or code that no cited reference defines.",
+  UNKNOWN_STEP: "A row cites a To-Be step that does not exist.",
+  VALIDATION_REASON_MISSING: "A row marked as needing SAP validation does not say why.",
+};
 const BLOCKERS: Record<string, { category: string; label: string }> = {
+  ...Object.fromEntries(Object.entries(DESIGN_GAPS).map(([code, label]) => [code, { category: DESIGN_GAPS_CATEGORY, label }])),
   ...Object.fromEntries(Object.entries(REVIEW_FINDINGS).map(([code, label]) => [code, { category: REVIEW_FINDINGS_CATEGORY, label }])),
   TARGET_RELEASE_MISSING: { category: "Target release", label: "The target SAP release has not been decided." },
   IMPLEMENTATION_UNVERIFIED: { category: "SAP validation", label: "The SAP realization is not yet validated against the target release." },
@@ -110,7 +183,7 @@ const BLOCKERS: Record<string, { category: string; label: string }> = {
 };
 
 export const STATUS_COPY = {
-  BLOCKED: { label: "Blocked", detail: "This draft cannot be reviewed for approval until the blockers below are resolved. It has not been approved." },
+  BLOCKED: { label: "Blocked", detail: "The draft is complete enough to read, but it cannot go to approval yet. What remains is open decisions to answer, SAP validation by a consultant and some checks to confirm. It has not been approved." },
   HUMAN_REVIEW_REQUIRED: { label: "Human review required", detail: "No automated blockers remain, but a consultant and the business owners must still review it. It has not been approved or verified against SAP." },
 } as const;
 
@@ -124,6 +197,10 @@ export const formatTimestamp = (iso: string | null) => iso && !Number.isNaN(Date
 export type RefView = { id: string; found: boolean; capability: string; fit: string; objects: string[]; limitations: string[]; urls: string[] };
 export type ImplementationView = { kind: string; kindLabel: string; detail: string; refs: RefView[] };
 export type BlockerView = { code: string; path: string; category: string; label: string; subject: string; anchor: string | null; detail: string };
+/** One kind of blocker with everything it affects. `subjects` has one row per blocker, so counts always add up. */
+export type BlockerEntry = { label: string; codes: string[]; subjects: { text: string; detail: string; anchor: string | null }[] };
+/** `action` says who clears the group; `linksBack` is true only when the app itself can (answer in the conversation, then generate again). */
+export type BlockerGroup = { category: string; count: number; action: string; linksBack: boolean; entries: BlockerEntry[] };
 export type StepStatus = { code: "BLOCKED" | "REVIEW"; label: string; blockers: BlockerView[] };
 type Design = DetailedDesign["steps"][number];
 export type StepView = { anchor: string; heading: string; step: Design; asIsNames: string[]; implementation: ImplementationView; status: StepStatus;
@@ -162,6 +239,17 @@ export type SolutionView = {
   /** One entry per register row that traces to requirements, for the traceability export. */
   traces: { kind: string; label: string; summary: string; requirementIds: string[]; stepTitles: string[] }[];
 };
+const BACK = "Then generate a new To-Be from the conversation.";
+const GROUP_ACTIONS: Record<string, { action: string; linksBack: boolean }> = {
+  "Target release": { action: `Set the target SAP release in the conversation. ${BACK}`, linksBack: true },
+  "Open decisions": { action: `Answer the discovery questions in the conversation and confirm discovery again. ${BACK} Questions the design raised itself cannot be answered on this page yet: the project lead settles them outside the app.`, linksBack: true },
+  "SAP validation": { action: "An SAP consultant checks each point against the target release. The app cannot do this for you.", linksBack: false },
+  "Licensing": { action: "Confirm the licence with the client's SAP contact. This is done outside the app.", linksBack: false },
+  "Source conflicts": { action: "The project lead decides each conflict outside the app; it cannot be recorded here yet.", linksBack: false },
+  [DESIGN_GAPS_CATEGORY]: { action: "These are gaps in the generated text. Generate a new To-Be from the conversation, or have a consultant correct them in the downloaded design.", linksBack: true },
+  [REVIEW_FINDINGS_CATEGORY]: { action: "A consultant confirms or corrects each one. They do not stop the rest of the design from being read.", linksBack: false },
+  Other: { action: "A consultant reviews these before the design can progress.", linksBack: false },
+};
 export type ReportModel = ReturnType<typeof buildReport>;
 
 /** Builds every label, count and trace once, so the page and the exports cannot disagree. */
@@ -186,11 +274,29 @@ export function buildReport(data: ReportData) {
     if (decision) return { subject: discovery.conflicts.find(item => item.id === decision.conflictId)?.question ?? "A source conflict", anchor: "registers" };
     const input = data.unresolvedInputQuestions[index(/^input\.openQuestions\.(\d+)/)];
     if (input) return { subject: input.question, anchor: "registers" };
-    return { subject: path.startsWith("input.targetRelease") ? "Project" : "Design", anchor: null };
+    const coverage = design.coverage[index(/^draft\.coverage\.(\d+)/)];
+    if (coverage) {
+      const statement = discovery.requirements.find(item => item.id === coverage.requirementId)?.statement ?? "";
+      return { subject: `${requirementLabels[coverage.requirementId] ?? "A requirement"}${statement ? `: ${statement.length > 90 ? `${statement.slice(0, 89)}…` : statement}` : ""}`, anchor: "traceability" };
+    }
+    if (path.startsWith("input.targetRelease")) return { subject: "Project", anchor: null };
+    // ponytail: a register is named from its path segment ("draft.interfaces" -> "Interfaces"), not by row; add a row lookup per register if reviewers ask.
+    const register = /^draft\.([A-Za-z]+)/.exec(path)?.[1]?.replace(/([A-Z])/g, " $1").toLowerCase();
+    return { subject: register ? `${register[0]!.toUpperCase()}${register.slice(1)}` : "Design", anchor: null };
   };
   const blockers: BlockerView[] = data.blockers.map(blocker => ({
     code: blocker.code, path: blocker.path, detail: blocker.detail ?? "", ...(BLOCKERS[blocker.code] ?? { category: "Other", label: "Review is needed before this can progress." }), ...subjectOf(blocker.path) }));
   const byCategory = [...Map.groupBy(blockers, item => item.category)].map(([category, items]) => ({ category, items }));
+  const catalogNote = data.catalogReferenceCount === 0 ? " The app has no verified SAP reference catalog for this release, so generating again will not clear them." : "";
+  const blockerGroups: BlockerGroup[] = byCategory.map(({ category, items }) => {
+    const { action, linksBack } = GROUP_ACTIONS[category] ?? GROUP_ACTIONS.Other!;
+    const entries = [...Map.groupBy(items, item => item.label)].map(([label, same]) => ({ label, codes: [...new Set(same.map(item => item.code))],
+      subjects: same.map(item => ({ text: item.subject, detail: item.detail, anchor: item.anchor })) }));
+    return { category, count: items.length, action: category === "SAP validation" ? action + catalogNote : action, linksBack, entries };
+  });
+  // One split for the page and the Markdown: review findings are listed apart from the blockers.
+  const reviewFindings = blockerGroups.find(group => group.category === REVIEW_FINDINGS_CATEGORY) ?? null;
+  const blockingGroups = blockerGroups.filter(group => group !== reviewFindings);
 
   const refView = (id: string): RefView => {
     const ref = refs.get(id);
@@ -335,7 +441,7 @@ export function buildReport(data: ReportData) {
 
   const coverageCount = (kind: keyof typeof DISPOSITION_LABELS) => design.coverage.filter(item => item.disposition === kind).length;
   return {
-    data, requirementLabels, status, statusCopy: STATUS_COPY[status], blockers, blockersByCategory: byCategory,
+    data, requirementLabels, status, statusCopy: STATUS_COPY[status], blockers, blockersByCategory: byCategory, blockerGroups, blockingGroups, reviewFindings,
     header: { project: data.project.name, client: data.project.clientName, variant: data.variant.name,
       sourceRevision: data.sourceRevision, product: PRODUCT_LABELS[data.targetProduct] ?? data.targetProduct,
       release: data.targetRelease ?? "Not decided", generatedAt: formatTimestamp(data.generatedAt), processName: design.processName },

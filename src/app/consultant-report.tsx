@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { TEST_LABEL, testKindLabel, type ComparisonRow, type ImplementationView, type Register, type ReportModel, type StepView } from "../lib/consultant-report";
+import { TEST_LABEL, testKindLabel, type BlockerGroup, type ComparisonRow, type ImplementationView, type Register, type ReportModel, type StepView } from "../lib/consultant-report";
 import { PrintButton } from "./report-print-button";
 import styles from "./consultant-report.module.css";
 
@@ -77,6 +77,16 @@ const RegisterTable = ({ label, items }: { label: string; items: Register[] }) =
   <Table label={label}><thead><tr><th scope="col">Item</th><th scope="col">Owner</th><th scope="col">Affects</th><th scope="col">State</th></tr></thead>
     <tbody>{items.map(item => <tr key={item.id}><td>{item.text}</td><td>{item.owner}</td><td>{item.affects}</td><td>{item.state}</td></tr>)}</tbody></Table>;
 
+const Subject = ({ item }: { item: BlockerGroup["entries"][number]["subjects"][number] }) =>
+  <>{item.anchor ? <a href={`#${item.anchor}`}>{item.text}</a> : item.text}{item.detail ? `. ${item.detail}` : ""}</>;
+
+function BlockerList({ groups, back }: { groups: BlockerGroup[]; back: string }) {
+  return <>{groups.map(group => <div key={group.category}><h3>{group.category} ({group.count})</h3>
+    <p className={styles.todo}><strong>What to do:</strong> {group.action}{group.linksBack && <> <a href={back}>Back to the conversation</a></>}</p>
+    <ul className={styles.tight}>{group.entries.map(entry => <li key={entry.label}><strong>{entry.label}</strong>
+      <ul className={styles.tight}>{entry.subjects.map((item, index) => <li key={index}><Subject item={item} /></li>)}</ul></li>)}</ul></div>)}</>;
+}
+
 export function ConsultantReport({ model, downloads }: { model: ReportModel; downloads: { markdown: string; csv: string; back: string } }) {
   const { header, summary } = model;
   return <article className={styles.report} aria-labelledby="report-title">
@@ -86,6 +96,12 @@ export function ConsultantReport({ model, downloads }: { model: ReportModel; dow
       <p className={styles.status} data-status={model.status} data-testid="report-status" role="status">
         <strong>Review status: {model.statusCopy.label}.</strong> {model.statusCopy.detail}</p>
       {model.catalogWarning && <p className={styles.status} data-testid="report-catalog-warning" role="alert"><strong>{model.catalogWarning}</strong></p>}
+      {model.blockerGroups.length > 0 && <section className={styles.blocking} aria-labelledby="blocking-h">
+        <h2 id="blocking-h">What is blocking this draft</h2>
+        <ul className={styles.tight}>{model.blockerGroups.map(group => <li key={group.category}>
+          <a href={group === model.reviewFindings ? "#review-findings" : "#blockers"}><strong>{group.category}</strong></a> ({group.count}): {group.action}
+          {group.linksBack && <> <a href={downloads.back}>Back to the conversation</a></>}</li>)}</ul>
+      </section>}
       <dl className={styles.facts}>
         <dt>Process variant</dt><dd>{header.variant}</dd><dt>Discovery revision</dt><dd>{header.sourceRevision}</dd>
         <dt>Target product</dt><dd>{header.product}</dd><dt>Target release</dt><dd>{header.release}</dd>
@@ -96,15 +112,9 @@ export function ConsultantReport({ model, downloads }: { model: ReportModel; dow
         <PrintButton className={styles.button} /><a href={downloads.back}>Back to the conversation</a>
       </div>
       <nav aria-label="Report sections" className={styles.toc}>{[["summary", "Summary"], ["comparison", "As-Is vs To-Be"], ["steps", "To-Be steps"],
-        ["traceability", "Traceability"], ["registers", "Registers"]].map(([id, text]) => <a key={id} href={`#${id}`}>{text}</a>)}</nav>
+        ["traceability", "Traceability"], ["registers", "Registers"],
+        ...(model.blockerGroups.length ? [["blockers", "Blockers"]] : [])].map(([id, text]) => <a key={id} href={`#${id}`}>{text}</a>)}</nav>
     </header>
-
-    {model.blockersByCategory.length > 0 && <section aria-labelledby="blockers-h" className={styles.section}>
-      <h2 id="blockers-h">Blockers by category</h2>
-      {model.blockersByCategory.map(group => <div key={group.category}><h3>{group.category} ({group.items.length})</h3>
-        <ul className={styles.tight}>{group.items.map((item, index) => <li key={index}>
-          {item.anchor ? <a href={`#${item.anchor}`}>{item.subject}</a> : item.subject}: {item.label}{item.detail ? ` ${item.detail}` : ""} <span className={styles.code}>{item.code} at {item.path}</span></li>)}</ul></div>)}
-    </section>}
 
     <section id="summary" aria-labelledby="summary-h" className={styles.section}>
       <h2 id="summary-h">Executive summary</h2>
@@ -115,6 +125,15 @@ export function ConsultantReport({ model, downloads }: { model: ReportModel; dow
         <tr><td>Deferred (approved decision)</td><td>{summary.deferred}</td></tr><tr><td>Rejected (approved decision)</td><td>{summary.rejected}</td></tr>
         <tr><td>Open questions and conflicts</td><td>{summary.openQuestions + summary.conflicts}</td></tr></tbody></Table>
     </section>
+
+    {model.blockingGroups.length > 0 && <section id="blockers" aria-labelledby="blockers-h" className={styles.section}>
+      <h2 id="blockers-h">Blockers</h2><BlockerList groups={model.blockingGroups} back={downloads.back} />
+    </section>}
+    {model.reviewFindings && <section id="review-findings" aria-labelledby="review-findings-h" className={styles.section}>
+      <h2 id="review-findings-h">Review findings</h2>
+      <p>The design is complete and valid. These checks compare one part of it with another and could not confirm a match; a consultant confirms or corrects each one.</p>
+      <BlockerList groups={[model.reviewFindings]} back={downloads.back} />
+    </section>}
 
     <section id="comparison" aria-labelledby="comparison-h" className={styles.section}>
       <h2 id="comparison-h">As-Is vs To-Be comparison</h2><ComparisonTable rows={model.comparison} />
