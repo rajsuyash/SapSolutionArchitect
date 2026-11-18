@@ -62,7 +62,7 @@ describe("provider request shape", () => {
     expect(h.headers[0]!.get("x-api-key")).toBe("an-test-key");
     expect(Object.keys(h.bodies[0]!).sort()).toEqual(ALLOWED_KEYS);
   });
-  it("forces the stage's tool on DeepInfra (all stages) and keeps auto on Anthropic, in the call and the token count", async () => {
+  it("forces the stage's single tool on DeepInfra with `any` (all stages; the named form is a 400 on DeepSeek), keeps the named form on OpenRouter and auto on Anthropic, in the call and the token count", async () => {
     for (const [stage, name, stageInput] of [["problem_analysis", "submit_analysis", input],
       ["interview_turn", "submit_interview_turn", fixture()]] as const) {
       const h = harness(() => reply([{ type: "tool_use", id: "t", name, input: payload() }]));
@@ -71,8 +71,11 @@ describe("provider request shape", () => {
       await createStageRunner(deepinfra(), { fetch })(stage, stageInput).catch(() => undefined);
       const withTools = seen.filter(body => body.tools); // the plain-text size count of problem analysis carries no tools
       expect(withTools.length).toBeGreaterThanOrEqual(1); // the call (the interview also counts tokens with the tool)
-      for (const body of withTools) expect(body.tool_choice).toEqual({ type: "tool", name, disable_parallel_tool_use: true });
+      for (const body of withTools) expect(body.tool_choice).toEqual({ type: "any", disable_parallel_tool_use: true });
     }
+    const or = harness();
+    await createStageRunner(parseEnvironment(env({ AI_PROVIDER: "openrouter", OPENROUTER_API_KEY: "or-test-key" })), { fetch: or.fetch })("problem_analysis", input);
+    expect(or.bodies[0]!.tool_choice).toEqual({ type: "tool", name: "submit_analysis", disable_parallel_tool_use: true });
     const h = harness();
     await createStageRunner(anthropic(), { fetch: h.fetch })("problem_analysis", input);
     expect(h.bodies[0]!.tool_choice).toEqual({ type: "auto", disable_parallel_tool_use: true });

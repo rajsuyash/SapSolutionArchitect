@@ -107,7 +107,7 @@ describe("forced tool choice per provider", () => {
     expect(new Set(tooled.map(body => body.tools[0]!.name))).toEqual(new Set(["submit_to_be_outline", "submit_to_be_step",
       ...REGISTER_GROUP_NAMES.map(group => `submit_to_be_registers_${group}`)]));
     expect(tooled.length).toBe(2 * (1 + STEP_IDS.length + REGISTER_GROUP_NAMES.length)); // one count and one call for the outline, each step and each register group
-    for (const body of tooled) expect(choiceOf(body)).toEqual({ type: "tool", name: body.tools[0]!.name, disable_parallel_tool_use: true });
+    for (const body of tooled) expect(choiceOf(body)).toEqual({ type: "any", disable_parallel_tool_use: true });
   });
   it("keeps auto on Anthropic for the outline and step tools", async () => {
     const h = harness(); await h.run();
@@ -207,7 +207,7 @@ describe("OpenRouter provider", () => {
       for (const request of requests.filter(request => request.body.max_tokens !== undefined && !isOutline(request))) {
         expect(request.body.thinking).toBeUndefined();
         expect(request.body.max_tokens).toBeLessThan(64000);
-        expect(request.body.tool_choice).toEqual({ type: "tool", name: request.body.tools[0]!.name, disable_parallel_tool_use: true });
+        expect(request.body.tool_choice).toEqual({ type: "any", disable_parallel_tool_use: true });
       }
     });
     it("derives the budget from AI_OUTLINE_REASONING_EFFORT and sends max_tokens at the cap, so a model that overruns its budget still has room for the answer", async () => {
@@ -249,14 +249,14 @@ describe("OpenRouter provider", () => {
       const outline = await outlineOf({ AI_OUTLINE_REASONING_EFFORT: "none" });
       expect(outline.thinking).toBeUndefined();
       expect(outline.max_tokens).toBe(32000);
-      expect(outline.tool_choice).toEqual({ type: "tool", name: "submit_to_be_outline", disable_parallel_tool_use: true });
+      expect(outline.tool_choice).toEqual({ type: "any", disable_parallel_tool_use: true });
     });
     it("is off for AI_NO_THINKING_STAGES (disabled wins), an explicit AI_REASONING_EFFORT, and a non-DeepSeek model", async () => {
       expect((await outlineOf({ AI_NO_THINKING_STAGES: "to_be_outline" })).thinking).toEqual({ type: "disabled" });
       expect((await outlineOf({ AI_REASONING_EFFORT: "high" })).thinking).toBeUndefined();
       const mimo = await outlineOf({ AI_MODEL: "XiaomiMiMo/MiMo-V2.6-Flash" });
       expect(mimo.thinking).toBeUndefined();
-      expect(mimo.tool_choice).toEqual({ type: "tool", name: "submit_to_be_outline", disable_parallel_tool_use: true });
+      expect(mimo.tool_choice).toEqual({ type: "any", disable_parallel_tool_use: true });
     });
     it("leaves OpenRouter requests as they were", async () => {
       const outline = (await spied({ AI_OUTLINE_REASONING_EFFORT: "high" })).requests.find(isOutline)!.body;
@@ -755,7 +755,7 @@ describe("outline repair by patch", () => {
   it("forces the patch tool on DeepInfra like the other tools", async () => {
     const h = harness({ outline: () => badKindOutline, patch: () => ({ steps: [split.outline.steps[0]] }), overrides: { AI_PROVIDER: "deepinfra", DEEPINFRA_API_KEY: "synthetic-di-key", AI_MODEL: "XiaomiMiMo/MiMo-V2.6-Pro" } });
     await h.run();
-    expect(h.patchCalls[0]!.tool_choice).toEqual({ type: "tool", name: "submit_to_be_outline_patch", disable_parallel_tool_use: true });
+    expect(h.patchCalls[0]!.tool_choice).toEqual({ type: "any", disable_parallel_tool_use: true });
   });
   it("a patch that is cut off or fails its schema is a failed repair; the third answer is a patch again, built on the same outline", async () => {
     const h = harness({ outline: () => badKindOutline, patch: n => n === 1 ? { steps: "x" } : { steps: [split.outline.steps[0]] } });

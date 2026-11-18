@@ -207,10 +207,14 @@ export function createStageRunner(config: Config, options: Options = {}) {
       expansionThinkingOff: (substage: Substage) => routeProvider === "openrouter" && config.AI_REASONING_EFFORT === undefined && substage !== "to_be_outline",
       // Claude Sonnet 5.5 rejects a forced tool choice (HTTP 400), so Anthropic keeps "auto". DeepInfra's MiMo answers in
       // prose under "auto" (0/4 tool calls measured 2026-10-22) and calls the tool every time when it is forced.
-      // This applies to every tool the runner sends, the To-Be outline and step tools included.
+      // DeepInfra forces with `any`, not the named form (measured 2026-11-17, one tool in the request): DeepSeek-V4.1-Flash-1017 answers the
+      // named form `{type: "tool", name}` with HTTP 400 ("data did not match any variant of untagged enum ChatCompletionToolChoiceOption")
+      // and `{type: "any"}` with a tool_use; MiMo-V2.6-Pro accepts both. Every request the runner sends carries exactly one tool (`tools = [a.tool]`),
+      // so `any` forces that tool. OpenRouter keeps the named form (not measured with either). The To-Be outline and step tools are included.
       // thinking: true (an enabled DeepInfra thinking request) keeps "auto": a forced tool is not supported while thinking is on (DeepSeek docs; Anthropic's API rejects it too).
-      toolChoiceFor: (name: string, thinking = false): Anthropic.ToolChoice => (routeProvider === "deepinfra" || routeProvider === "openrouter") && !thinking
-        ? { type: "tool", name, disable_parallel_tool_use: true } : { type: "auto", disable_parallel_tool_use: true } };
+      toolChoiceFor: (name: string, thinking = false): Anthropic.ToolChoice => thinking || (routeProvider !== "deepinfra" && routeProvider !== "openrouter")
+        ? { type: "auto", disable_parallel_tool_use: true }
+        : routeProvider === "deepinfra" ? { type: "any", disable_parallel_tool_use: true } : { type: "tool", name, disable_parallel_tool_use: true } };
   };
   type Route = ReturnType<typeof makeRoute>;
   const primary = makeRoute(provider, client, config.AI_MODEL, config.AI_MODEL_DESIGN ?? config.AI_MODEL);
@@ -274,6 +278,8 @@ export function createStageRunner(config: Config, options: Options = {}) {
       finally { clearTimeout(timeout); signal.removeEventListener("abort", abort); controller.signal.removeEventListener("abort", stop); }
     }
 
+    /** Errors that ended on a provider 400 invalid_request (not a credit or transient failure): viaRoute re-sends these once to the fallback. */
+    const invalidRequest = new WeakSet<AIStageError>();
     /** One provider request with the transient-retry policy: see retry.ts. Used by every stage, token counts included. */
     async function transport<T>(work: (signal: AbortSignal) => Promise<T>, timeoutMs: number, route: Route): Promise<T> {
       return withProviderRetry(() => call(work, timeoutMs), { signal, deadlineAt: started + stageBudget, callTimeoutMs: timeoutMs,
@@ -281,8 +287,11 @@ export function createStageRunner(config: Config, options: Options = {}) {
         passthrough: error => error instanceof AIStageError || (!!fallback && route === primary && !stageOnFallback && error instanceof Anthropic.APIConnectionTimeoutError),
         giveUp: (error, reason) => {
           logProviderFailure(route.provider, route.modelFor(isDesign), stage, error);
-          return fail(reason === "deadline" || error instanceof Anthropic.APIConnectionTimeoutError ? "AI_TIMEOUT"
-            : classifyProviderError(error).category === "credit" ? "AI_PROVIDER_CREDIT" : "AI_PROVIDER_ERROR");
+          const category = classifyProviderError(error).category;
+          const failure = fail(reason === "deadline" || error instanceof Anthropic.APIConnectionTimeoutError ? "AI_TIMEOUT"
+            : category === "credit" ? "AI_PROVIDER_CREDIT" : "AI_PROVIDER_ERROR");
+          if (category === "invalid_request") invalidRequest.add(failure);
+          return failure;
         },
         onRetry: (retry, delay, error) => {
           metrics.providerRetries = (metrics.providerRetries ?? 0) + 1;
@@ -291,8 +300,8 @@ export function createStageRunner(config: Config, options: Options = {}) {
     }
 
     /** Runs one provider interaction (token count or generation) on the primary provider, or on the fallback while its cooldown lasts.
-     * A primary call refused for credit (AI_PROVIDER_CREDIT after the primary's own policy) starts the cooldown, is logged, and is re-sent
-     * once, unchanged, to the fallback with that route's model. Any other failure, and a credit failure of the fallback, propagates as is.
+     * A primary call refused for credit (AI_PROVIDER_CREDIT after the primary's own policy) or rejected with a 400 invalid_request starts the cooldown, is logged, and is re-sent
+     * once, unchanged, to the fallback with that route's model. Any other failure, and any failure of the fallback, propagates as is.
      * metrics.provider and metrics.model always name the route that was last used, so the answering model is the one recorded (and priced). */
     async function viaRoute<T>(work: (route: Route) => Promise<T>, substage?: Substage, toFallback = false): Promise<T> {
       const attempt = (route: Route) => { metrics.provider = route.provider; metrics.model = route.modelFor(isDesign); return work(route); };
@@ -307,9 +316,12 @@ export function createStageRunner(config: Config, options: Options = {}) {
           logFallbackUsed("timeout", stage, substage, primary.provider, fallback.provider, primary.modelFor(isDesign), fallback.modelFor(isDesign));
           return attempt(fallback);
         }
-        if (!(error instanceof AIStageError) || error.code !== "AI_PROVIDER_CREDIT") throw error;
+        // Credit refusal, or a 400 invalid_request (the primary rejects this request shape; the fallback gets the same request once). Same cooldown for both,
+        // so a deterministic 400 is not paid for again on every call. Logged loudly with its reason: it can hide a request bug in our own code.
+        const reason = error instanceof AIStageError ? error.code === "AI_PROVIDER_CREDIT" ? "credit" : invalidRequest.has(error) ? "invalid_request" : undefined : undefined;
+        if (!reason) throw error;
         fallbackUntil = now() + FALLBACK_COOLDOWN_MS;
-        logProviderFallback(primary.provider, fallback.provider, fallback.modelFor(isDesign), stage);
+        logProviderFallback(primary.provider, fallback.provider, fallback.modelFor(isDesign), stage, reason);
         return attempt(fallback);
       }
     }
