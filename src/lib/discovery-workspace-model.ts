@@ -3,7 +3,7 @@ import type { CompanyContext } from "./company-context";
 import { MAX_OPEN_QUESTIONS, validateDiscovery, type DiscoveryInput } from "./discovery";
 import { describeField, REASK_AFTER_USER_TURNS, REASK_SUFFIX, STEP_GAP_PREFIX, STEP_KEYS as stepKeys, STEP_LABELS, STEP_QUESTIONS as stepQuestions,
   carriedGaps, describeBlocker, stepLabel, TO_CONFIRM, WORKSPACE_FIELDS } from "./workspace-fields";
-import { parseInterviewInput, revalidateStoredTurn, type InterviewInput, type InterviewTurn, type Scope } from "./ai/discovery-interview";
+import { parseInterviewInput, revalidateStoredTurn, spanOfQuote, type InterviewInput, type InterviewTurn, type Scope } from "./ai/discovery-interview";
 
 // Re-exported for server callers; the client imports ./workspace-fields directly.
 export { WORKSPACE_FIELDS };
@@ -147,7 +147,7 @@ function checked(state: WorkspaceState): WorkspaceState {
     (f.status === "KNOWN" && !f.evidence) || (f.status === "KNOWN") !== (f.value !== null) ||
     (f.status === "NOT_APPLICABLE" && !f.rationale) || (f.status === "OWNER_PENDING" && !f.owner)) ||
     state.steps.some(s => !validEvidence(s.evidence)) || state.requirements.some(r => !validEvidence(r.evidence)) ||
-    state.proposals.some(p => !sources.get(p.sourceId)?.includes(p.quote) || p.value !== p.quote ||
+    state.proposals.some(p => !sources.get(p.sourceId)?.includes(p.quote) || (p.value !== p.quote && spanOfQuote(p.quote, p.value) !== p.value) ||
       (!!p.nameHint && !sources.get(p.sourceId)?.includes(p.nameHint)))) fail("INVALID_WORKSPACE_EVIDENCE");
   return backfillCatalog(state);
 }

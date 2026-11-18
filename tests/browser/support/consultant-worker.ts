@@ -17,6 +17,8 @@ function interviewTurn(input: InterviewInput) {
   // assistant's reply may or may not be recorded yet when extraction reads the state, and that must not change what is proposed.
   const first = !input.history.some(item => item.role === "user");
   const open = input.fields.find(field => field.id === "current_systems" && field.status === "EMPTY");
+  // The model's short answer: when the sentence names the system, only those words are the proposed answer and the sentence is its source.
+  const short = quote.endsWith(" in a spreadsheet.") ? "a spreadsheet" : null;
   // A walkthrough message (marked by its first sentence) also yields an interviewer-proposed step and requirement:
   // the 2nd sentence becomes the step, the 3rd a pain point on it. `new_0` is that step within this turn.
   const sentences = message.text.split(/(?<=\.)\s/).map(sentence => sentence.trim());
@@ -28,7 +30,7 @@ function interviewTurn(input: InterviewInput) {
     questions: input.activeGaps.slice(0, 2).map(gap => ({ gapKey: gap.key, question: gap.detail.slice(0, 480),
       whyItMatters: "This lets me describe the current process accurately before we design anything." })),
     proposedUpdates: first && open ? [{ fieldId: open.id, operation: "PROPOSE_SET" as const, previousValue: null,
-      value: quote, sourceId: message.id, quote }] : [],
+      value: short ?? quote, sourceId: message.id, quote }] : [],
     proposedSteps: walkthrough ? [{ sourceId: message.id, quote: sentences[1]!, value: sentences[1]!, nameHint: "logs the return" }] : [],
     proposedRequirements: walkthrough ? [{ stepRef: "new_0", kind: "PAIN_POINT" as const, critical: false,
       sourceId: message.id, quote: sentences[2]!, value: sentences[2]! }] : [],

@@ -757,3 +757,34 @@ describe("confirming the As-Is as a draft with gaps", () => {
     });
   });
 });
+
+describe("a proposal whose value is a short answer from its quote", () => {
+  const text = "The clerk at the depot uses a spreadsheet to log every return.";
+  const record = (value: string) => {
+    let state = start();
+    const messageMeta = meta();
+    state = applyWorkspaceCommand(state, { type: "SEND_MESSAGE", text }, messageMeta);
+    const turn = { schemaVersion: 1, contextRevision: state.revision, reply: "Thank you for that context.", questions: ask("g_current_systems"), observations: [],
+      proposedUpdates: [{ fieldId: "current_systems", operation: "PROPOSE_SET", previousValue: null, value, sourceId: messageMeta.id, quote: text }] };
+    return { state: recordInterviewTurn(state, turn, messageMeta.id, meta()), messageMeta };
+  };
+
+  it("is stored with the span as value and the sentence as evidence, survives a reload, and is accepted as the span", () => {
+    let { state } = record("a spreadsheet");
+    expect(state.proposals[0]).toMatchObject({ value: "a spreadsheet", quote: text });
+    state = WorkspaceStateSchema.parse(JSON.parse(JSON.stringify(state)));
+    state = applyWorkspaceCommand(state, { type: "DECIDE_PROPOSAL", proposalId: state.proposals[0]!.id, decision: "ACCEPT" }, meta());
+    const fact = state.facts.find(f => f.id === "current_systems")!;
+    expect(fact.value).toBe("a spreadsheet");
+    expect(fact.evidence).toMatchObject({ quote: text });
+    expect(() => applyWorkspaceCommand(state, { type: "SEND_MESSAGE", text: "next" }, meta())).not.toThrow();
+  });
+
+  it("an older proposal (value equal to quote) still loads; a stored value that is not from its quote is refused", () => {
+    const { state } = record(text);
+    expect(state.proposals[0]!.value).toBe(text);
+    expect(() => applyWorkspaceCommand(state, { type: "SEND_MESSAGE", text: "next" }, meta())).not.toThrow();
+    const tampered = { ...state, proposals: state.proposals.map(p => ({ ...p, value: "something nobody said" })) };
+    expect(() => applyWorkspaceCommand(tampered, { type: "SEND_MESSAGE", text: "next" }, meta())).toThrow("INVALID_WORKSPACE_EVIDENCE");
+  });
+});

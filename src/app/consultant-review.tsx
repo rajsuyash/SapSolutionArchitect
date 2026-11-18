@@ -26,7 +26,8 @@ export function ProposalCard({ label, proposal, disabled, onAccept, onReject, on
     {proposal.operation === "PROPOSE_REPLACE" && proposal.previousValue && <p className={styles.muted}>Currently: {proposal.previousValue}</p>}
     {!editing && <>
       <p className={styles.help}>Suggested answer, taken from what you shared</p>
-      <blockquote className={styles.quote}>{proposal.quote}</blockquote>
+      <blockquote className={styles.quote}>{proposal.value}</blockquote>
+      {proposal.value !== proposal.quote && <p className={styles.muted} data-testid="proposal-source">From: {proposal.quote}</p>}
       <div className={styles.row}>
         <button type="button" className={styles.primary} disabled={off} onClick={() => void act(onAccept)}>Accept</button>
         {onEdit && <button type="button" className={styles.small} disabled={off} onClick={() => setEditing(true)}>Edit</button>}

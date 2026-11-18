@@ -118,7 +118,8 @@ describe("sentence-ID citations", () => {
     questions: [{ gapKey: "return-date-gap", question: "Which date stops the rental charge?", whyItMatters: "This changes the final invoice amount." }],
     proposedUpdates, proposedSteps: [], proposedRequirements: [], observations: [], ...extra });
   const update = (sentenceIds: string[], fieldId = "return-action") =>
-    ({ fieldId, operation: "PROPOSE_SET", previousValue: null, sentenceIds });
+    ({ fieldId, operation: "PROPOSE_SET", previousValue: null, sentenceIds,
+      ...(sentenceIds.length === 1 && sentenceIds[0] === "S1" ? { answer: first } : sentenceIds.length === 1 && sentenceIds[0] === "S2" ? { answer: second } : {}) });
   const run = (raw: unknown, input = fixture()) => validateInterviewTurn(input, raw);
   const data = (result: ReturnType<typeof run>) => (result as { data: InterviewTurn }).data;
 
@@ -148,7 +149,7 @@ describe("sentence-ID citations", () => {
   });
 
   it("trims ids from other sources to the first cited id's source, with a warning", () => {
-    const result = run(turn([update(["S2", "S3"])]));
+    const result = run(turn([{ ...update(["S2", "S3"]), answer: second }]));
     expect(result).toMatchObject({ success: true, warnings: [{ path: "proposedUpdates.0", code: "evidence_cross_source_trimmed" }] });
     expect(data(result).proposedUpdates[0]).toMatchObject({ sourceId: "MSG-3", quote: second });
     expect(data(run(turn([update(["S3", "S2"])]))).proposedUpdates[0]!.sourceId).not.toBe("MSG-3");
@@ -156,14 +157,14 @@ describe("sentence-ID citations", () => {
 
   it("resolves non-contiguous ids within one source to the exact span from the first start to the last end", () => {
     const input = fixture(); input.currentMessage.text = "One. Two. Three.";
-    const result = run(turn([update(["S1", "S3"])]), input);
+    const result = run(turn([{ ...update(["S1", "S3"]), answer: "One. Two. Three." }]), input);
     expect(result).toMatchObject({ success: true, warnings: [] });
     expect(data(result).proposedUpdates[0]).toMatchObject({ quote: "One. Two. Three.", value: "One. Two. Three." });
   });
 
   it("de-duplicates repeated ids silently", () => {
     const input = fixture(); input.currentMessage.text = "One. Two. Three.";
-    const result = run(turn([update(["S1", "S1"])]), input);
+    const result = run(turn([{ ...update(["S1", "S1"]), answer: "One." }]), input);
     expect(result).toMatchObject({ success: true, warnings: [] });
     expect(data(result).proposedUpdates[0]!.quote).toBe("One.");
   });

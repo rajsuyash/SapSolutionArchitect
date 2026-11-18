@@ -149,11 +149,13 @@ test("a consultant conversation builds, confirms and generates from reviewed dis
     const proposal = page.getByTestId("proposal");
     await expect(proposal).toHaveCount(1);
     await expect(proposal).toContainText("Current systems and handoffs");
-    await expect(proposal).toContainText("We track equipment returns in a spreadsheet.");
+    // The suggested answer is the short one; the sentence it came from is shown as its source.
+    await expect(proposal.getByRole("blockquote")).toHaveText("a spreadsheet");
+    await expect(proposal.getByTestId("proposal-source")).toHaveText("From: We track equipment returns in a spreadsheet.");
     await expect(group(page, "Current systems and handoffs")).toContainText("Not answered yet.");
     await proposal.getByRole("button", { name: "Accept", exact: true }).click();
     await expect(proposal).toHaveCount(0);
-    await expect(group(page, "Current systems and handoffs")).toContainText("We track equipment returns in a spreadsheet.");
+    await expect(group(page, "Current systems and handoffs")).toContainText("a spreadsheet");
 
     const observation = page.getByTestId("observation");
     await expect(observation).toContainText("Check whether late returns are logged");
@@ -185,7 +187,7 @@ test("a consultant conversation builds, confirms and generates from reviewed dis
     await expandAll(page);
     await expect(group(page, "Current business rules")).toContainText("Marked as not known yet.");
     await expect(group(page, "Current exceptions")).toContainText("Waiting for Dana Whitfield to answer.");
-    await expect(group(page, "Current systems and handoffs")).toContainText("We track equipment returns in a spreadsheet.");
+    await expect(group(page, "Current systems and handoffs")).toContainText("a spreadsheet");
 
     // Continue the conversation, then complete the remaining discovery through the visible controls.
     await say(page, "The rental coordinator Dana Whitfield owns it. It runs from dispatch to the final invoice.", 2);
