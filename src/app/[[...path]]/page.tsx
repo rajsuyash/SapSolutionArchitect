@@ -14,6 +14,7 @@ import { DiscoveryPanel, type Variant } from "../discovery-panel";
 import { ConsultantPanel } from "../consultant-panel";
 import { ConsultantReport } from "../consultant-report";
 import { buildReport } from "../../lib/consultant-report";
+import { overviewStatus } from "../../lib/project-status";
 
 type Props = { params: Promise<{ path?: string[] }> };
 export async function generateMetadata({ params }: Props) {
@@ -27,8 +28,6 @@ function Panel({ title, children, wide = false }: { title: string; children: Rea
     <h1>{title}</h1>{children}
   </section>;
 }
-
-const statusLabel = (status: string) => status === "ACTIVE" ? "Active" : status === "SCOPE_PROPOSED" ? "Scope proposed" : "Draft";
 
 type FirstVariant = Awaited<ReturnType<ReturnType<typeof getRuntime>["workspaces"]["list"]>>[number] | undefined;
 type ToBeJob = Awaited<ReturnType<ReturnType<typeof getRuntime>["consultantJobs"]["latest"]>>["jobs"][number] | undefined;
@@ -62,15 +61,6 @@ function ProjectSteps({ projectId, current, scoped, mapped, toBe }: { projectId:
       {step.href && index + 1 !== current ? <Link href={step.href}>{step.label}</Link> : step.label}
       {step.mark && <span className="steps-done"> ({step.mark})</span>}
     </li>)}</ol>;
-}
-
-/** The overview's status line goes beyond the stored setup status once the process is mapped or a To-Be exists. Display only:
- * the stored status, the API and the project list (which would need a lookup per project) are unchanged. */
-function overviewStatus(setupStatus: string, mapped: boolean, job: ToBeJob) {
-  if (setupStatus === "ACTIVE") return statusLabel(setupStatus);
-  if (job?.status === "SUCCEEDED") return "To-Be draft ready";
-  if (job?.status === "QUEUED" || job?.status === "RUNNING") return "To-Be being generated";
-  return mapped ? "Process mapped" : statusLabel(setupStatus);
 }
 
 /** The overview's next step follows the guided conversation: its first variant, whether it is confirmed, and its latest To-Be job
@@ -209,6 +199,14 @@ export default async function WorkspacePage({ params }: Props) {
     </Panel>;
   }
   const review = route === "/review";
+  // The list shows the overview's status line; one query covers every listed project, and a failed lookup falls back to the stored status.
+  const progressRows = await getRuntime().consultantJobs.projectProgress(token).catch(error => {
+    console.error(JSON.stringify({ event: "project_progress_lookup_failed", code: failureCode(error) }));
+    return [];
+  });
+  const progress = new Map(progressRows.map(row => [row.projectId, row]));
+  const status = (item: (typeof projects)[number]) => { const row = progress.get(item.id);
+    return overviewStatus(item.setupStatus, !!row?.mapped, row?.toBeStatus ? { status: row.toBeStatus } : undefined); };
   return <Panel title={review ? "Review" : "Your projects"}>
     {review && <p className="panel-description">Review requests are not available yet. Open one of your project workspaces below.</p>}
     {projects.length === 0 ? <div data-testid="projects-empty">
@@ -219,7 +217,7 @@ export default async function WorkspacePage({ params }: Props) {
     </div> : <ul aria-label="Projects" style={{ listStyle: "none", padding: 0, margin: "24px 0" }}>
       {projects.map((item) => <li key={item.id} style={{ borderTop: "1px solid var(--border)", padding: "20px 0" }}>
         <Link href={`/projects/${item.id}`} style={{ fontSize: 19, fontWeight: 600, overflowWrap: "anywhere" }}>{item.name}</Link>
-        <p className="panel-description" style={{ margin: "8px 0 0" }}>{item.clientName} · {statusLabel(item.setupStatus)}</p>
+        <p className="panel-description" style={{ margin: "8px 0 0" }}>{item.clientName} · {status(item)}</p>
       </li>)}
     </ul>}
     {user.orgRole !== "GUEST" && !review && <Link className="primary-button" href="/projects/new"

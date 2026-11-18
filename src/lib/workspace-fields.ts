@@ -169,3 +169,20 @@ export function nothingRecordedFromLastMessage(state: { messages: readonly { id:
   const last = state.messages.findLast(message => message.role === "user");
   return Boolean(last) && last!.text.trim().length >= NOTICE_MIN_CHARS && (state.emptyExtractionMessageIds ?? []).includes(last!.id);
 }
+
+/** The reason stored when a person closes a possibly settled point with one click (the server still requires a typed reason). */
+export const OBSERVATION_CLOSE_REASON = "The details this point asked about have since been answered.";
+
+type FieldView = Pick<WorkspaceState, "facts" | "stepDrafts" | "requirementDrafts">;
+const fieldStatus = (state: FieldView, fieldId: string): string | undefined =>
+  (state.facts.find(f => f.id === fieldId) ?? state.stepDrafts.flatMap(d => d.fields).find(f => f.id === fieldId)
+    ?? state.requirementDrafts.map(d => d.statement).find(f => f.id === fieldId))?.status;
+
+/** A pending follow-up whose every field now holds an answer (known or not applicable). A field id that resolves to nothing, and any
+ * possible contradiction, is never settled. Step drafts keep their `<draftId>_<key>` ids for good: nothing promotes them. */
+export function isPossiblySettled(state: FieldView, observation: { kind: string; status: string; fieldIds: readonly string[] }): boolean {
+  return observation.status === "PENDING" && observation.kind === "FOLLOW_UP_SUGGESTION" && observation.fieldIds.every(id => {
+    const status = fieldStatus(state, id);
+    return status === "KNOWN" || status === "NOT_APPLICABLE";
+  });
+}

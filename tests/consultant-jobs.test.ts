@@ -227,6 +227,24 @@ describe.skipIf(process.env.RUN_DB_TESTS !== "1")("durable consultant conversati
     expect((await jobs.latest(owner.token, owner.project.id, "RENTAL")).jobs[0]?.status).toBe("SUCCEEDED");
   });
 
+  it("reports each visible project's first-variant mapping and latest To-Be status for the project list, and nothing from another org", async () => {
+    const scopeOnly = await draft(); const mapped = await confirmed(); const generating = await confirmed(); const finished = await confirmed();
+    const queued = await enqueueToBe(generating); expect(queued.status).toBe("QUEUED");
+    await execute((await enqueueToBe(finished)).id, toBeRunner());
+    const other = await draft();
+    const byProject = async (token: string) => new Map((await jobs.projectProgress(token)).map(row => [row.projectId, row]));
+    const owned = await byProject(scopeOnly.token);
+    expect([...owned.keys()]).toEqual([scopeOnly.project.id]);
+    expect(owned.get(scopeOnly.project.id)).toMatchObject({ mapped: false, toBeStatus: null });
+    expect((await byProject(mapped.token)).get(mapped.project.id)).toMatchObject({ mapped: true, toBeStatus: null });
+    expect((await byProject(generating.token)).get(generating.project.id)).toMatchObject({ mapped: true, toBeStatus: "QUEUED" });
+    expect((await byProject(finished.token)).get(finished.project.id)).toMatchObject({ mapped: true, toBeStatus: "SUCCEEDED" });
+    expect([...(await byProject(other.token)).keys()]).toEqual([other.project.id]);
+    // A user who is not a member of the project sees no progress for it, even inside the same org.
+    await pool.query("DELETE FROM project_memberships WHERE project_id=$1", [finished.project.id]);
+    expect((await byProject(finished.token)).has(finished.project.id)).toBe(false);
+  });
+
   it("fences timed-out and recovered jobs even if a provider returns successfully later", async () => {
     const owner = await draft(); const job = await enqueue(owner);
     await execute(job.id, runner(async () => {

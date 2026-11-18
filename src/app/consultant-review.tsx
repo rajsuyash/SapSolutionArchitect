@@ -72,3 +72,31 @@ export function ObservationCard({ labels, observation, disabled, onReview }: {
     </div>
   </li>;
 }
+
+/** Follow-ups whose fields have since been answered. One click closes them with a fixed reason; the server still requires that reason. */
+export function SettledGroup({ items, disabled, onClose }: {
+  items: { observation: Observation; labels: string[] }[]; disabled: boolean;
+  /** Closes every given point, in order. */
+  onClose: (ids: string[]) => Promise<boolean>;
+}) {
+  const [busy, setBusy] = useState(false);
+  if (!items.length) return null;
+  const off = disabled || busy;
+  async function close(ids: string[]) { setBusy(true); await onClose(ids); setBusy(false); }
+  return <details className={styles.fold} data-testid="possibly-settled">
+    <summary className={styles.foldRow}><h4 className={styles.fieldLabel}>Possibly settled ({items.length})</h4></summary>
+    <p className={styles.muted}>The details these points asked about have since been answered. Close the ones that are settled.</p>
+    <div className={styles.row}>
+      <button type="button" className={styles.small} data-testid="close-all-settled" disabled={off}
+        onClick={() => void close(items.map(item => item.observation.id))}>Close all {items.length}</button>
+    </div>
+    <ul className={styles.list}>{items.map(({ observation, labels }) => <li key={observation.id} className={styles.card}>
+      <p>{observation.detail}</p>
+      <p className={styles.muted}>Related to: {labels.join(", ")}</p>
+      <div className={styles.row}>
+        <button type="button" className={styles.small} data-testid="close-settled" disabled={off}
+          onClick={() => void close([observation.id])}>Close</button>
+      </div>
+    </li>)}</ul>
+  </details>;
+}

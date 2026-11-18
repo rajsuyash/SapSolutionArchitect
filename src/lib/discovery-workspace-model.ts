@@ -428,6 +428,8 @@ function toBeNote(state: WorkspaceState): string {
   return `Before a To-Be can be drafted: ${listed}${more}.${open} These are listed on the Summary tab.`;
 }
 
+const observationKey = (o: { kind: string; fieldIds: readonly string[] }) => JSON.stringify([o.kind, [...new Set(o.fieldIds)].sort()]);
+
 /** Persist only a validated model turn. It cannot change an accepted fact. */
 /** Persist a validated model turn. It cannot change an accepted fact. `scope` selects what is recorded: "chat" the assistant's
  * reply and questions, "extraction" the proposals and observations found in `currentMessageId` (no reply), "full" both. */
@@ -471,9 +473,14 @@ export function recordInterviewTurn(rawState: WorkspaceState, rawTurn: unknown, 
       operation: "PROPOSE_REQUIREMENT", previousValue: null, value: item.value, sourceId: item.sourceId, quote: item.quote,
       stepRef: fresh ? proposalId(fieldCount + Number(fresh[1])) : item.stepRef, kind: item.kind, critical: item.critical, ...base });
   });
-  turn.observations.forEach((observation, index) => state.observations.push({
-    id: `o_${meta.id}_${index}`, ...observation, status: "PENDING", rationale: null, reviewedBy: null,
-  }));
+  // A point already pending for the same kind and set of fields is not recorded again (closed ones may be raised again).
+  const raised = new Set(state.observations.filter(o => o.status === "PENDING").map(observationKey));
+  turn.observations.forEach((observation, index) => {
+    const key = observationKey(observation);
+    if (raised.has(key)) return;
+    raised.add(key);
+    state.observations.push({ id: `o_${meta.id}_${index}`, ...observation, status: "PENDING", rationale: null, reviewedBy: null });
+  });
   state.revision++;
   return checked(state);
 }

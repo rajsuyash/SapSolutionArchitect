@@ -63,6 +63,8 @@ const phase3b = "test-results/phase3b";
 const phase3c = "test-results/phase3c";
 const phase4e = "test-results/phase4e";
 const phase4b = "test-results/phase4b";
+const phase4i = "test-results/phase4i";
+const phase4j = "test-results/phase4j";
 const phase4g = "test-results/phase4g";
 const phase4h = "test-results/phase4h";
 const SNAPSHOT = "00000000-0000-4000-8000-000000000001";
@@ -161,8 +163,10 @@ test("a consultant conversation builds, confirms and generates from reviewed dis
     await expect(proposal).toHaveCount(0);
     await expect(group(page, "Current systems and handoffs")).toContainText("a spreadsheet");
 
-    const observation = page.getByTestId("observation");
-    await expect(observation).toContainText("Check whether late returns are logged");
+    // The follow-up asked about the field that was just answered, so it waits in the collapsed "Possibly settled" group.
+    const settled = page.getByTestId("possibly-settled");
+    await expect(settled).toContainText("Possibly settled (1)");
+    await expect(page.getByTestId("observation")).toHaveCount(0);
 
     // Explicit non-answers keep the gap visible without inventing facts.
     await group(page, "Current business rules").getByRole("button", { name: /I don.t know/ }).click();
@@ -256,9 +260,10 @@ test("a consultant conversation builds, confirms and generates from reviewed dis
     expect(new Set(gaps).size).toBe(gaps.length);
     mkdirSync(phase4b, { recursive: true });
     await page.screenshot({ path: `${phase4b}/summary-draft-confirmable.png`, fullPage: true });
-    await observation.getByLabel(/Reason for closing/).fill("Late returns are only in the spreadsheet");
-    await observation.getByRole("button", { name: "Dismiss", exact: true }).click();
-    await expect(observation).toHaveCount(0);
+    await settled.locator("summary").click();
+    await expect(settled).toContainText("Check whether late returns are logged");
+    await settled.getByTestId("close-settled").click();
+    await expect(settled).toHaveCount(0);
     await expect(readiness.getByRole("button", { name: "Confirm as draft with gaps" })).toHaveCount(0);
 
     // Confirm, then generate; the result is a draft for human review, never an approval.
@@ -371,6 +376,16 @@ test("a consultant conversation builds, confirms and generates from reviewed dis
       expect((await next.boundingBox())!.y, `report link offset at ${viewport.width}px`).toBeLessThan(viewport.height);
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
       await page.screenshot({ path: `${phase4b}/overview-to-be-${viewport.width}.png` });
+      // The project list shows the same status wording as the overview for this project.
+      const overviewText = (await page.locator(".panel-description").filter({ hasText: "Synthetic client" }).first().innerText()).trim();
+      await page.goto(`${origin}/projects`);
+      await expect(page.getByRole("list", { name: "Projects" }).getByRole("listitem").filter({ has: page.locator(`a[href="/projects/${id}"]`) })
+        .locator(".panel-description")).toHaveText(overviewText);
+      expect(overviewText).toContain("To-Be draft ready");
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+      mkdirSync(phase4i, { recursive: true });
+      await page.screenshot({ path: `${phase4i}/projects-list-${viewport.width}.png`, fullPage: true });
+      await page.goto(`${origin}/projects/${id}`);
     }
     await page.getByRole("list", { name: "Project steps" }).getByRole("link", { name: "Design the To-Be" }).click();
     await expect(page.getByRole("heading", { level: 1, name: /^To-Be design report/ })).toBeVisible();
@@ -547,6 +562,49 @@ test.describe("small screens", () => {
     await page.screenshot({ path: `${phase2}/fresh-390-summary.png`, fullPage: true });
     await expandAll(page);
     expect(await fits()).toBe(true);
+  });
+
+  test("a follow-up whose field has been answered moves to a collapsed group that closes in one click; a contradiction never does", async ({ page }) => {
+    test.setTimeout(90000);
+    await setup(page);
+    await startConversation(page);
+    await page.setViewportSize({ width: 390, height: 844 });
+    await withWorker(async () => {
+      await say(page, `Conflicting returns. ${firstMessage}`, 1);
+      await page.getByRole("tab", { name: /^Summary/ }).click();
+      await expect(page.getByTestId("progress")).toBeVisible();
+      const points = page.getByRole("region", { name: "Points to check" });
+      const open = points.getByTestId("observation");
+      await expect(open).toHaveCount(2, { timeout: 15000 });
+      await expect(points.getByTestId("possibly-settled")).toHaveCount(0);
+      await expect(page.getByRole("tab", { name: /^Summary \(3 to review\)$/ })).toBeVisible();
+      // Answer the field the follow-up asked about (the proposed answer is left alone, so the point is settled by a person's own answer).
+      await expand(page, "Current process (As-Is)");
+      await answer(page, "Current systems and handoffs", "A spreadsheet and e-mail");
+      const settled = points.getByTestId("possibly-settled");
+      await expect(settled).toContainText("Possibly settled (1)");
+      await expect(settled).toHaveJSProperty("open", false);
+      await expect(open).toHaveCount(1);
+      await expect(open).toContainText("The return date may differ from the billing date.");
+      // The count is unchanged: the settled point is still a point to check until it is closed.
+      await expect(page.getByRole("tab", { name: /^Summary \(3 to review\)$/ })).toBeVisible();
+      await settled.locator("summary").focus();
+      await page.keyboard.press("Enter");
+      await expect(settled).toHaveJSProperty("open", true);
+      await expect(settled).toContainText("The details these points asked about have since been answered. Close the ones that are settled.");
+      await expect(settled.getByTestId("close-all-settled")).toHaveText("Close all 1");
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+      mkdirSync(phase4j, { recursive: true });
+      await settled.scrollIntoViewIfNeeded();
+      await page.screenshot({ path: `${phase4j}/settled-open-390.png`, fullPage: true });
+      await page.setViewportSize({ width: 1440, height: 900 });
+      await page.screenshot({ path: `${phase4j}/settled-open-1440.png`, fullPage: true });
+      await page.setViewportSize({ width: 390, height: 844 });
+      await settled.getByTestId("close-settled").click();
+      await expect(settled).toHaveCount(0);
+      await expect(open).toHaveCount(1);
+      await expect(page.getByRole("tab", { name: /^Summary \(2 to review\)$/ })).toBeVisible();
+    });
   });
 
   test("one button marks a step's still-empty list details as not applicable and leaves the rest alone", async ({ page }) => {

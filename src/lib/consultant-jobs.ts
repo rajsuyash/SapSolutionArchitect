@@ -172,6 +172,23 @@ export function createConsultantJobs(pool: Pool, auth: AuthService, queue: PgBos
           AND kind<>'EXTRACTION' ORDER BY created_at DESC,id DESC LIMIT 20`, [user.orgId, projectId, variantCode])).rows;
         return { jobs: jobs.map(expose) };
       }),
+    /** For the project list: per visible project, whether its first variant (lowest variant code, as the overview picks it) is confirmed and the
+     * status of that variant's latest To-Be job (found among its 20 newest non-extraction jobs, as `latest` returns them). One query for all
+     * projects. Same read rule as `latest`: org filter plus project membership, demo projects excluded, and RLS applies on top. */
+    projectProgress: (token: string | null) => withTenantSession(pool, auth, token, async ({ client, user }) =>
+      (await client.query<{ projectId: string; mapped: boolean; toBeStatus: string | null }>(
+        `WITH first_variant AS (
+           SELECT DISTINCT ON (r.project_id) r.project_id,r.variant_code,r.confirmed_snapshot_id
+           FROM discovery_workspace_revisions r
+           JOIN projects p ON p.org_id=r.org_id AND p.id=r.project_id AND NOT p.is_demo
+           JOIN project_memberships m ON m.org_id=r.org_id AND m.project_id=r.project_id AND m.user_id=$2
+           WHERE r.org_id=$1 ORDER BY r.project_id,r.variant_code,r.revision DESC)
+         SELECT f.project_id AS "projectId",f.confirmed_snapshot_id IS NOT NULL AS mapped,t.status AS "toBeStatus"
+         FROM first_variant f LEFT JOIN LATERAL (
+           SELECT status FROM (SELECT kind,status,created_at,id FROM consultant_jobs WHERE org_id=$1 AND project_id=f.project_id
+             AND variant_code=f.variant_code AND kind<>'EXTRACTION' ORDER BY created_at DESC,id DESC LIMIT 20) recent
+           WHERE kind='TO_BE' ORDER BY created_at DESC,id DESC LIMIT 1) t ON f.confirmed_snapshot_id IS NOT NULL`,
+        [user.orgId, user.id])).rows),
     /** Full validated To-Be result for one finished job. Visible to any project member; tenant isolation,
      * job/workspace binding and SUCCEEDED-only are all enforced by the query. Metrics are never selected into the view. */
     async report(token: string | null, projectId: string, variantCode: string, jobId: string, options: SapReferenceOptions = {}): Promise<ReportData> {

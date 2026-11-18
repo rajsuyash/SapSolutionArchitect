@@ -1,12 +1,12 @@
 "use client";
 
 import { useEffect, useState, type ReactNode } from "react";
-import { NONE_APPLY_REASON, REQUIREMENT_KIND_LABELS, STEP_KEYS, STEP_LABELS, WORKSPACE_FIELDS, describeBlocker, describeField, describeProposal,
-  emptyListKeys, noneApplyLabel, requirementLabel, stepLabel } from "../lib/workspace-fields";
+import { NONE_APPLY_REASON, OBSERVATION_CLOSE_REASON, REQUIREMENT_KIND_LABELS, STEP_KEYS, STEP_LABELS, WORKSPACE_FIELDS, describeBlocker, describeField, describeProposal,
+  emptyListKeys, isPossiblySettled, noneApplyLabel, requirementLabel, stepLabel } from "../lib/workspace-fields";
 import { isActive, type Command, type Fact, type JobView, type Workspace, type WorkspaceView } from "./consultant-api";
 import { FieldRow, type FactUpdate } from "./consultant-field";
 import { EditableGroup, type GroupField } from "./consultant-group";
-import { ObservationCard, ProposalCard } from "./consultant-review";
+import { ObservationCard, ProposalCard, SettledGroup } from "./consultant-review";
 import styles from "./consultant.module.css";
 import { SupportLink, isAccountBlocked, needsSupport } from "./support";
 
@@ -96,6 +96,8 @@ export function ConsultantSummary({ workspace, jobs, locked, run, onGenerate, re
   const stepId = steps.some(step => step.id === requirement.stepId) ? requirement.stepId : steps[0]?.id ?? "";
   const pending = state.proposals.filter(proposal => proposal.status === "PENDING");
   const reviews = state.observations.filter(observation => observation.status === "PENDING");
+  const settled = reviews.filter(observation => isPossiblySettled(state, observation));
+  const open = reviews.filter(observation => !settled.includes(observation));
   type Plain = Pick<Fact, "status" | "value" | "rationale" | "owner">;
   const fieldRow = (id: string, fact: Plain, label?: string, grouped = false) => {
     const info = describeField(state, id);
@@ -183,9 +185,12 @@ export function ConsultantSummary({ workspace, jobs, locked, run, onGenerate, re
     </Section>}
 
     {reviews.length > 0 && <Section id="observations-heading" title="Points to check">
-      <ul className={styles.list}>{reviews.map(observation => <ObservationCard key={observation.id} observation={observation} disabled={!editable}
+      {open.length > 0 && <ul className={styles.list}>{open.map(observation => <ObservationCard key={observation.id} observation={observation} disabled={!editable}
         labels={observation.fieldIds.map(id => describeField(state, id).label)}
-        onReview={(decision, rationale) => run({ type: "REVIEW_OBSERVATION", observationId: observation.id, decision, rationale })} />)}</ul>
+        onReview={(decision, rationale) => run({ type: "REVIEW_OBSERVATION", observationId: observation.id, decision, rationale })} />)}</ul>}
+      {/* ponytail: one command per point, sent in turn like the group edit (ceiling: 500 stored points, one round trip each); an atomic bulk command is not worth a new wire type. */}
+      <SettledGroup disabled={!editable} items={settled.map(observation => ({ observation, labels: observation.fieldIds.map(id => describeField(state, id).label) }))}
+        onClose={ids => run(ids.map(observationId => ({ type: "REVIEW_OBSERVATION", observationId, decision: "RESOLVE", rationale: OBSERVATION_CLOSE_REASON })))} />
     </Section>}
 
     <Collapsible id="context-heading" title="Business context" figure={`${context.answered} of ${context.total} answered`} recorded={context.recorded}>

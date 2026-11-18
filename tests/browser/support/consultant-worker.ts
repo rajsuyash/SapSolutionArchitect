@@ -38,8 +38,11 @@ function interviewTurn(input: InterviewInput) {
         { key: "trigger" as const, value: "when the truck arrives", quote: sentences[1]! }] } : {}) }] : [],
     proposedRequirements: walkthrough ? [{ stepRef: "new_0", kind: "PAIN_POINT" as const, critical: false,
       sourceId: message.id, quote: sentences[2]!, value: sentences[2]! }] : [],
+    // A message starting "Conflicting returns." also raises a possible contradiction, which is never offered for one-click closing.
     observations: first && open ? [{ kind: "FOLLOW_UP_SUGGESTION" as const, fieldIds: [open.id],
-      detail: "Check whether late returns are logged anywhere other than the spreadsheet." }] : [],
+      detail: "Check whether late returns are logged anywhere other than the spreadsheet." },
+    ...(message.text.startsWith("Conflicting returns.") ? [{ kind: "POSSIBLE_CONFLICT" as const, fieldIds: ["current_trigger"],
+      detail: "The return date may differ from the billing date." }] : [])] : [],
   };
 }
 
