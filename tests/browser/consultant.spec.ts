@@ -60,6 +60,7 @@ async function withWorker(work: () => Promise<void>) {
 const phase3a = "test-results/phase3a";
 const phase3b = "test-results/phase3b";
 const phase3c = "test-results/phase3c";
+const phase4b = "test-results/phase4b";
 const SNAPSHOT = "00000000-0000-4000-8000-000000000001";
 /** Presents the conversation as confirmed with gaps (and its To-Be jobs as given) by rewriting the two read responses only.
  * Reaching "confirmed" through the real UI takes a full discovery walk-through, which the first test already covers end to end;
@@ -156,9 +157,6 @@ test("a consultant conversation builds, confirms and generates from reviewed dis
 
     const observation = page.getByTestId("observation");
     await expect(observation).toContainText("Check whether late returns are logged");
-    await observation.getByLabel(/Reason for closing/).fill("Late returns are only in the spreadsheet");
-    await observation.getByRole("button", { name: "Dismiss", exact: true }).click();
-    await expect(observation).toHaveCount(0);
 
     // Explicit non-answers keep the gap visible without inventing facts.
     await group(page, "Current business rules").getByRole("button", { name: /I don.t know/ }).click();
@@ -238,6 +236,25 @@ test("a consultant conversation builds, confirms and generates from reviewed dis
     await page.getByRole("button", { name: "Add item", exact: true }).click();
     await answer(page, /^Future requirement 1 for Step 1/, "Require a return date before invoicing");
 
+    // Only the point to check is still open. That is a soft gap: a draft can be confirmed, the full confirmation cannot, so the
+    // Summary offers exactly one enabled confirm action, and each open item is listed once.
+    const readiness = page.getByRole("region", { name: "Ready to confirm?" });
+    await expect(readiness.getByRole("button", { name: "Confirm as draft with gaps", exact: true })).toBeEnabled();
+    await expect(readiness.getByRole("button", { name: "Confirm current process", exact: true })).toHaveCount(0);
+    await expect(readiness.locator("button:enabled", { hasText: /^Confirm/ })).toHaveCount(1);
+    await expect(readiness.locator("button:disabled", { hasText: /^Confirm/ })).toHaveCount(0);
+    await expect(page.getByTestId("draft-gaps")).toHaveCount(1);
+    await expect(page.getByTestId("blockers")).toHaveCount(0);
+    const gaps = await readiness.locator("li").allInnerTexts();
+    expect(gaps.length).toBeGreaterThan(0);
+    expect(new Set(gaps).size).toBe(gaps.length);
+    mkdirSync(phase4b, { recursive: true });
+    await page.screenshot({ path: `${phase4b}/summary-draft-confirmable.png`, fullPage: true });
+    await observation.getByLabel(/Reason for closing/).fill("Late returns are only in the spreadsheet");
+    await observation.getByRole("button", { name: "Dismiss", exact: true }).click();
+    await expect(observation).toHaveCount(0);
+    await expect(readiness.getByRole("button", { name: "Confirm as draft with gaps" })).toHaveCount(0);
+
     // Confirm, then generate; the result is a draft for human review, never an approval.
     await expect(page.getByText("Everything required is answered.")).toBeVisible();
     await expect(page.getByTestId("progress")).toHaveText("Everything needed is answered.");
@@ -245,6 +262,14 @@ test("a consultant conversation builds, confirms and generates from reviewed dis
     await page.screenshot({ path: `${phase2}/populated-desktop.png`, fullPage: true });
     await page.getByRole("button", { name: "Confirm current process", exact: true }).click();
     await expect(page.getByRole("button", { name: "Confirmed", exact: true })).toBeDisabled();
+    // Confirmed but nothing generated yet: the overview's third step leads back to the conversation and claims no progress.
+    const overview = await page.context().newPage();
+    await overview.goto(`${origin}/projects/${id}`);
+    const toBeStep = overview.getByRole("list", { name: "Project steps" }).getByRole("listitem").filter({ hasText: "Design the To-Be" });
+    await expect(toBeStep.getByRole("link", { name: "Design the To-Be" })).toHaveAttribute("href", `/projects/${id}/consultant`);
+    await expect(toBeStep).not.toContainText("(");
+    await expect(overview.locator(".panel-description").filter({ hasText: "Synthetic client" }).first()).toContainText("Process mapped");
+    await overview.close();
     await page.getByRole("button", { name: "Generate To-Be design", exact: true }).click();
     const status = page.getByTestId("to-be-status");
     await expect(status).toContainText(/A To-Be draft was generated/, { timeout: 25000 });
@@ -312,8 +337,37 @@ test("a consultant conversation builds, confirms and generates from reviewed dis
       await page.goto(href);
       const mapping = page.getByRole("list", { name: "Project steps" }).getByRole("listitem").filter({ hasText: "Map the current process" });
       await expect(mapping).toContainText("(done)");
-      await expect(page.getByRole("list", { name: "Project steps" }).getByRole("listitem").filter({ hasText: "Design the To-Be" })).not.toContainText("(done)");
+      // A generated To-Be that still needs review is a draft, never "done". Only the overview looks the To-Be up (checked below).
+      const step = page.getByRole("list", { name: "Project steps" }).getByRole("listitem").filter({ hasText: "Design the To-Be" });
+      await expect(step).not.toContainText("(done)");
     }
+
+    // The overview leads to the report: step three links to it, the status says so, and the next-step link sits on the first screen
+    // even when a long scope proposal follows it. The scope proposal itself is scripted; this test is about where the link goes.
+    await page.route(/\/api\/projects\/[^/]+\/analysis$/, route => route.fulfill({ json: { success: true, data: {
+      job: { id: "00000000-0000-4000-8000-0000000000bb", kind: "PROBLEM_ANALYSIS", status: "SUCCEEDED", progressLabel: "Scope proposed", error: null, result: null },
+      canAnalyze: true,
+      analysis: { scopeSummary: "Equipment hire returns and invoicing.", inputTruncated: false, clarifyingQuestions: ["Who approves credit notes?"],
+        objectives: Array.from({ length: 6 }, (_, i) => ({ id: `o${i}`, text: `Objective ${i + 1} for accurate invoicing` })),
+        painPoints: [{ id: "p1", text: "Late returns bill wrongly", quote: "Invoices are often wrong" }],
+        proposedProcesses: Array.from({ length: 14 }, (_, i) => ({ ref: `r${i}`, level: 1 + (i % 3), name: `Process ${i + 1}`, module: "SD", rationale: "Needed for the return-to-invoice flow." })) } } } }));
+    for (const viewport of [{ width: 390, height: 844 }, { width: 1440, height: 900 }]) {
+      await page.setViewportSize(viewport);
+      await page.goto(`${origin}/projects/${id}`);
+      const step = page.getByRole("list", { name: "Project steps" }).getByRole("listitem").filter({ hasText: "Design the To-Be" });
+      await expect(step).toContainText("(draft ready)");
+      await expect(step).not.toContainText("(done)");
+      await expect(step.getByRole("link", { name: "Design the To-Be" })).toHaveAttribute("href", /\/consultant\/[^/]+\/to-be\/[0-9a-f-]{36}$/);
+      await expect(page.locator(".panel-description").filter({ hasText: "Synthetic client" }).first()).toContainText("To-Be draft ready");
+      const next = page.locator('[data-action="next-step"]');
+      await expect(next).toHaveText("Open the To-Be report");
+      await expect(next).toHaveAttribute("href", await step.getByRole("link").getAttribute("href") as string);
+      expect((await next.boundingBox())!.y, `report link offset at ${viewport.width}px`).toBeLessThan(viewport.height);
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+      await page.screenshot({ path: `${phase4b}/overview-to-be-${viewport.width}.png` });
+    }
+    await page.getByRole("list", { name: "Project steps" }).getByRole("link", { name: "Design the To-Be" }).click();
+    await expect(page.getByRole("heading", { level: 1, name: /^To-Be design report/ })).toBeVisible();
   });
   expect(errors).toEqual([]);
 });

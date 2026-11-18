@@ -30,6 +30,7 @@ test("a new project shows where it stands, and an ended trial offers a way to re
   await expect(steps.getByRole("listitem")).toHaveCount(3);
   await expect(steps.locator('[aria-current="step"]')).toHaveText("Scope the problem");
   await expect(steps).not.toContainText("(done)"); // nothing is marked done before a scope exists
+  await expect(steps.getByRole("listitem").filter({ hasText: "Design the To-Be" }).getByRole("link")).toHaveCount(0); // nothing to open before the process is mapped
   await expect(page.locator('[data-action="next-step"]')).toHaveCount(0);
   await expect(page.locator('a[href^="mailto:"]')).toHaveCount(0); // control: no contact exit while nothing is wrong
   await page.screenshot({ path: `${shots}/overview-desktop.png`, fullPage: true });

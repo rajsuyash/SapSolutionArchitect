@@ -30,40 +30,59 @@ function Panel({ title, children, wide = false }: { title: string; children: Rea
 
 const statusLabel = (status: string) => status === "ACTIVE" ? "Active" : status === "SCOPE_PROPOSED" ? "Scope proposed" : "Draft";
 
-/** Where a project stands. Scope is done once the project is no longer a draft; mapping is done once the first variant is confirmed.
- * The To-Be step has no completion signal here, so it is never marked done. */
-function ProjectSteps({ projectId, current, scoped, mapped }: { projectId: string; current: 1 | 2; scoped: boolean; mapped: boolean }) {
-  const steps = [
-    { label: "Scope the problem", href: `/projects/${projectId}`, done: scoped },
-    { label: "Map the current process", href: `/projects/${projectId}/consultant`, done: mapped },
-    { label: "Design the To-Be", done: false },
-  ];
-  return <ol className="steps" aria-label="Project steps">{steps.map((step, index) =>
-    <li key={step.label} aria-current={index + 1 === current ? "step" : undefined}>
-      {step.href && index + 1 !== current ? <Link href={step.href}>{step.label}</Link> : step.label}
-      {step.done && <span className="steps-done"> (done)</span>}
-    </li>)}</ol>;
-}
-
 type FirstVariant = Awaited<ReturnType<ReturnType<typeof getRuntime>["workspaces"]["list"]>>[number] | undefined;
+type ToBeJob = Awaited<ReturnType<ReturnType<typeof getRuntime>["consultantJobs"]["latest"]>>["jobs"][number] | undefined;
 /** The project's first process variant; a failed lookup reads as "none yet" so the steps and next step fall back to not-done. */
 async function firstVariant(token: string | null, projectId: string): Promise<FirstVariant> {
   try { return (await getRuntime().workspaces.list(token, projectId))[0]; } catch { return undefined; }
 }
+/** The first variant's latest To-Be job, once its process is confirmed. A failed lookup reads as "no To-Be yet". */
+async function latestToBe(token: string | null, projectId: string, variant: FirstVariant): Promise<ToBeJob> {
+  if (!variant?.confirmedSnapshotId) return undefined;
+  try { return (await getRuntime().consultantJobs.latest(token, projectId, variant.variantCode)).jobs.find(job => job.kind === "TO_BE"); } catch { return undefined; }
+}
+const reportHref = (projectId: string, variant: NonNullable<FirstVariant>, job: NonNullable<ToBeJob>) =>
+  `/projects/${projectId}/consultant/${encodeURIComponent(variant.variantCode)}/to-be/${job.id}`;
 
-/** The overview's next step follows the guided conversation: its first variant, whether it is confirmed, and its latest To-Be job.
- * A failed lookup only costs the progress wording; the overview falls back to the default step. */
-async function nextStep(token: string | null, projectId: string, guest: boolean, variant: FirstVariant): Promise<{ href: string; label: string }> {
+/** Where a project stands. Scope is done once the project is no longer a draft; mapping is done once the first variant is confirmed.
+ * The To-Be step is never "done": a generated To-Be is a draft for human review (it may even be blocked), and nothing here records an
+ * approval, so a succeeded one reads "(draft ready)". `toBe` is only passed on the overview; the other pages leave step 3 as plain text. */
+function ProjectSteps({ projectId, current, scoped, mapped, toBe }: { projectId: string; current: 1 | 2; scoped: boolean; mapped: boolean;
+  toBe?: { variant: FirstVariant; job: ToBeJob } }) {
+  const consultant = `/projects/${projectId}/consultant`;
+  const succeeded = toBe?.variant && toBe.job?.status === "SUCCEEDED";
+  const steps: { label: string; href?: string; mark?: string }[] = [
+    { label: "Scope the problem", href: `/projects/${projectId}`, mark: scoped ? "done" : undefined },
+    { label: "Map the current process", href: consultant, mark: mapped ? "done" : undefined },
+    { label: "Design the To-Be", ...(succeeded ? { href: reportHref(projectId, toBe.variant!, toBe.job!), mark: "draft ready" }
+      : toBe && mapped ? { href: consultant, mark: toBe.job?.status === "QUEUED" || toBe.job?.status === "RUNNING" ? "generating" : undefined } : {}) },
+  ];
+  return <ol className="steps" aria-label="Project steps">{steps.map((step, index) =>
+    <li key={step.label} aria-current={index + 1 === current ? "step" : undefined}>
+      {step.href && index + 1 !== current ? <Link href={step.href}>{step.label}</Link> : step.label}
+      {step.mark && <span className="steps-done"> ({step.mark})</span>}
+    </li>)}</ol>;
+}
+
+/** The overview's status line goes beyond the stored setup status once the process is mapped or a To-Be exists. Display only:
+ * the stored status, the API and the project list (which would need a lookup per project) are unchanged. */
+function overviewStatus(setupStatus: string, mapped: boolean, job: ToBeJob) {
+  if (setupStatus === "ACTIVE") return statusLabel(setupStatus);
+  if (job?.status === "SUCCEEDED") return "To-Be draft ready";
+  if (job?.status === "QUEUED" || job?.status === "RUNNING") return "To-Be being generated";
+  return mapped ? "Process mapped" : statusLabel(setupStatus);
+}
+
+/** The overview's next step follows the guided conversation: its first variant, whether it is confirmed, and its latest To-Be job
+ * (looked up once by the caller and shared with the step tracker and status line). */
+function nextStep(projectId: string, guest: boolean, variant: FirstVariant, toBe: ToBeJob): { href: string; label: string } {
   const consultant = `/projects/${projectId}/consultant`;
   const fallback = { href: consultant, label: guest ? "Next: view the current process" : "Next: map the current process" };
-  try {
-    if (!variant) return fallback;
-    if (!variant.confirmedSnapshotId) return { href: consultant, label: guest ? fallback.label : "Next: continue mapping the current process" };
-    const toBe = (await getRuntime().consultantJobs.latest(token, projectId, variant.variantCode)).jobs.find(job => job.kind === "TO_BE");
-    if (toBe?.status === "QUEUED" || toBe?.status === "RUNNING") return { href: consultant, label: "To-Be design is being generated" };
-    if (toBe?.status === "SUCCEEDED") return { href: `${consultant}/${encodeURIComponent(variant.variantCode)}/to-be/${toBe.id}`, label: "Open the To-Be report" };
-    return { href: consultant, label: guest ? fallback.label : "Next: generate the To-Be design" };
-  } catch { return fallback; }
+  if (!variant) return fallback;
+  if (!variant.confirmedSnapshotId) return { href: consultant, label: guest ? fallback.label : "Next: continue mapping the current process" };
+  if (toBe?.status === "QUEUED" || toBe?.status === "RUNNING") return { href: consultant, label: "To-Be design is being generated" };
+  if (toBe?.status === "SUCCEEDED") return { href: reportHref(projectId, variant, toBe), label: "Open the To-Be report" };
+  return { href: consultant, label: guest ? fallback.label : "Next: generate the To-Be design" };
 }
 
 export default async function WorkspacePage({ params }: Props) {
@@ -164,11 +183,13 @@ export default async function WorkspacePage({ params }: Props) {
     }
     if (path.length !== 2) notFound(); // Unimplemented pages cannot bypass project authorization.
     const first = await firstVariant(token, project.id);
+    const toBe = await latestToBe(token, project.id, first);
+    const mapped = !!first?.confirmedSnapshotId;
     return <Panel title={project.name}>
       <p className="eyebrow">Project overview</p>
-      <p className="panel-description">{project.clientName} · {statusLabel(project.setupStatus)}</p>
-      <ProjectSteps projectId={project.id} current={1} scoped={project.setupStatus !== "DRAFT"} mapped={!!first?.confirmedSnapshotId} />
-      <AnalysisPanel projectId={project.id} next={await nextStep(token, project.id, user.orgRole === "GUEST", first)} />
+      <p className="panel-description">{project.clientName} · {overviewStatus(project.setupStatus, mapped, toBe)}</p>
+      <ProjectSteps projectId={project.id} current={1} scoped={project.setupStatus !== "DRAFT"} mapped={mapped} toBe={{ variant: first, job: toBe }} />
+      <AnalysisPanel projectId={project.id} next={nextStep(project.id, user.orgRole === "GUEST", first, toBe)} />
       <h2 style={{ fontSize: 22 }}>Detailed process discovery</h2>
       <p className="panel-description">Capture current steps, source notes and future requirements before designing the To-Be process.</p>
       <p><Link href={`/projects/${project.id}/consultant`}>Describe the process in a guided conversation</Link> (recommended)</p>

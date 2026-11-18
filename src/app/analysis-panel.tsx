@@ -75,6 +75,9 @@ export function AnalysisPanel({ projectId, next }: { projectId: string; next: { 
       {busy ? "Analyzing…" : state.job?.status === "FAILED" ? "Retry analysis" : result ? "Run a new analysis" : "Analyze business problem"}
     </button>}
     {result && <div data-testid="analysis-result" style={{ overflowWrap: "anywhere" }}>
+      {/* The next step leads the result: after the full scope proposal it sat several screens down. */}
+      <p className="panel-description" style={{ margin: "20px 0 12px" }}>This is a draft scope to discuss with your team. The To-Be design is built from the current process, so that comes next.</p>
+      <a className="primary-button" href={next.href} data-action="next-step">{next.label}</a>
       <h3>Proposed scope</h3><p>{result.scopeSummary}</p>
       {result.inputTruncated && <p role="note">The problem statement was shortened to fit the analysis limit.</p>}
       <h3>Business objectives</h3><ul>{result.objectives.map((item) => <li key={item.id}>{item.text}</li>)}</ul>
@@ -88,8 +91,6 @@ export function AnalysisPanel({ projectId, next }: { projectId: string; next: { 
         <p style={{ margin: "4px 0" }}>{item.rationale}</p>
       </li>)}</ul>
       {result.clarifyingQuestions.length > 0 && <><h3>Questions for your team</h3><ul>{result.clarifyingQuestions.map((question, index) => <li key={index}>{question}</li>)}</ul></>}
-      <p className="panel-description" style={{ margin: "20px 0 12px" }}>This is a draft scope to discuss with your team. The To-Be design is built from the current process, so that comes next.</p>
-      <a className="primary-button" href={next.href} data-action="next-step">{next.label}</a>
     </div>}
   </section>;
 }

@@ -119,10 +119,10 @@ export function ConsultantSummary({ workspace, jobs, locked, run, onGenerate, re
   const asIs = tally(catalogFields("AS_IS"));
   const desired = tally(catalogFields("DESIRED"));
   const requirementCount = state.requirements.length + state.requirementDrafts.length;
-  const softBlockers = readiness?.blockers.filter(blocker => blocker.soft) ?? [];
   const draftConfirmed = confirmed && !!state.confirmation?.withGaps && !readiness?.ready;
   const generateBlocked = !!generateError && (isAccountBlocked(generateError.code) || generateError.code === "RATE_LIMITED"); // asking again cannot help
-  const canConfirmDraft = !readiness?.ready && !!readiness?.draftReady && !confirmed;
+  /** A draft can be confirmed and the full confirmation cannot: the draft action is then the only confirm action. */
+  const draftOffer = !readiness?.ready && !!readiness?.draftReady && !confirmed && workspace.canConfirm;
   const unresolved = [...state.facts, ...state.stepDrafts.flatMap(draft => draft.fields), ...state.requirementDrafts.map(draft => draft.statement)]
     .filter(fact => fact.status === "UNKNOWN" || fact.status === "OWNER_PENDING");
 
@@ -130,23 +130,25 @@ export function ConsultantSummary({ workspace, jobs, locked, run, onGenerate, re
     {readiness && <p className={styles.headline} role="status" data-testid="progress">
       {readiness.ready ? "Everything needed is answered." : draftConfirmed
         ? `Confirmed as a draft: ${plural(blockers.length, "open item")} carried into the To-Be as open questions.`
+        : draftOffer ? `${plural(blockers.length, "open item")} left. You can confirm a draft now.`
         : `${plural(blockers.length, "thing")} still needed before you can confirm.${pending.length ? ` ${waitingCopy(pending.length)}` : ""}`}</p>}
     <Section id="readiness-heading" title={confirmed ? "Confirmed" : "Ready to confirm?"}>
       {readiness?.ready
         ? <p role="status" className={styles.ok}>Everything required is answered. {confirmed ? "You have confirmed this understanding." : "Review it once more, then confirm."}</p>
-        : <><p>{draftConfirmed ? "Open items carried into the To-Be:" : "Still needed before this can be confirmed:"}</p>
-          <div data-testid="blockers"><ul>{blockers.slice(0, BLOCKER_PREVIEW).map(blockerItem)}</ul>
+        : <><p id={draftOffer ? "draft-gaps-note" : undefined}>{draftConfirmed ? "Open items carried into the To-Be:"
+            : draftOffer ? "Nothing else blocks a draft. You can confirm it as a draft with gaps now; the To-Be will carry these as \u2018to confirm\u2019 or open questions:"
+              : "Still needed before this can be confirmed:"}</p>
+          {/* When a draft is allowed every remaining blocker is soft, so there is one list, not a "needed" list and a "gaps" list. */}
+          <div data-testid={draftOffer ? "draft-gaps" : "blockers"}><ul>{blockers.slice(0, BLOCKER_PREVIEW).map(blockerItem)}</ul>
             {blockers.length > BLOCKER_PREVIEW && <details><summary className={styles.more}>Show all {blockers.length}</summary>
-              <ul>{blockers.slice(BLOCKER_PREVIEW).map((blocker, index) => blockerItem(blocker, index + BLOCKER_PREVIEW))}</ul></details>}</div>
-          {canConfirmDraft && workspace.canConfirm && <>
-            <p id="draft-gaps-note" className={styles.muted}>Nothing else blocks a draft. You can confirm now and the To-Be will carry these as &lsquo;to confirm&rsquo; or open questions:</p>
-            <ul data-testid="draft-gaps">{softBlockers.map((blocker, index) => <li key={index}>{describeBlocker(state, blocker)}</li>)}</ul></>}</>}
+              <ul>{blockers.slice(BLOCKER_PREVIEW).map((blocker, index) => blockerItem(blocker, index + BLOCKER_PREVIEW))}</ul></details>}</div></>}
       {workspace.canConfirm
         ? <div className={styles.row}>
-          <button type="button" className={styles.primary} disabled={!editable || !readiness?.ready || confirmed}
-            onClick={() => void run({ type: "CONFIRM" })}>{confirmed ? "Confirmed" : "Confirm current process"}</button>
-          {canConfirmDraft && <button type="button" className={styles.small} data-testid="confirm-draft" aria-describedby="draft-gaps-note"
-            disabled={!editable} onClick={() => void run({ type: "CONFIRM", allowGaps: true })}>Confirm as draft with gaps</button>}
+          {draftOffer
+            ? <button type="button" className={styles.primary} data-testid="confirm-draft" aria-describedby="draft-gaps-note"
+              disabled={!editable} onClick={() => void run({ type: "CONFIRM", allowGaps: true })}>Confirm as draft with gaps</button>
+            : <button type="button" className={styles.primary} disabled={!editable || !readiness?.ready || confirmed}
+              onClick={() => void run({ type: "CONFIRM" })}>{confirmed ? "Confirmed" : "Confirm current process"}</button>}
           {confirmed && <button type="button" className={styles.primary} disabled={!editable || isActive(toBe) || generateBlocked} onClick={() => void onGenerate()}>
             {isActive(toBe) ? "Generating To-Be design…" : toBe?.status === "FAILED" ? "Retry To-Be generation" : toBe ? "Generate a new To-Be draft" : "Generate To-Be design"}</button>}
         </div>
