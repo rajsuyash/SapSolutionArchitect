@@ -64,6 +64,7 @@ const phase3c = "test-results/phase3c";
 const phase4e = "test-results/phase4e";
 const phase4b = "test-results/phase4b";
 const phase4g = "test-results/phase4g";
+const phase4h = "test-results/phase4h";
 const SNAPSHOT = "00000000-0000-4000-8000-000000000001";
 /** Presents the conversation as confirmed with gaps (and its To-Be jobs as given) by rewriting the two read responses only.
  * Reaching "confirmed" through the real UI takes a full discovery walk-through, which the first test already covers end to end;
@@ -546,6 +547,46 @@ test.describe("small screens", () => {
     await page.screenshot({ path: `${phase2}/fresh-390-summary.png`, fullPage: true });
     await expandAll(page);
     expect(await fits()).toBe(true);
+  });
+
+  test("one button marks a step's still-empty list details as not applicable and leaves the rest alone", async ({ page }) => {
+    test.setTimeout(90000);
+    await setup(page);
+    await startConversation(page);
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.getByRole("tab", { name: /^Summary/ }).click();
+    await expand(page, "Current process (As-Is)");
+    await page.getByRole("button", { name: "Add a current step", exact: true }).click();
+    const card = page.getByRole("article", { name: /^Step 1/ });
+    await answer(card, "Step name", "Record return");
+    await answer(card, "Who does it", "Stores clerk");
+    await answer(card, "System or record used", "Spreadsheet");
+    await answer(card, "What starts it", "An asset physically returns");
+    await answer(card, "What happens", "The clerk records the return date");
+    await answer(card, "Inputs", "Return note");
+    const readiness = page.getByRole("region", { name: "Ready to confirm?" });
+    const finishLine = "Finish Step 1 (Record return): outputs, controls and exceptions.";
+    await expect(readiness).toContainText(finishLine);
+    const none = card.getByTestId("step-none-apply");
+    await expect(none).toHaveText("No outputs, checks or exceptions for this step");
+    await none.focus();
+    await expect(none).toBeFocused();
+    const fits = () => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth);
+    expect(await fits()).toBe(true);
+    mkdirSync(phase4h, { recursive: true });
+    await page.screenshot({ path: `${phase4h}/before-390.png`, fullPage: true });
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.screenshot({ path: `${phase4h}/before-1440.png`, fullPage: true });
+    await page.setViewportSize({ width: 390, height: 844 });
+    await none.press("Enter"); // the keyboard path, not just a click
+    await expect(card.getByTestId("step-none-apply")).toHaveCount(0);
+    await expect(readiness).not.toContainText("Finish Step 1");
+    for (const label of ["Outputs", "Checks and approvals", "Exceptions"]) await expect(group(card, label)).toContainText("Not applicable: None apply to this step.");
+    await expect(group(card, "Inputs")).toContainText("Return note");
+    expect(await fits()).toBe(true);
+    await page.screenshot({ path: `${phase4h}/after-390.png`, fullPage: true });
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.screenshot({ path: `${phase4h}/after-1440.png`, fullPage: true });
   });
 
   test("confirmed with gaps says one thing: confirmed as a draft, with the open items carried forward", async ({ page }) => {

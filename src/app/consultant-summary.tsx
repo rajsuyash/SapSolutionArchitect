@@ -1,8 +1,8 @@
 "use client";
 
 import { useEffect, useState, type ReactNode } from "react";
-import { REQUIREMENT_KIND_LABELS, STEP_KEYS, STEP_LABELS, WORKSPACE_FIELDS, describeBlocker, describeField, describeProposal,
-  requirementLabel, stepLabel } from "../lib/workspace-fields";
+import { NONE_APPLY_REASON, REQUIREMENT_KIND_LABELS, STEP_KEYS, STEP_LABELS, WORKSPACE_FIELDS, describeBlocker, describeField, describeProposal,
+  emptyListKeys, noneApplyLabel, requirementLabel, stepLabel } from "../lib/workspace-fields";
 import { isActive, type Command, type Fact, type JobView, type Workspace, type WorkspaceView } from "./consultant-api";
 import { FieldRow, type FactUpdate } from "./consultant-field";
 import { EditableGroup, type GroupField } from "./consultant-group";
@@ -208,12 +208,19 @@ export function ConsultantSummary({ workspace, jobs, locked, run, onGenerate, re
       </article>)}
       {state.stepDrafts.map(draft => {
         const label = stepLabel(state, draft.id);
+        const emptyKeys = emptyListKeys(draft);
         const fields: GroupField[] = STEP_KEYS.map(key => ({ id: `${draft.id}_${key}`, label: STEP_LABELS[key],
           fact: draft.fields.find(field => field.id === `${draft.id}_${key}`)! }));
         return <article key={draft.id} className={styles.card} aria-label={label}>
           <EditableGroup heading={<h4 className={styles.fieldLabel}>{label}</h4>} toggleLabel="Edit step" formLabel={`Edit ${label}`}
             fields={fields} disabled={!editable} onSave={saveGroup}>
             <dl className={styles.fieldList}>{fields.map(field => fieldRow(field.id, field.fact, field.label, true))}</dl>
+            {editable && emptyKeys.length > 0 && <div className={styles.row}>
+              {/* ponytail: one command per detail, sent in turn like the group edit; an atomic multi-field command is not worth a new wire type. */}
+              <button type="button" className={styles.small} data-testid="step-none-apply"
+                onClick={() => void run(emptyKeys.map(key => setFact(state, `${draft.id}_${key}`,
+                  { status: "NOT_APPLICABLE", value: null, rationale: NONE_APPLY_REASON, owner: null })))}>{noneApplyLabel(emptyKeys)}</button>
+            </div>}
           </EditableGroup>
         </article>;
       })}

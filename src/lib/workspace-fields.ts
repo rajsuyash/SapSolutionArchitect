@@ -64,6 +64,18 @@ export const missingStepKeys = (draft: { id: string; fields: readonly { id: stri
   const status = (key: StepKey) => draft.fields.find(field => field.id === `${draft.id}_${key}`)?.status;
   return [...CORE_STEP_KEYS.filter(key => status(key) !== "KNOWN"), ...LIST_STEP_KEYS.filter(key => status(key) !== "KNOWN" && status(key) !== "NOT_APPLICABLE")];
 };
+/** The list details of a step draft that are still EMPTY: exactly what the per-step "none apply" button covers. A detail that is
+ * KNOWN, UNKNOWN, waiting on the process owner or already not applicable is never in it. */
+export const emptyListKeys = (draft: { id: string; fields: readonly { id: string; status: string }[] }): (typeof LIST_STEP_KEYS)[number][] =>
+  LIST_STEP_KEYS.filter(key => draft.fields.find(field => field.id === `${draft.id}_${key}`)?.status === "EMPTY");
+/** Stored as the reason on each detail the button marks not applicable (a reason is required for NOT_APPLICABLE). */
+export const NONE_APPLY_REASON = "None apply to this step.";
+const NONE_APPLY_WORDS: Record<(typeof LIST_STEP_KEYS)[number], string> = { inputs: "inputs", outputs: "outputs", controls: "checks", exceptions: "exceptions" };
+/** "No outputs, checks or exceptions for this step". */
+export const noneApplyLabel = (keys: readonly (typeof LIST_STEP_KEYS)[number][]): string => {
+  const words = keys.map(key => NONE_APPLY_WORDS[key]);
+  return `No ${words.length < 2 ? words.join("") : `${words.slice(0, -1).join(", ")} or ${words.at(-1)}`} for this step`;
+};
 /** Plain words for the "Finish Step" sentence, in the order a person would say them. */
 const SENTENCE_WORDS: Record<StepKey, string> = { name: "name", actor: "who does it", system: "system", trigger: "trigger", description: "what happens",
   inputs: "inputs", outputs: "outputs", controls: "controls", exceptions: "exceptions" };
