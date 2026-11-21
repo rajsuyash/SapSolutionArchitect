@@ -60,6 +60,16 @@ describe("scope-pending coverage in the report", () => {
     expect(renderMarkdown(model)).toContain("Not designed: scope pending Q-1");
     expect(renderTraceabilityCsv(model)).toContain("Not designed: scope pending Q-1");
   });
+  it("counts the waiting-on-a-decision requirements so the four dispositions add up to the total", () => {
+    const { summary } = buildReport(pending);
+    expect(summary).toMatchObject({ requirements: 2, implemented: 1, conditional: 1, deferred: 0, rejected: 0 });
+    expect(summary.implemented + summary.conditional + summary.deferred + summary.rejected).toBe(summary.requirements);
+  });
+  it("shows the waiting row and the open-questions row in the Markdown coverage table", () => {
+    const markdown = renderMarkdown(buildReport(pending));
+    expect(markdown).toMatch(/\| Waiting on an open decision \| 1 \|/);
+    expect(markdown).toMatch(/\| Open questions and conflicts \| \d+ \|/);
+  });
   it("is accepted by the stored-design reader", () => {
     const stored = { design: JSON.parse(JSON.stringify(pendingDesign)), evaluation: { blockers: [] }, unresolvedInputQuestions: [], sourceRevision: 1, snapshotId: "s" };
     expect(parseStoredToBe(stored).design.coverage[1]).toMatchObject({ requirementId: "R2", stepIds: [], questionIds: ["Q-1"] });

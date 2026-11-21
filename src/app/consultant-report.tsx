@@ -122,7 +122,7 @@ export function ConsultantReport({ model, downloads }: { model: ReportModel; dow
         {summary.rules} business rules, {summary.exceptions} exceptions and {summary.tests} acceptance-test specifications ({TEST_LABEL.toLowerCase()}).</p>
       <Table label="Requirement coverage"><thead><tr><th scope="col">Requirement coverage</th><th scope="col">Count</th></tr></thead><tbody>
         <tr><td>Total requirements</td><td>{summary.requirements}</td></tr><tr><td>Implemented in the To-Be design</td><td>{summary.implemented}</td></tr>
-        <tr><td>Deferred (approved decision)</td><td>{summary.deferred}</td></tr><tr><td>Rejected (approved decision)</td><td>{summary.rejected}</td></tr>
+        <tr><td>Waiting on an open decision</td><td>{summary.conditional}</td></tr><tr><td>Deferred (approved decision)</td><td>{summary.deferred}</td></tr><tr><td>Rejected (approved decision)</td><td>{summary.rejected}</td></tr>
         <tr><td>Open questions and conflicts</td><td>{summary.openQuestions + summary.conflicts}</td></tr></tbody></Table>
     </section>
 

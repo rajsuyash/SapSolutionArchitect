@@ -449,7 +449,7 @@ export function buildReport(data: ReportData) {
       rules: design.steps.reduce((sum, step) => sum + step.businessRules.length, 0),
       exceptions: design.steps.reduce((sum, step) => sum + step.exceptions.length, 0),
       tests: design.steps.reduce((sum, step) => sum + step.acceptanceTests.length, 0), requirements: discovery.requirements.length,
-      implemented: coverageCount("IMPLEMENTED"), deferred: coverageCount("DEFERRED"), rejected: coverageCount("REJECTED"),
+      implemented: coverageCount("IMPLEMENTED"), conditional: coverageCount("CONDITIONAL"), deferred: coverageCount("DEFERRED"), rejected: coverageCount("REJECTED"),
       openQuestions: questions.length, conflicts: conflicts.length },
     catalogWarning: data.catalogReferenceCount === 0
       ? `Warning: there is no verified SAP reference catalog for ${productRelease(PRODUCT_LABELS[data.targetProduct] ?? data.targetProduct, data.targetRelease)}. Every SAP claim in this design needs SAP validation.` : null,

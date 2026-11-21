@@ -58,7 +58,8 @@ export function renderMarkdown(source: ReportModel): string {
   add("## Executive summary",
     `Scope: ${summary.asIsSteps} current steps (${summary.eliminated} eliminated by design) redesigned as ${summary.toBeSteps} To-Be steps, with ${summary.rules} business rules, ${summary.exceptions} exceptions and ${summary.tests} acceptance-test specifications (${TEST_LABEL.toLowerCase()}).`);
   add(table(["Requirement coverage", "Count"], [row("Total requirements", summary.requirements), row("Implemented in the To-Be design", summary.implemented),
-    row("Deferred (approved decision)", summary.deferred), row("Rejected (approved decision)", summary.rejected)]));
+    row("Waiting on an open decision", summary.conditional), row("Deferred (approved decision)", summary.deferred), row("Rejected (approved decision)", summary.rejected),
+    row("Open questions and conflicts", summary.openQuestions + summary.conflicts)]));
 
   if (model.solution?.version3) {
     const { solution } = model;
