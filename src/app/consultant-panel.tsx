@@ -43,6 +43,7 @@ export function ConsultantPanel({ projectId }: { projectId: string }) {
   // One user intent keeps one idempotency key until the server gives a definite answer.
   const keys = useRef(new Map<string, string>());
   const busyRef = useRef(false);
+  const focusChat = useRef(false);
 
   const load = useCallback(async (variant: string) => {
     const [next, list] = await Promise.all([api<Workspace>(`${base}/${encodeURIComponent(variant)}`),
@@ -89,6 +90,13 @@ export function ConsultantPanel({ projectId }: { projectId: string }) {
     const timer = setTimeout(() => { load(code).catch(() => setPollFailures(count => count + 1)); }, POLL_MS);
     return () => clearTimeout(timer);
   }, [busy, extractionPending, lastUserId, workspace, code, load, pollFailures]);
+
+  // Set by `start`: its state updates land after an await, so the chat does not exist until React has committed them.
+  useEffect(() => {
+    if (!focusChat.current || !workspace?.state || starting) return;
+    focusChat.current = false;
+    document.getElementById("consultant-message")?.focus();
+  }, [workspace, starting]);
 
   const keyFor = (intent: string) => {
     let key = keys.current.get(intent);
@@ -174,7 +182,7 @@ export function ConsultantPanel({ projectId }: { projectId: string }) {
     keys.current.delete(`create:${next}:${name}:${release}`);
     setVariants(items => [...(items ?? []), { variantCode: next, variantName: name, revision: 1, confirmedSnapshotId: null }]);
     setCode(next); setWorkspace(created); setJobs([]); setStarting(false); setTab("chat");
-    requestAnimationFrame(() => document.getElementById("consultant-message")?.focus());
+    focusChat.current = true;
     return true;
   });
   async function choose(next: string) {
