@@ -47,6 +47,12 @@ export function loadToBeReferences(input: ToBeInput, options: SapReferenceOption
   return loadSapReferences(input.targetProduct, input.discovery.targetRelease, options);
 }
 
+/** The recorded answers as the model sees them: ids minted by position (ANS-1..), because design question ids are reused across generations. Undefined when there are none. */
+export function answeredForModel(discovery: ToBeInput["discovery"]): { id: string; question: string; answer: string }[] | undefined {
+  return discovery.answeredQuestions?.length
+    ? discovery.answeredQuestions.map(({ question, answer }, i) => ({ id: `ANS-${i + 1}`, question, answer })) : undefined;
+}
+
 export function toBeContext(input: ToBeInput, references: DesignContext["references"] = []): DesignContext {
   const discovery = input.discovery;
   return {
@@ -57,8 +63,10 @@ export function toBeContext(input: ToBeInput, references: DesignContext["referen
       ({ id, asIsStepId, critical, kind, ...evidence })),
     conflicts: discovery.conflicts,
     // No approved-decision workflow exists yet; source notes and sharedRules/decisionRegister
-    // cannot confer approval. References are trusted only via the curated catalog.
+    // cannot confer approval. References are trusted only via the curated catalog. Recorded answers
+    // are not approvals either: they travel as answeredQuestions, and this slot only covers DEFERRED/REJECTED/RESOLVED.
     approvedDecisions: [], references,
+    ...(answeredForModel(discovery) && { answeredQuestions: answeredForModel(discovery) }),
     ...(discovery.companyContext && { companyContext: discovery.companyContext.map(({ fieldId, value }) => ({ fieldId, value })) }),
     ...(input.decisionRegister && { decisionRegister: input.decisionRegister.map(({ id }) => ({ id })) }),
   };

@@ -162,6 +162,8 @@ const DESIGN_GAPS: Record<string, string> = {
   UNKNOWN_CONTEXT_FIELD: "A row cites a company-context field that does not exist.",
   UNKNOWN_DECISION: "A row cites a decision that does not exist.",
   UNKNOWN_QUESTION: "A row cites an open question that is not in the design.",
+  UNKNOWN_ANSWER: "A row cites a recorded answer that does not exist.",
+  ANSWERED_QUESTION_REOPENED: "The design raises again a question that was already answered.",
   UNKNOWN_REFERENCE: "A step cites an SAP reference that is not in the catalog.",
   UNKNOWN_REQUIREMENT: "A row cites a requirement that does not exist.",
   UNKNOWN_SAP_OBJECT: "Text names an SAP object or code that no cited reference defines.",
@@ -179,6 +181,7 @@ const BLOCKERS: Record<string, { category: string; label: string }> = {
   OPEN_QUESTION: { category: "Open decisions", label: "A business question raised in the design is still unanswered." },
   COVERAGE_SCOPE_PENDING: { category: "Open decisions", label: "A requirement is not designed until the linked open question decides whether it is in scope." },
   COVERAGE_CONDITIONAL: { category: "Open decisions", label: "A requirement is only partly designed until an open decision is answered." },
+  ANSWER_NOT_APPLIED: { category: "Open decisions", label: "A recorded answer to an open question is not applied anywhere in the design." },
   INPUT_QUESTION_UNRESOLVED: { category: "Open decisions", label: "A question from discovery is still unanswered." },
 };
 

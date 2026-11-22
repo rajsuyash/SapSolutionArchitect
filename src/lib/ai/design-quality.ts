@@ -42,6 +42,8 @@ export const DesignContextSchema = z.strictObject({
   decisionRegister: list(z.strictObject({ id })).optional(),
   /** Answered company-context fields. Registers are checked against what the user actually said. */
   companyContext: list(z.strictObject({ fieldId: id, value: text })).optional(),
+  /** Answers a consultant recorded to open questions of an earlier To-Be, labelled ANS-n by position (the old design question id is never shown). Omitted when there are none. */
+  answeredQuestions: list(z.strictObject({ id, question: text, answer: text })).optional(),
 });
 
 /** Version 1 designs (steps only) stay readable forever; version 2 adds the solution-design registers and version 3 the scope, document,
@@ -71,6 +73,8 @@ export const DetailedDesignSchema = z.strictObject({
     }),
     /** Open decisions (decisionRegister ids) this step is held on or conditional on. */
     decisionIds: ids.optional(),
+    /** Answered questions (ANS-n) this step applies. Optional: designs stored before answers existed carry none. */
+    answerIds: ids.optional(),
     addedValue: text,
     acceptanceTests: list(z.strictObject({
       id, kind: z.enum(["NORMAL", "EXCEPTION"]), given: text, when: text, then: text,
@@ -83,6 +87,8 @@ export const DetailedDesignSchema = z.strictObject({
     stepIds: ids, decisionId: id.nullable(), rationale: text,
     /** CONDITIONAL = behaviour itself partly designed, a future capability, or two designs remain open. IMPLEMENTED may also link decisionIds for policy values still open. */
     decisionIds: ids.optional(), questionIds: ids.optional(),
+    /** Answered questions (ANS-n) this requirement's disposition rests on. */
+    answerIds: ids.optional(),
   })),
   conflictDecisions: list(z.strictObject({ conflictId: id, decisionId: id.nullable() })),
   openQuestions: list(z.strictObject({ id, question: text, owner: text, affectedStepIds: ids.min(1), decisionIds: ids.optional() })),
@@ -122,7 +128,7 @@ export function draftIssues(issues: z.core.$ZodIssue[]): Issue[] {
 }
 /** Every id of the input that text may cite: requirements, As-Is steps, sources, conflicts, decisions, references, company-context fields. */
 export const inputIds = (context: DesignContext): string[] => [...context.requirements.map(item => item.id), ...context.asIsSteps.map(item => item.id), ...context.sources.map(item => item.id),
-  ...context.conflicts.map(item => item.id), ...context.approvedDecisions.map(item => item.id), ...context.references.map(item => item.id), ...(context.companyContext ?? []).map(item => item.fieldId)];
+  ...context.conflicts.map(item => item.id), ...context.approvedDecisions.map(item => item.id), ...context.references.map(item => item.id), ...(context.companyContext ?? []).map(item => item.fieldId), ...(context.answeredQuestions ?? []).map(item => item.id)];
 export type DesignEvaluation = {
   structurallyValid: boolean; errors: Issue[]; blockers: Issue[];
   reviewStatus: "BLOCKED" | "HUMAN_REVIEW_REQUIRED";
@@ -233,6 +239,11 @@ export function evaluateDesign(input: unknown, value: unknown): DesignEvaluation
     unique(refs ?? [], path, "DUPLICATE_TRACE");
     if ((refs ?? []).some(ref => !openDecisions.has(ref))) error("UNKNOWN_DECISION", path);
   };
+  const answerIds = new Set((context.answeredQuestions ?? []).map(item => item.id));
+  const checkAnswers = (refs: string[] | undefined, path: string) => {
+    unique(refs ?? [], path, "DUPLICATE_TRACE");
+    if ((refs ?? []).some(ref => !answerIds.has(ref))) error("UNKNOWN_ANSWER", path);
+  };
   context.requirements.forEach((requirement, i) => {
     const path = `input.requirements.${i}`;
     if (!asIs.has(requirement.asIsStepId)) error("UNKNOWN_AS_IS", path);
@@ -277,6 +288,7 @@ export function evaluateDesign(input: unknown, value: unknown): DesignEvaluation
       else if (ref === step.id || !target.requirementIds.length) error("ENABLING_TARGET_INVALID", path);
     }
     checkDecisions(step.decisionIds, path);
+    checkAnswers(step.answerIds, path);
     if (step.asIsStepIds.some(ref => !asIs.has(ref))) error("UNKNOWN_AS_IS", path);
     for (const ref of step.requirementIds) {
       const requirement = requirements.get(ref);
@@ -337,7 +349,9 @@ export function evaluateDesign(input: unknown, value: unknown): DesignEvaluation
     if (item.stepIds.some(ref => !steps.has(ref))) error("UNKNOWN_STEP", path);
     const traced = draft.steps.filter(step => step.requirementIds.includes(item.requirementId));
     checkDecisions(item.decisionIds, path);
+    checkAnswers(item.answerIds, path);
     unique(item.questionIds ?? [], path, "DUPLICATE_TRACE");
+    if ((item.questionIds ?? []).some(ref => answerIds.has(ref))) error("ANSWERED_QUESTION_REOPENED", path);
     if ((item.questionIds ?? []).some(ref => !questionIds.has(ref))) error("UNKNOWN_QUESTION", path);
     // Scope pending: nothing designed, and a held open question decides whether the requirement is in scope at all.
     const scopePending = item.disposition === "CONDITIONAL" && !item.stepIds.length && !traced.length &&
@@ -382,7 +396,11 @@ export function evaluateDesign(input: unknown, value: unknown): DesignEvaluation
     checkDecisions(question.decisionIds, path);
     if (question.affectedStepIds.some(ref => !steps.has(ref))) error("UNKNOWN_STEP", path);
     block("OPEN_QUESTION", path);
+    if (answerIds.has(question.id)) error("ANSWERED_QUESTION_REOPENED", path);
   });
+  // An answer nothing cites was not used: the design may not simply ignore what the consultant recorded.
+  const applied = new Set([...draft.steps.flatMap(step => step.answerIds ?? []), ...draft.coverage.flatMap(item => item.answerIds ?? [])]);
+  (context.answeredQuestions ?? []).forEach((answer, i) => { if (!applied.has(answer.id)) block("ANSWER_NOT_APPLIED", `input.answeredQuestions.${i}`); });
   checkRegisters(draft, {
     requirements: new Map(context.requirements.map(item => [item.id, { critical: item.critical, kind: item.kind }])),
     stepIds: new Set(steps.keys()), referenceIds: new Set(references.keys()), companyContext: context.companyContext ?? [],
