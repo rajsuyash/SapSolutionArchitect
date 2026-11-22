@@ -21,6 +21,12 @@ export type ReportData = {
   references: TrustedReference[];
   /** Size of the curated catalog for this product and release; 0 means no SAP claim in the design could be verified. */
   catalogReferenceCount: number;
+  /** Answers recorded for this job's questions in the discovery workspace. Absent on older callers: none. */
+  answers?: { questionId: string; answer: string; answeredAt: string; answeredBy: string }[];
+  /** Revision of the workspace the answers were read from; null when there is no workspace row. */
+  workspaceRevision?: number | null;
+  /** The viewer may record answers (project lead or consultant, not a guest, not a demo project). */
+  canAnswer?: boolean;
 };
 
 const StoredSchema = z.object({
@@ -216,7 +222,9 @@ export type ComparisonRow = {
 };
 export type TraceRow = { id: string; label: string; kindLabel: string; statement: string; critical: boolean; asIs: string; disposition: string;
   rationale: string; steps: string[]; rules: string[]; tests: string[] };
-export type Register = { id: string; sourceId?: string; text: string; owner: string; affects: string; state: string };
+export type Register = { id: string; sourceId?: string; text: string; owner: string; affects: string; state: string;
+  /** Question rows only: the recorded answer, and whether the viewer may record one now. */
+  answer?: { text: string; answeredAt: string; answeredBy: string }; answerable?: boolean };
 /** Solution-design registers of a schemaVersion 2 or 3 design, already labelled. Null for a version 1 design. The version 3 lists are empty for version 2. */
 export type SolutionView = {
   version3: boolean;
@@ -342,9 +350,16 @@ export function buildReport(data: ReportData) {
   });
 
   const stepNames = (ids: string[]) => ids.map(id => design.steps.find(step => step.id === id)).flatMap(step => step ? [stepTitle(step)] : []).join("; ");
+  // The stored design is unchanged by an answer; only the register row shows it, until a new To-Be is generated.
+  const answerFor = (...ids: (string | undefined)[]) => data.answers?.find(item => ids.includes(item.questionId));
+  const questionRow = (row: Omit<Register, "state">): Register => {
+    const found = answerFor(row.id, row.sourceId);
+    return found ? { ...row, state: "Answered", answerable: false, answer: { text: found.answer, answeredAt: formatTimestamp(found.answeredAt), answeredBy: found.answeredBy } }
+      : { ...row, state: "Open", answerable: data.canAnswer === true };
+  };
   const questions: Register[] = [
-    ...design.openQuestions.map(item => ({ id: item.id, sourceId: inputQuestionRows(data.unresolvedInputQuestions).find(row => row.label === item.id)?.id, text: item.question, owner: item.owner, affects: stepNames(item.affectedStepIds), state: "Open" })),
-    ...inputQuestionRows(data.unresolvedInputQuestions).filter(item => !design.openQuestions.some(held => held.id === item.label)).map(item => ({ id: item.label, sourceId: item.id, text: item.question, owner: item.owner, affects: "Whole process", state: "Open" })),
+    ...design.openQuestions.map(item => questionRow({ id: item.id, sourceId: inputQuestionRows(data.unresolvedInputQuestions).find(row => row.label === item.id)?.id, text: item.question, owner: item.owner, affects: stepNames(item.affectedStepIds) })),
+    ...inputQuestionRows(data.unresolvedInputQuestions).filter(item => !design.openQuestions.some(held => held.id === item.label)).map(item => questionRow({ id: item.label, sourceId: item.id, text: item.question, owner: item.owner, affects: "Whole process" })),
   ];
   const conflicts: Register[] = discovery.conflicts.map(conflict => {
     const decision = design.conflictDecisions.find(item => item.conflictId === conflict.id);
@@ -457,6 +472,7 @@ export function buildReport(data: ReportData) {
     catalogWarning: data.catalogReferenceCount === 0
       ? `Warning: there is no verified SAP reference catalog for ${productRelease(PRODUCT_LABELS[data.targetProduct] ?? data.targetProduct, data.targetRelease)}. Every SAP claim in this design needs SAP validation.` : null,
     comparison, steps: stepViews, traceability, registers: { questions, conflicts, sapPoints }, solution,
+    answering: { canAnswer: data.canAnswer === true, workspaceRevision: data.workspaceRevision ?? null, answeredCount: questions.filter(item => item.answer).length },
     sources: discovery.sources,
     /** Document control, As-Is narratives, RICEFW list and actor-role matrix: built from trusted inputs, no model involved. */
     derived: deriveSections({ design, asIsSteps: discovery.asIsSteps, inputQuestions: data.unresolvedInputQuestions, meta: { sourceRevision: data.sourceRevision, variantCode: data.variant.code, variantName: data.variant.name,

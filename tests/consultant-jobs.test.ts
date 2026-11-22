@@ -264,6 +264,31 @@ describe.skipIf(process.env.RUN_DB_TESTS !== "1")("durable consultant conversati
     expect((done.result as { status: string }).status).toMatch(/^(BLOCKED|HUMAN_REVIEW_REQUIRED)$/);
   });
 
+  it("gives the report the answers recorded for its own job, the answerer's name, and who may answer", async () => {
+    const c = await confirmed(); const first = await enqueueToBe(c); await execute(first.id, toBeRunner());
+    const second = await enqueueToBe(c); await execute(second.id, toBeRunner());
+    const question = [{ id: "Q-1", question: "Who approves credits?", owner: "Finance lead", affectedStepIds: [rentalDraft.steps[0]!.id] }];
+    for (const id of [first.id, second.id]) await pool.query(`UPDATE consultant_jobs SET result=jsonb_set(result,'{design,openQuestions}',$2::jsonb) WHERE id=$1`, [id, JSON.stringify(question)]);
+    const report = (token: string, id: string) => jobs.report(token, c.project.id, "RENTAL", id);
+
+    expect(await report(c.token, second.id)).toMatchObject({ answers: [], workspaceRevision: c.state.revision, canAnswer: true });
+    const answered = await workspaces.command(c.token, c.project.id, "RENTAL", c.state.revision, randomUUID(),
+      { type: "ANSWER_QUESTION", sourceJobId: second.id, questionId: "Q-1", answer: "The finance director approves." });
+    const viewed = await report(c.token, second.id);
+    expect(viewed.answers).toEqual([{ questionId: "Q-1", answer: "The finance director approves.", answeredAt: expect.any(String), answeredBy: "Synthetic participant" }]);
+    expect(viewed).toMatchObject({ workspaceRevision: answered.state.revision, canAnswer: true });
+    expect(JSON.stringify(viewed.answers)).not.toContain("@");
+    expect((await report(c.token, first.id)).answers).toEqual([]);
+
+    const id = randomUUID(), email = `po-${id}@test.local`;
+    await pool.query(`INSERT INTO users(id,org_id,email,name,org_role,password_hash) VALUES($1,$2,$3,'Process owner','MEMBER',$4)`,
+      [id, c.user.orgId, email, await bcrypt.hash("Password123!", 12)]);
+    await pool.query(`INSERT INTO project_memberships(org_id,project_id,user_id,project_role) VALUES($1,$2,$3,'PROCESS_OWNER')`, [c.user.orgId, c.project.id, id]);
+    const viewer = await report((await auth.login({ email, password: "Password123!" })).token, second.id);
+    expect(viewer.canAnswer).toBe(false);
+    expect(viewer.answers).toHaveLength(1);
+  });
+
   it("fences a To-Be job whose workspace revision changed after enqueue", async () => {
     const c = await confirmed(); const job = await enqueueToBe(c);
     await execute(job.id, toBeRunner(async () => {

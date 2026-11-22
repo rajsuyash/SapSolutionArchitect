@@ -18,7 +18,10 @@ export function reportFilename(model: ReportModel, extension: "md" | "csv"): str
 }
 
 function registerTable(items: Register[]) {
-  return items.length ? table(["Item", "Owner", "Affects", "State"], items.map(item => row(item.text, item.owner, item.affects, item.state))) : "None.\n";
+  if (!items.length) return "None.\n";
+  // The answer stays out of the table: a recorded answer is free text and may be long. Newlines become spaces like other list text.
+  const answers = items.flatMap(item => item.answer ? [`- ${item.id}, ${item.text}: Answer (by ${item.answer.answeredBy}, ${item.answer.answeredAt}): ${item.answer.text}. Not yet applied: generate a new To-Be.`.replace(/\r?\n/g, " ")] : []);
+  return table(["Item", "Owner", "Affects", "State"], items.map(item => row(item.text, item.owner, item.affects, item.state))) + (answers.length ? "\n" + answers.join("\n") + "\n" : "");
 }
 
 /** Client-origin text must not inject HTML or links into a Markdown viewer. Entities survive the cell escaping above. */

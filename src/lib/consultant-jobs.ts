@@ -7,7 +7,7 @@ import { withTenantSession } from "./tenant";
 import { assertOrgCanRunAi } from "./org-limits";
 import { PROVIDER_CREDIT_MESSAGE } from "./ai/provider";
 import { validateDiscovery } from "./discovery";
-import { loadWorkspaceForWorker, persistWorkspaceTurn } from "./discovery-workspace";
+import { loadReportAnswers, loadWorkspaceForWorker, persistWorkspaceTurn } from "./discovery-workspace";
 import { CONSULTANT_EXTRACT_QUEUE, extractionScope, failureCode, missedExtractions } from "./consultant-extraction";
 import { buildInterviewInput } from "./discovery-workspace-model";
 import { loadToBeReferences, parseToBeInput, validateToBeOutput } from "./ai/to-be";
@@ -204,7 +204,8 @@ export function createConsultantJobs(pool: Pool, auth: AuthService, queue: PgBos
           WHERE id=$1 AND org_id=$2 AND project_id=$3 AND variant_code=$4`, [job.snapshot_id, user.orgId, projectId, variantCode])).rows[0];
         const project = (await client.query(`SELECT name,client_name FROM projects WHERE org_id=$1 AND id=$2`, [user.orgId, projectId])).rows[0];
         if (!snapshot || !project) throw new AuthError("REPORT_NOT_FOUND", 404, "Report not found");
-        return { job, snapshot, project };
+        const workspace = await loadReportAnswers(client, { orgId: user.orgId, projectId, variantCode, requestedBy: user.id }, jobId);
+        return { job, snapshot, project, workspace };
       });
       const stored = parseStoredToBe(rows.job.result);
       const discovery = validateDiscovery(rows.snapshot.payload);
@@ -219,7 +220,8 @@ export function createConsultantJobs(pool: Pool, auth: AuthService, queue: PgBos
           ({ id, title, locator, revision, digest: createHash("sha256").update(text, "utf8").digest("hex") })) },
         snapshotId: stored.snapshotId,
         design: stored.design, blockers: stored.evaluation.blockers, unresolvedInputQuestions: stored.unresolvedInputQuestions,
-        references: catalog.filter(reference => cited.has(reference.id)), catalogReferenceCount: catalog.length };
+        references: catalog.filter(reference => cited.has(reference.id)), catalogReferenceCount: catalog.length,
+        answers: rows.workspace.answers, workspaceRevision: rows.workspace.workspaceRevision, canAnswer: rows.workspace.canAnswer };
     },
     async recover() {
       await pool.query(`UPDATE consultant_jobs j SET status='FAILED',run_token=NULL,deadline_at=NULL,finished_at=clock_timestamp(),

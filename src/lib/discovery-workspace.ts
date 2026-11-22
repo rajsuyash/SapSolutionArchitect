@@ -128,6 +128,22 @@ export async function loadWorkspaceForWorker(client: PoolClient, args: Workspace
   return result(row, a);
 }
 
+/** What the To-Be report shows of the workspace: the answers recorded for one job (with the answerer's display name, never an email),
+ * the revision they were read from, and whether this viewer may record more. Read-only: no workspace lock, so it never waits behind a save.
+ * Everything comes from one latest-row read inside the caller's tenant transaction. */
+export async function loadReportAnswers(client: PoolClient, args: WorkspaceWorkerArgs, jobId: string) {
+  validIdentity(args.projectId, args.variantCode);
+  const a = await access(client, args);
+  const row = await latest(client, args);
+  const canAnswer = mayConfirm(a);
+  if (!row) return { answers: [], workspaceRevision: null, canAnswer };
+  const mine = (readState(row).answers ?? []).filter(item => item.sourceJobId === jobId);
+  const names = new Map((await client.query<{ id: string; name: string }>(`SELECT id,name FROM users WHERE org_id=$1 AND id=ANY($2::uuid[])`,
+    [args.orgId, [...new Set(mine.map(item => item.answeredBy).filter(id => uuid.safeParse(id).success))]])).rows.map(user => [user.id, user.name]));
+  return { workspaceRevision: row.revision, canAnswer, answers: mine.map(item => ({ questionId: item.questionId, answer: item.answer,
+    answeredAt: item.answeredAt, answeredBy: names.get(item.answeredBy) ?? "A team member" })) };
+}
+
 /** Called only inside the worker's transaction after it has fenced the job.
  * Model/network execution belongs outside this transaction. */
 export async function persistWorkspaceTurn(client: PoolClient, args: WorkspaceTurnArgs) {

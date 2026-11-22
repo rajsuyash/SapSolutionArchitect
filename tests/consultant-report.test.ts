@@ -252,3 +252,49 @@ describe("stored To-Be blocker detail", () => {
     expect(() => parseStoredToBe(row)).toThrow();
   });
 });
+
+describe("recorded answers in the report", () => {
+  const inputs = [{ id: "q_obs_1", question: "Who pays freight?", owner: "Finance lead" }, { id: "q_raw_2", question: "Which plants?", owner: "Process owner", label: "IQ-2" }];
+  const base = { ...data, unresolvedInputQuestions: inputs, canAnswer: true, workspaceRevision: 4 };
+  const answer = (questionId: string, text = "The finance director approves.") => ({ questionId, answer: text, answeredAt: "2026-11-20T08:15:00.000Z", answeredBy: "Alex Lead" });
+  const rows = (model: ReturnType<typeof buildReport>) => Object.fromEntries(model.registers.questions.map(item => [item.id, item]));
+
+  it("marks a design question answered with its text, time and name, and leaves an unmatched answer out", () => {
+    const model = buildReport({ ...base, answers: [answer("Q-1"), answer("Q-404", "Nobody asked this")] });
+    expect(rows(model)["Q-1"]).toMatchObject({ state: "Answered", answerable: false, answer: { text: "The finance director approves.", answeredAt: "2026-11-20 08:15 UTC", answeredBy: "Alex Lead" } });
+    expect(JSON.stringify(model.registers.questions)).not.toContain("Nobody asked this");
+    expect(model.answering).toEqual({ canAnswer: true, workspaceRevision: 4, answeredCount: 1 });
+  });
+  it("matches an input question by its IQ label and by its original q_ id", () => {
+    const byLabel = rows(buildReport({ ...base, answers: [answer("IQ-1")] }));
+    expect(byLabel["IQ-1"]).toMatchObject({ state: "Answered" });
+    expect(byLabel["IQ-2"]).toMatchObject({ state: "Open", answerable: true });
+    const byRaw = rows(buildReport({ ...base, answers: [answer("q_raw_2")] }));
+    expect(byRaw["IQ-2"]).toMatchObject({ state: "Answered" });
+    expect(byRaw["IQ-1"]).toMatchObject({ state: "Open" });
+  });
+  it("offers answering only on open rows and only when the viewer may answer", () => {
+    expect(rows(buildReport({ ...base, canAnswer: false }))["Q-1"]).toMatchObject({ state: "Open", answerable: false });
+    expect(rows(buildReport({ ...base, answers: [answer("Q-1")] }))["Q-1"]!.answerable).toBe(false);
+    const legacy = buildReport(data);
+    expect(legacy.answering).toEqual({ canAnswer: false, workspaceRevision: null, answeredCount: 0 });
+    expect(legacy.registers.questions.every(item => item.state === "Open" && !item.answerable && !item.answer)).toBe(true);
+  });
+  it("changes no count, disposition or blocker", () => {
+    const before = buildReport(base), after = buildReport({ ...base, answers: [answer("Q-1"), answer("IQ-1")] });
+    expect(after.summary).toEqual(before.summary);
+    expect(after.traceability).toEqual(before.traceability);
+    expect(after.blockers).toEqual(before.blockers);
+    expect(after.status).toBe(before.status);
+  });
+  it("prints the answer under the register in Markdown, escaped for a table, and leaves the traceability CSV alone", () => {
+    const hostile = "Line one | with pipe\nline two <b>bold</b>";
+    const model = buildReport({ ...base, answers: [answer("Q-1", hostile)] });
+    const markdown = renderMarkdown(model);
+    expect(markdown).toContain("- Q-1, Who approves credits?: Answer (by Alex Lead, 2026-11-20 08:15 UTC): Line one | with pipe line two &lt;b&gt;bold&lt;/b&gt;. Not yet applied: generate a new To-Be.");
+    const lines = markdown.split("\n").filter(line => line.startsWith("|") && line.includes("Who approves credits?"));
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toMatch(/\| Answered \|$/);
+    expect(renderTraceabilityCsv(model)).toBe(renderTraceabilityCsv(buildReport(base)));
+  });
+});
