@@ -5,7 +5,7 @@ import { indexSentences } from "../src/lib/ai/interview-sentences";
 import { WORKSPACE_FIELDS } from "../src/lib/workspace-fields";
 import { TO_CONFIRM } from "../src/lib/workspace-fields";
 import { backfillCatalog, buildInterviewInput, compileDiscovery, createWorkspace, getWorkspaceReadiness,
-  applyWorkspaceCommand, asksForToBe, recordInterviewTurn, WorkspaceStateSchema, type WorkspaceMeta, type WorkspaceState } from "../src/lib/discovery-workspace-model";
+  applyWorkspaceCommand, asksForToBe, recordInterviewTurn, WorkspaceCommandSchema, WorkspaceStateSchema, type WorkspaceMeta, type WorkspaceState } from "../src/lib/discovery-workspace-model";
 
 let sequence = 0;
 const meta = (): WorkspaceMeta => ({ actorId: "consultant", at: "2026-10-21T10:00:00.000Z", id: `evt_${++sequence}` });
@@ -813,5 +813,77 @@ describe("a proposal whose value is a short answer from its quote", () => {
     expect(() => applyWorkspaceCommand(state, { type: "SEND_MESSAGE", text: "next" }, meta())).not.toThrow();
     const tampered = { ...state, proposals: state.proposals.map(p => ({ ...p, value: "something nobody said" })) };
     expect(() => applyWorkspaceCommand(tampered, { type: "SEND_MESSAGE", text: "next" }, meta())).toThrow("INVALID_WORKSPACE_EVIDENCE");
+  });
+});
+
+describe("answers to To-Be open questions", () => {
+  const JOB = "11111111-1111-4111-8111-111111111111";
+  const ctx = { question: "Who approves a credit note above the limit?", owner: "Finance lead" };
+  const answer = (state: WorkspaceState, text: string, context: typeof ctx | null = ctx, m = meta()) =>
+    applyWorkspaceCommand(state, { type: "ANSWER_QUESTION", sourceJobId: JOB, questionId: "OQ-1", answer: text }, m, context ?? undefined);
+  /** A workspace that compiles: every catalog fact answered, one step and one requirement. */
+  const ready = () => {
+    let state = start();
+    for (const def of WORKSPACE_FIELDS) if (state.facts.find(f => f.id === def.id)!.status === "EMPTY") state = set(state, def.id, `Answer for ${def.label}`);
+    for (const id of ["process_owner", "scope_boundary", "current_trigger", "desired_outcome", "current_systems", "current_rules",
+      "current_exceptions", "current_financial", "desired_controls"]) if (state.facts.find(f => f.id === id)!.status === "EMPTY") state = set(state, id, `Answer for ${id}`);
+    state = applyWorkspaceCommand(state, { type: "ADD_STEP", step }, meta());
+    return applyWorkspaceCommand(state, { type: "ADD_REQUIREMENT", requirement: { asIsStepId: state.steps[0]!.id, kind: "PAIN_POINT",
+      statement: "Late return recording causes invoice disputes", critical: true } }, meta());
+  };
+
+  it("records the answer with the server-supplied question text and owner, actor and time", () => {
+    const state = answer(start(), "The finance director approves.", ctx, { actorId: "lead", at: "2026-11-22T09:00:00.000Z", id: "evt_ans" });
+    expect(state.answers).toEqual([{ id: "ans_evt_ans", sourceJobId: JOB, questionId: "OQ-1", question: ctx.question, owner: ctx.owner,
+      answer: "The finance director approves.", answeredBy: "lead", answeredAt: "2026-11-22T09:00:00.000Z" }]);
+  });
+
+  it("replaces an earlier answer to the same question in place and keeps the order", () => {
+    let state = answer(start(), "First answer");
+    state = applyWorkspaceCommand(state, { type: "ANSWER_QUESTION", sourceJobId: JOB, questionId: "OQ-2", answer: "Other" }, meta(), { question: "Q2?", owner: "Ops" });
+    state = answer(state, "Second answer", ctx, { actorId: "lead", at: "2026-11-22T10:00:00.000Z", id: "evt_again" });
+    expect(state.answers!.map(a => a.questionId)).toEqual(["OQ-1", "OQ-2"]);
+    expect(state.answers![0]).toMatchObject({ id: "ans_evt_again", answer: "Second answer", answeredBy: "lead", answeredAt: "2026-11-22T10:00:00.000Z" });
+  });
+
+  it("refuses an answer when the server supplied no question, and any client-supplied question text", () => {
+    expect(() => answer(start(), "text", null)).toThrow("INVALID_WORKSPACE_COMMAND");
+    expect(() => applyWorkspaceCommand(start(), { type: "ANSWER_QUESTION", sourceJobId: JOB, questionId: "OQ-1", answer: "x", question: "spoof" }, meta(), ctx))
+      .toThrow("INVALID_WORKSPACE_COMMAND");
+  });
+
+  it("rejects an empty, whitespace-only or over-long answer and a job id that is not a uuid", () => {
+    const bad = (patch: object) => WorkspaceCommandSchema.safeParse({ type: "ANSWER_QUESTION", sourceJobId: JOB, questionId: "OQ-1", answer: "ok", ...patch }).success;
+    expect(bad({})).toBe(true);
+    expect(bad({ answer: "" })).toBe(false);
+    expect(bad({ answer: "   " })).toBe(false);
+    expect(bad({ answer: "a".repeat(2001) })).toBe(false);
+    expect(bad({ answer: "a".repeat(2000) })).toBe(true);
+    expect(bad({ sourceJobId: "not-a-uuid" })).toBe(false);
+    expect(bad({ question: "spoofed" })).toBe(false);
+  });
+
+  it("clears a confirmation, like every other edit", () => {
+    let state = applyWorkspaceCommand(ready(), { type: "CONFIRM" }, meta());
+    expect(state.confirmation).not.toBeNull();
+    state = answer(state, "The finance director approves.");
+    expect(state.confirmation).toBeNull();
+  });
+
+  it("compiles answeredQuestions only when an answer exists, and leaves the key out otherwise", () => {
+    const base = ready();
+    expect("answeredQuestions" in compileDiscovery(base)).toBe(false);
+    const withAnswer = answer(base, "The finance director approves.", ctx, { actorId: "lead", at: "2026-11-22T09:00:00.000Z", id: "evt_c" });
+    expect(compileDiscovery(withAnswer).answeredQuestions).toEqual([{ id: "OQ-1", question: ctx.question, answer: "The finance director approves.",
+      owner: ctx.owner, answeredBy: "lead", answeredAt: "2026-11-22T09:00:00.000Z" }]);
+    const rest: Record<string, unknown> = { ...compileDiscovery(withAnswer) };
+    delete rest.answeredQuestions;
+    expect(rest).toEqual(compileDiscovery(base));
+  });
+
+  it("parses a stored state that has no answers field", () => {
+    const state = start();
+    expect("answers" in state).toBe(false);
+    expect(WorkspaceStateSchema.safeParse(JSON.parse(JSON.stringify(state))).success).toBe(true);
   });
 });

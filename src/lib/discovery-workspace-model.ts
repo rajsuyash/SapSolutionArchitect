@@ -57,6 +57,9 @@ const QuestionSchema = z.strictObject({ gapKey: id, fieldId: id, question: text(
 const ObservationSchema = z.strictObject({ id, kind: z.enum(["POSSIBLE_CONFLICT", "FOLLOW_UP_SUGGESTION"]),
   fieldIds: z.array(id).min(1).max(10), detail: text(1000), status: z.enum(["PENDING", "DISMISSED", "RESOLVED"]),
   rationale: text(1000).nullable(), reviewedBy: id.nullable() });
+/** An answer to a To-Be open question. `question` and `owner` are copied by the server from the stored To-Be job, never from the client. */
+const AnswerSchema = z.strictObject({ id, sourceJobId: z.uuid(), questionId: id, question: text(), owner: text(), answer: text(2000),
+  answeredBy: id, answeredAt: z.iso.datetime() });
 /** `withGaps`: confirmed as a draft whose incomplete step details travel on as open questions. Absent on older confirmations. */
 const ConfirmationSchema = z.strictObject({ revision: z.number().int().positive(), by: id, at: z.iso.datetime(), withGaps: z.boolean().optional() });
 
@@ -74,6 +77,8 @@ export const WorkspaceStateSchema = z.strictObject({
   extractedMessageIds: z.array(id).max(1000).optional(),
   /** The subset of those whose extraction recorded nothing at all (no proposal, no observation), so the chat can say so. Absent on older workspaces. */
   emptyExtractionMessageIds: z.array(id).max(1000).optional(),
+  /** Answers to open questions of a generated To-Be, carried into the discovery snapshot on confirm. Absent on older workspaces. */
+  answers: z.array(AnswerSchema).max(200).optional(),
   confirmation: ConfirmationSchema.nullable(),
 });
 export type WorkspaceState = z.infer<typeof WorkspaceStateSchema>;
@@ -115,6 +120,7 @@ export const WorkspaceCommandSchema = z.discriminatedUnion("type", [
   z.strictObject({ type: z.literal("DECIDE_PROPOSALS"), ids: z.array(id).min(1).max(100), decision: z.enum(["ACCEPT", "REJECT"]) }),
   z.strictObject({ type: z.literal("REVIEW_OBSERVATION"), observationId: id,
     decision: z.enum(["DISMISS", "RESOLVE"]), rationale: text(1000) }),
+  z.strictObject({ type: z.literal("ANSWER_QUESTION"), sourceJobId: z.uuid(), questionId: id, answer: text(2000) }),
   z.strictObject({ type: z.literal("CONFIRM"), allowGaps: z.boolean().optional() }),
 ]);
 export type WorkspaceCommand = z.infer<typeof WorkspaceCommandSchema>;
@@ -309,7 +315,9 @@ export function getWorkspaceReadiness(raw: WorkspaceState) {
   return { ready: blockers.length === 0, draftReady: blockers.every(b => b.soft), blockers };
 }
 
-export function applyWorkspaceCommand(rawState: WorkspaceState, rawCommand: unknown, meta: WorkspaceMeta): WorkspaceState {
+/** The question a client names in ANSWER_QUESTION, as read by the server from the stored To-Be job. */
+export type AnswerContext = { question: string; owner: string };
+export function applyWorkspaceCommand(rawState: WorkspaceState, rawCommand: unknown, meta: WorkspaceMeta, answerContext?: AnswerContext): WorkspaceState {
   checkMeta(meta);
   const state = structuredClone(checked(rawState));
   const parsed = WorkspaceCommandSchema.safeParse(rawCommand);
@@ -389,6 +397,13 @@ export function applyWorkspaceCommand(rawState: WorkspaceState, rawCommand: unkn
       else if (acceptProposal(state, proposal, meta)) decided++;
     }
     if (!decided) fail("STALE_PROPOSAL");
+  } else if (command.type === "ANSWER_QUESTION") {
+    if (!answerContext) fail("INVALID_WORKSPACE_COMMAND");
+    const entry = { id: `ans_${meta.id}`, sourceJobId: command.sourceJobId, questionId: command.questionId,
+      question: answerContext.question, owner: answerContext.owner, answer: command.answer, answeredBy: meta.actorId, answeredAt: meta.at };
+    const answers = state.answers ?? [];
+    const prior = answers.findIndex(a => a.sourceJobId === command.sourceJobId && a.questionId === command.questionId);
+    state.answers = prior >= 0 ? answers.map((a, i) => (i === prior ? entry : a)) : [...answers, entry];
   } else if (command.type === "REVIEW_OBSERVATION") {
     const observation = state.observations.find(o => o.id === command.observationId);
     if (!observation || observation.status !== "PENDING") fail("OBSERVATION_NOT_PENDING");
@@ -689,6 +704,9 @@ export function compileDiscovery(rawState: WorkspaceState, options: { allowGaps?
       id: `q_${f.id}`, question: WORKSPACE_FIELDS.find(def => def.id === f.id)!.question,
       owner: f.owner ?? "Process owner",
     })), ...gapQuestions, ...observationQuestions]),
+    // Only when answered, so a workspace without answers compiles to exactly what it did before.
+    ...(state.answers?.length ? { answeredQuestions: state.answers.map(a => ({ id: a.questionId, question: a.question, answer: a.answer,
+      owner: a.owner, answeredBy: a.answeredBy, answeredAt: a.answeredAt })) } : {}),
   };
   return validateDiscovery(input);
 }

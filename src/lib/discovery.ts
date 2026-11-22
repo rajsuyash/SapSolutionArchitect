@@ -34,6 +34,9 @@ export const DiscoveryInputSchema = z.strictObject({
   openQuestions: z.array(z.strictObject({ id, question: text, owner: label })).max(MAX_OPEN_QUESTIONS),
   // Answered company-context fields (design input). Optional so frozen revisions saved before it existed still load.
   companyContext: CompanyContextSchema.optional(),
+  // Answers a consultant recorded to open questions of a generated To-Be. Present only when there is at least one; older snapshots lack it.
+  answeredQuestions: z.array(z.strictObject({ id, question: text, answer: rawText(2000), owner: text, answeredBy: id,
+    answeredAt: z.iso.datetime() })).max(200).optional(),
 });
 const SaveSchema = z.strictObject({
   expectedVersion: z.number().int().min(0).max(2147483646), input: DiscoveryInputSchema,

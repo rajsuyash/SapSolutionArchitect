@@ -4,9 +4,10 @@ import { z } from "zod";
 import { AuthError, type AuthService } from "./auth";
 import { withTenantSession } from "./tenant";
 import { containsSensitiveText, revalidateStoredTurn, type Scope } from "./ai/discovery-interview";
+import { parseStoredToBe } from "./consultant-report";
 import { applyWorkspaceCommand, backfillCatalog, buildInterviewInput, compileDiscovery, createWorkspace,
   getWorkspaceReadiness, recordInterviewTurn, settleChatTurn, WorkspaceCommandSchema, WorkspaceStateSchema,
-  type WorkspaceState } from "./discovery-workspace-model";
+  type AnswerContext, type WorkspaceState } from "./discovery-workspace-model";
 
 const uuid = z.uuid();
 const variant = z.string().regex(/^[A-Z][A-Z0-9_-]{0,39}$/);
@@ -74,6 +75,18 @@ function requireEdit(a: Access) {
 function requireConfirm(a: Access) {
   requireEdit(a);
   if (!mayConfirm(a)) throw new AuthError("FORBIDDEN", 403, "Only project leads and consultants can confirm discovery");
+}
+/** The question text and owner of a stored, succeeded To-Be of this very variant; the client only names the job and question id. */
+async function loadAnswerContext(client: PoolClient, args: WorkspaceWorkerArgs, jobId: string, questionId: string): Promise<AnswerContext> {
+  const missing = () => new AuthError("QUESTION_NOT_FOUND", 404, "That question was not found in the design");
+  const job = (await client.query<{ result: unknown }>(`SELECT result FROM consultant_jobs WHERE id=$1 AND org_id=$2 AND project_id=$3
+    AND variant_code=$4 AND kind='TO_BE' AND status='SUCCEEDED'`, [jobId, args.orgId, args.projectId, args.variantCode])).rows[0];
+  if (!job) throw missing();
+  const stored = parseStoredToBe(job.result);
+  const found = stored.design.openQuestions.find(q => q.id === questionId)
+    ?? stored.unresolvedInputQuestions.find(q => q.label === questionId || q.id === questionId);
+  if (!found) throw missing();
+  return { question: found.question, owner: found.owner };
 }
 async function latest(client: PoolClient, args: WorkspaceWorkerArgs): Promise<Row | undefined> {
   return (await client.query<Row>(`SELECT id,revision,state,request_hash,confirmed_snapshot_id,created_at
@@ -206,7 +219,7 @@ export function createDiscoveryWorkspaceRepository(pool: Pool, auth: AuthService
         requireEdit(a);
         const parsed = WorkspaceCommandSchema.safeParse(rawCommand);
         if (!parsed.success) throw new AuthError("INVALID_WORKSPACE_COMMAND", 400, "Check the discovery edit");
-        if (parsed.data.type === "CONFIRM") requireConfirm(a);
+        if (parsed.data.type === "CONFIRM" || parsed.data.type === "ANSWER_QUESTION") requireConfirm(a);
         if (parsed.data.type === "SEND_MESSAGE" && containsSensitiveText(parsed.data.text)) {
           throw new AuthError("SENSITIVE_MESSAGE", 400, "Remove emails, passwords or tokens before sending", "text");
         }
@@ -217,8 +230,10 @@ export function createDiscoveryWorkspaceRepository(pool: Pool, auth: AuthService
         if (!current) throw absent();
         const state = readState(current);
         if (state.revision !== expectedRevision) throw conflict();
+        const answerContext = parsed.data.type === "ANSWER_QUESTION"
+          ? await loadAnswerContext(client, args, parsed.data.sourceJobId, parsed.data.questionId) : undefined;
         let next: WorkspaceState;
-        try { next = applyWorkspaceCommand(state, parsed.data, metadata(user.id)); }
+        try { next = applyWorkspaceCommand(state, parsed.data, metadata(user.id), answerContext); }
         catch (error) {
           if (error instanceof Error && error.message === "WORKSPACE_NOT_READY") {
             throw new AuthError("WORKSPACE_NOT_READY", 409, "Resolve the discovery gaps before confirmation");

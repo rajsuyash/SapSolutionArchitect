@@ -8,6 +8,7 @@ import { Client, Pool } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createAuthService, transaction } from "../src/lib/auth";
 import { createProjectRepository } from "../src/lib/tenant";
+import { blockedReportData } from "./support/blocked-report-fixture";
 import { createDiscoveryWorkspaceRepository, loadWorkspaceForWorker, persistWorkspaceTurn } from "../src/lib/discovery-workspace";
 
 describe.skipIf(process.env.RUN_DB_TESTS !== "1")("durable discovery workspace", () => {
@@ -246,5 +247,34 @@ describe.skipIf(process.env.RUN_DB_TESTS !== "1")("durable discovery workspace",
     const after = await workspaces.get(owner.token, project.id, "SAFE");
     expect(after.state?.revision).toBe(created.state.revision);
     expect(after.state?.messages).toHaveLength(0);
+  });
+  it("records an answer to a stored To-Be question using the stored question text, for leads and consultants only", async () => {
+    const { owner, project } = await fixture();
+    const created = await workspaces.create(owner.token, project.id, "ANS", { variantName: "Answers" }, randomUUID());
+    const snapshotId = randomUUID(), jobId = randomUUID(), HASH = "a".repeat(64);
+    await pool.query(`INSERT INTO discovery_versions(id,org_id,project_id,variant_code,version_no,target_product,payload,source_digests,
+      request_key,request_hash,created_by) VALUES($1,$2,$3,'ANS',1,'S4HANA_CLOUD_PRIVATE','{"schemaVersion":1}','{}',$4,$5,$6)`,
+      [snapshotId, owner.user.orgId, project.id, randomUUID(), HASH, owner.user.id]);
+    const result = { design: blockedReportData.design, evaluation: { blockers: [] }, sourceRevision: 1, snapshotId,
+      unresolvedInputQuestions: [{ id: "q_current_trigger", label: "IQ-1", question: "What starts the process?", owner: "Process owner" }] };
+    await pool.query(`INSERT INTO consultant_jobs(id,org_id,project_id,variant_code,kind,input_revision,snapshot_id,requested_by,request_key,
+      request_hash,status,result,finished_at) VALUES($1,$2,$3,'ANS','TO_BE',1,$4,$5,$6,$7,'SUCCEEDED',$8,now())`,
+      [jobId, owner.user.orgId, project.id, snapshotId, owner.user.id, randomUUID(), HASH, JSON.stringify(result)]);
+    const answer = (token: string, revision: number, questionId: string, text: string, job = jobId) => workspaces.command(token, project.id, "ANS",
+      revision, randomUUID(), { type: "ANSWER_QUESTION", sourceJobId: job, questionId, answer: text });
+
+    await expect(answer(owner.token, 1, "Q-1", "x", randomUUID())).rejects.toMatchObject({ code: "QUESTION_NOT_FOUND" });
+    await expect(answer(owner.token, 1, "Q-99", "x")).rejects.toMatchObject({ code: "QUESTION_NOT_FOUND" });
+    const processOwner = await member(owner.user.orgId, project.id, "PROCESS_OWNER");
+    await expect(answer(processOwner.token, 1, "Q-1", "x")).rejects.toMatchObject({ code: "FORBIDDEN" });
+
+    const first = await answer(owner.token, created.state.revision, "Q-1", "The finance director approves.");
+    expect(first.state.answers).toMatchObject([{ sourceJobId: jobId, questionId: "Q-1", question: "Who approves credits?", owner: "Finance lead",
+      answer: "The finance director approves.", answeredBy: owner.user.id }]);
+    const second = await answer(owner.token, first.state.revision, "IQ-1", "A returned asset scan.");
+    expect(second.state.answers).toHaveLength(2);
+    expect(second.state.answers![1]).toMatchObject({ questionId: "IQ-1", question: "What starts the process?" });
+    const third = await answer(owner.token, second.state.revision, "Q-1", "The CFO approves.");
+    expect(third.state.answers!.map(a => [a.questionId, a.answer])).toEqual([["Q-1", "The CFO approves."], ["IQ-1", "A returned asset scan."]]);
   });
 });
