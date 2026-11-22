@@ -261,7 +261,7 @@ describe("recorded answers in the report", () => {
 
   it("marks a design question answered with its text, time and name, and leaves an unmatched answer out", () => {
     const model = buildReport({ ...base, answers: [answer("Q-1"), answer("Q-404", "Nobody asked this")] });
-    expect(rows(model)["Q-1"]).toMatchObject({ state: "Answered", answerable: false, answer: { text: "The finance director approves.", answeredAt: "2026-11-20 08:15 UTC", answeredBy: "Alex Lead" } });
+    expect(rows(model)["Q-1"]).toMatchObject({ state: "Answered", answerable: true, answer: { text: "The finance director approves.", answeredAt: "2026-11-20 08:15 UTC", answeredBy: "Alex Lead" } });
     expect(JSON.stringify(model.registers.questions)).not.toContain("Nobody asked this");
     expect(model.answering).toEqual({ canAnswer: true, workspaceRevision: 4, answeredCount: 1 });
   });
@@ -273,9 +273,10 @@ describe("recorded answers in the report", () => {
     expect(byRaw["IQ-2"]).toMatchObject({ state: "Answered" });
     expect(byRaw["IQ-1"]).toMatchObject({ state: "Open" });
   });
-  it("offers answering only on open rows and only when the viewer may answer", () => {
+  it("offers answering on open and answered rows alike, and only when the viewer may answer", () => {
     expect(rows(buildReport({ ...base, canAnswer: false }))["Q-1"]).toMatchObject({ state: "Open", answerable: false });
-    expect(rows(buildReport({ ...base, answers: [answer("Q-1")] }))["Q-1"]!.answerable).toBe(false);
+    expect(rows(buildReport({ ...base, canAnswer: false, answers: [answer("Q-1")] }))["Q-1"]).toMatchObject({ state: "Answered", answerable: false });
+    expect(rows(buildReport({ ...base, answers: [answer("Q-1")] }))["Q-1"]).toMatchObject({ state: "Answered", answerable: true });
     const legacy = buildReport(data);
     expect(legacy.answering).toEqual({ canAnswer: false, workspaceRevision: null, answeredCount: 0 });
     expect(legacy.registers.questions.every(item => item.state === "Open" && !item.answerable && !item.answer)).toBe(true);

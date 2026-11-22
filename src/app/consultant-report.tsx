@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import { TEST_LABEL, testKindLabel, type BlockerGroup, type ComparisonRow, type ImplementationView, type Register, type ReportModel, type StepView } from "../lib/consultant-report";
 import { PrintButton } from "./report-print-button";
+import { AnswerCell, type AnswerTarget } from "./consultant-answer";
 import styles from "./consultant-report.module.css";
 
 const List = ({ items }: { items: string[] }) => items.length ? <ul className={styles.tight}>{items.map((item, index) => <li key={index}>{item}</li>)}</ul> : <p className={styles.muted}>None</p>;
@@ -73,9 +74,10 @@ function Step({ view, labels }: { view: StepView; labels: Record<string, string>
   </section>;
 }
 
-const RegisterTable = ({ label, items }: { label: string; items: Register[] }) => items.length === 0 ? <p>None.</p> :
+const RegisterTable = ({ label, items, answering }: { label: string; items: Register[]; answering?: { target: AnswerTarget | null } }) => items.length === 0 ? <p>None.</p> :
   <Table label={label}><thead><tr><th scope="col">Item</th><th scope="col">Owner</th><th scope="col">Affects</th><th scope="col">State</th></tr></thead>
-    <tbody>{items.map(item => <tr key={item.id}><td>{item.text}</td><td>{item.owner}</td><td>{item.affects}</td><td>{item.state}</td></tr>)}</tbody></Table>;
+    <tbody>{items.map(item => <tr key={item.id}><td>{item.text}</td><td>{item.owner}</td><td>{item.affects}</td>
+      <td>{answering ? <AnswerCell id={item.id} state={item.state} answerable={item.answerable === true} answer={item.answer} target={answering.target} /> : item.state}</td></tr>)}</tbody></Table>;
 
 const Subject = ({ item }: { item: BlockerGroup["entries"][number]["subjects"][number] }) =>
   <>{item.anchor ? <a href={`#${item.anchor}`}>{item.text}</a> : item.text}{item.detail ? `. ${item.detail}` : ""}</>;
@@ -87,7 +89,11 @@ function BlockerList({ groups, back }: { groups: BlockerGroup[]; back: string })
       <ul className={styles.tight}>{entry.subjects.map((item, index) => <li key={index}><Subject item={item} /></li>)}</ul></li>)}</ul></div>)}</>;
 }
 
-export function ConsultantReport({ model, downloads }: { model: ReportModel; downloads: { markdown: string; csv: string; back: string } }) {
+/** `answer` names where an answer is saved; it is omitted when the page cannot record answers. */
+export function ConsultantReport({ model, downloads, answer }: { model: ReportModel; downloads: { markdown: string; csv: string; back: string };
+  answer?: { projectId: string; variant: string; jobId: string } }) {
+  const revision = model.answering.workspaceRevision;
+  const target = answer && revision !== null ? { ...answer, revision } : null;
   const { header, summary } = model;
   return <article className={styles.report} aria-labelledby="report-title">
     <header className={styles.head}>
@@ -150,7 +156,7 @@ export function ConsultantReport({ model, downloads }: { model: ReportModel; dow
     </section>
     <section id="registers" aria-labelledby="registers-h" className={styles.section}>
       <h2 id="registers-h">Registers</h2>
-      <h3>Open decisions and questions</h3><RegisterTable label="Open decisions and questions" items={model.registers.questions} />
+      <h3>Open decisions and questions</h3><RegisterTable label="Open decisions and questions" items={model.registers.questions} answering={{ target }} />
       <h3>Source conflicts</h3><RegisterTable label="Source conflicts" items={model.registers.conflicts} />
       <h3>SAP validation points</h3><RegisterTable label="SAP validation points" items={model.registers.sapPoints} />
     </section>

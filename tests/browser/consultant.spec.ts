@@ -389,6 +389,42 @@ test("a consultant conversation builds, confirms and generates from reviewed dis
     }
     await page.getByRole("list", { name: "Project steps" }).getByRole("link", { name: "Design the To-Be" }).click();
     await expect(page.getByRole("heading", { level: 1, name: /^To-Be design report/ })).toBeVisible();
+
+    // Last, because recording an answer is a new discovery revision and clears the confirmation the steps above rely on.
+    // Answer a design question through the visible controls: the form opens focused, saving marks the row answered but not applied, and it survives a reload.
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await page.reload();
+    const questions = page.getByRole("region", { name: "Open decisions and questions table" });
+    const row = questions.getByRole("row").filter({ hasText: "Which proration convention" });
+    await expect(row).toContainText("Open");
+    await row.getByRole("button", { name: "Answer", exact: true }).click();
+    const answerBox = row.getByRole("textbox", { name: "Your answer to Q-1" });
+    await expect(answerBox).toBeFocused();
+    await expect(row.getByRole("button", { name: "Save", exact: true })).toBeDisabled();
+    await answerBox.fill("The finance director approves a half-day rule.");
+    await row.getByRole("button", { name: "Save", exact: true }).click();
+    const expectAnswered = async () => {
+      await expect(row).toContainText("Answered");
+      await expect(row).toContainText(/Answered by .+, .+: The finance director approves a half-day rule\./);
+      await expect(row).toContainText("Not yet applied: confirm discovery again in the conversation, then generate a new To-Be.");
+      await expect(row.getByRole("button", { name: "Change answer", exact: true })).toBeVisible();
+      await expect(row.getByRole("button", { name: "Answer", exact: true })).toHaveCount(0);
+    };
+    await expectAnswered();
+    await expect(row.getByText("Answer saved.")).toBeVisible();
+    await page.reload();
+    await expectAnswered();
+    await row.scrollIntoViewIfNeeded();
+    await row.screenshot({ path: `${shots}/report-answered-row-desktop.png` });
+
+    // Phone width: the answered row is still readable and the page does not scroll sideways.
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.reload();
+    await expectAnswered();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+    await row.scrollIntoViewIfNeeded();
+    await questions.evaluate(element => { element.scrollLeft = element.scrollWidth; }); // the table scrolls inside its own region; show its State column
+    await page.screenshot({ path: `${shots}/report-answered-row-mobile.png` });
   });
   expect(errors).toEqual([]);
 });

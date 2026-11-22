@@ -146,7 +146,7 @@ export default async function WorkspacePage({ params }: Props) {
       }
       const api = `/api/projects/${encodeURIComponent(project.id)}/consultant/${encodeURIComponent(path[3]!)}/to-be/${encodeURIComponent(path[5]!)}`;
       return <ConsultantReport model={buildReport(data)} downloads={{ markdown: `${api}/report.md`, csv: `${api}/traceability.csv`,
-        back: `/projects/${project.id}/consultant` }} />;
+        back: `/projects/${project.id}/consultant` }} answer={{ projectId: project.id, variant: data.variant.code, jobId: data.jobId }} />;
     }
     if (path.length === 3 && path[2] === "discovery") {
       let variants: Variant[];

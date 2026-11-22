@@ -253,7 +253,7 @@ export type SolutionView = {
 const BACK = "Then generate a new To-Be from the conversation.";
 const GROUP_ACTIONS: Record<string, { action: string; linksBack: boolean }> = {
   "Target release": { action: `Set the target SAP release in the conversation. ${BACK}`, linksBack: true },
-  "Open decisions": { action: `Answer the discovery questions in the conversation and confirm discovery again. ${BACK} Questions the design raised itself cannot be answered on this page yet: the project lead settles them outside the app.`, linksBack: true },
+  "Open decisions": { action: `Answer the open questions in the table below, or the discovery questions in the conversation. Then confirm discovery again and generate a new To-Be: answers apply only to a newly generated design.`, linksBack: true },
   "SAP validation": { action: "An SAP consultant checks each point against the target release. The app cannot do this for you.", linksBack: false },
   "Licensing": { action: "Confirm the licence with the client's SAP contact. This is done outside the app.", linksBack: false },
   "Source conflicts": { action: "The project lead decides each conflict outside the app; it cannot be recorded here yet.", linksBack: false },
@@ -354,8 +354,9 @@ export function buildReport(data: ReportData) {
   const answerFor = (...ids: (string | undefined)[]) => data.answers?.find(item => ids.includes(item.questionId));
   const questionRow = (row: Omit<Register, "state">): Register => {
     const found = answerFor(row.id, row.sourceId);
-    return found ? { ...row, state: "Answered", answerable: false, answer: { text: found.answer, answeredAt: formatTimestamp(found.answeredAt), answeredBy: found.answeredBy } }
-      : { ...row, state: "Open", answerable: data.canAnswer === true };
+    const answerable = data.canAnswer === true; // an answered row stays answerable: the server replaces the answer
+    return found ? { ...row, state: "Answered", answerable, answer: { text: found.answer, answeredAt: formatTimestamp(found.answeredAt), answeredBy: found.answeredBy } }
+      : { ...row, state: "Open", answerable };
   };
   const questions: Register[] = [
     ...design.openQuestions.map(item => questionRow({ id: item.id, sourceId: inputQuestionRows(data.unresolvedInputQuestions).find(row => row.label === item.id)?.id, text: item.question, owner: item.owner, affects: stepNames(item.affectedStepIds) })),

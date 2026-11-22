@@ -52,7 +52,9 @@ function design(input: ToBeInput) {
   return { ...rentalDraft, steps: [{ ...target, asIsStepIds: [step.id], requirementIds: [requirement.id],
     acceptanceTests: target.acceptanceTests.map(test => ({ ...test, requirementIds: [requirement.id] })) }],
   coverage: [{ requirementId: requirement.id, disposition: "IMPLEMENTED", stepIds: [target.id], decisionId: null,
-    rationale: "Covered by the proposed hire step." }], conflictDecisions: [], openQuestions: [] };
+    rationale: "Covered by the proposed hire step." }], conflictDecisions: [],
+  // One open question so the report's answer form has a row to drive (the rental fixture's own Q-1, tied to the stub's only step).
+  openQuestions: [{ ...rentalDraft.openQuestions[0]!, affectedStepIds: [target.id] }] };
 }
 
 // A message starting "Slow extraction." holds its extraction back so the browser can see chat answer first.
