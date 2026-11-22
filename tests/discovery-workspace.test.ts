@@ -248,6 +248,16 @@ describe.skipIf(process.env.RUN_DB_TESTS !== "1")("durable discovery workspace",
     expect(after.state?.revision).toBe(created.state.revision);
     expect(after.state?.messages).toHaveLength(0);
   });
+  it("refuses an answer that fails the sensitive-data screen before saving it, so later To-Be generations are not wedged", async () => {
+    const { owner, project } = await fixture();
+    const created = await workspaces.create(owner.token, project.id, "SAFEANS", { variantName: "Safe answers" }, randomUUID());
+    await expect(workspaces.command(owner.token, project.id, "SAFEANS", created.state.revision, randomUUID(),
+      { type: "ANSWER_QUESTION", sourceJobId: randomUUID(), questionId: "Q-1", answer: "Ask jane@example.com to approve." }))
+      .rejects.toMatchObject({ code: "SENSITIVE_MESSAGE", status: 400, message: "Remove emails, passwords or tokens before sending" });
+    const after = await workspaces.get(owner.token, project.id, "SAFEANS");
+    expect(after.state?.revision).toBe(created.state.revision);
+    expect(after.state?.answers ?? []).toHaveLength(0);
+  });
   it("records an answer to a stored To-Be question using the stored question text, for leads and consultants only", async () => {
     const { owner, project } = await fixture();
     const created = await workspaces.create(owner.token, project.id, "ANS", { variantName: "Answers" }, randomUUID());

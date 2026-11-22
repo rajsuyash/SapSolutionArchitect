@@ -220,8 +220,10 @@ export function createDiscoveryWorkspaceRepository(pool: Pool, auth: AuthService
         const parsed = WorkspaceCommandSchema.safeParse(rawCommand);
         if (!parsed.success) throw new AuthError("INVALID_WORKSPACE_COMMAND", 400, "Check the discovery edit");
         if (parsed.data.type === "CONFIRM" || parsed.data.type === "ANSWER_QUESTION") requireConfirm(a);
-        if (parsed.data.type === "SEND_MESSAGE" && containsSensitiveText(parsed.data.text)) {
-          throw new AuthError("SENSITIVE_MESSAGE", 400, "Remove emails, passwords or tokens before sending", "text");
+        const typed = parsed.data.type === "SEND_MESSAGE" ? { field: "text", value: parsed.data.text }
+          : parsed.data.type === "ANSWER_QUESTION" ? { field: "answer", value: parsed.data.answer } : undefined;
+        if (typed && containsSensitiveText(typed.value)) {
+          throw new AuthError("SENSITIVE_MESSAGE", 400, "Remove emails, passwords or tokens before sending", typed.field);
         }
         const hash = digest({ expectedRevision, command: parsed.data });
         const prior = await replay(client, args, key!, hash);
