@@ -3,6 +3,8 @@ import { rentalContext, rentalDraft } from "../fixtures/ai/to-be/rental-benchmar
 import { DetailedDesignSchema, evaluateDesign, inputIds } from "../src/lib/ai/design-quality";
 import { toBeContext, parseToBeInput, STRUCTURAL_ERROR_CODES } from "../src/lib/ai/to-be";
 import { fixture } from "./support/to-be-input";
+import { splitDesign } from "./support/to-be-split";
+import { assemble, validateOutline, type Outline, type StepDetail } from "../src/lib/ai/to-be-pipeline";
 import { rebuildDiscovery, type ReportLike, type StateLike } from "../scripts/tobe-input";
 
 const answers = [
@@ -108,5 +110,46 @@ describe("rebuildDiscovery answers", () => {
   it("leaves the key out when there are no answers", () => {
     expect(rebuildDiscovery(report, stateWith({})).discovery).not.toHaveProperty("answeredQuestions");
     expect(rebuildDiscovery(report, stateWith({ answers: [] })).discovery).not.toHaveProperty("answeredQuestions");
+  });
+});
+
+describe("answers cited by the outline", () => {
+  const split = splitDesign(rentalDraft);
+  const stepId = split.outline.steps[0]!.id;
+  const build = (outlineIds?: string[], detailIds?: string[]) => {
+    const outline = structuredClone(split.outline) as unknown as Outline;
+    if (outlineIds) outline.steps[0] = { ...outline.steps[0]!, answerIds: outlineIds };
+    const details = new Map(Object.entries(structuredClone(split.details)) as [string, StepDetail][]);
+    if (detailIds) details.set(stepId, { ...details.get(stepId)!, answerIds: detailIds });
+    return assemble(outline, details).steps[0]!.answerIds;
+  };
+  it("keeps the outline's answerIds on the assembled step and leaves a step without any uncited", () => {
+    expect(build(["ANS-1"])).toEqual(["ANS-1"]);
+    expect(build()).toBeUndefined();
+    expect(build(undefined, ["ANS-2"])).toEqual(["ANS-2"]);
+  });
+  it("unites the outline's and the step stage's ids without duplicates; the step stage cannot drop the outline's", () => {
+    expect(build(["ANS-1", "ANS-2"], ["ANS-2", "ANS-3"])).toEqual(["ANS-1", "ANS-2", "ANS-3"]);
+    expect(build(["ANS-1"], [])).toEqual(["ANS-1"]);
+  });
+  it("does not report an answer as not applied when only an outline step cites it", () => {
+    const { input } = withAnswers();
+    const draft = structuredClone(rentalDraft);
+    const design = { ...draft, steps: draft.steps.map((step, i) => ({ ...step, answerIds: i === 0 ? build(["ANS-1"]) : undefined })) };
+    expect(blockerCodes(input, design)).not.toContain("ANSWER_NOT_APPLIED");
+  });
+  it("still errors on an outline step that cites an unknown answer, and accepts a known one", () => {
+    const raw = (ids: string[]) => ({ ...split.outline, steps: split.outline.steps.map((step, i) => i === 0 ? { ...step, answerIds: ids } : step) });
+    const input = fixture();
+    input.discovery.answeredQuestions = [answers[0]!];
+    const parsed = parseToBeInput(input);
+    const bad = validateOutline(parsed, [], raw(["ANS-9"]));
+    expect(!bad.success && bad.errors.map(error => error.code)).toContain("UNKNOWN_ANSWER");
+    const good = validateOutline(parsed, [], raw(["ANS-1"]));
+    expect(good.success && good.outline.steps[0]!.answerIds).toEqual(["ANS-1"]);
+  });
+  it("parses an outline without answerIds", () => {
+    const result = validateOutline(parseToBeInput(fixture()), [], split.outline);
+    expect(result.success && result.outline.steps[0]).not.toHaveProperty("answerIds");
   });
 });

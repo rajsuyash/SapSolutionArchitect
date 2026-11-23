@@ -122,6 +122,7 @@ constraints and timeline. It is design input, not background:
   hold explicit and link the open decision through decisionIds on the coverage
   item and on the steps (decisionIds is allowed on IMPLEMENTED); the decision
   stays open and gates the step, it does not make the coverage CONDITIONAL.
+- A step you add or change because of an answer lists that ANS id in its answerIds. Every answer is cited by at least one step or coverage row.
 - A coverage row whose disposition rests on an answer lists its ANS id in answerIds. A requirement that was CONDITIONAL only because of a now-answered question is
   IMPLEMENTED when the steps design it.
 - Use disposition CONDITIONAL (never IMPLEMENTED) only when the behaviour itself

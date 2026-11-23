@@ -48,6 +48,8 @@ export const OutlineSchema = z.strictObject({
     id, sequence: z.number().int().positive(), title: text, purpose: text.max(OUTLINE_PURPOSE_MAX_CHARS),
     postingSummary: z.string().trim().max(POSTING_SUMMARY_MAX_CHARS).default(""),
     asIsStepIds: ids, requirementIds: ids, enablesStepIds: DetailedDesignSchema.shape.steps.element.shape.enablesStepIds,
+    /** Answered questions (ANS-n) the step was added or shaped for; the finished step keeps them whatever the step stage says. */
+    answerIds: DetailedDesignSchema.shape.steps.element.shape.answerIds,
     implementation: z.strictObject({ kind: z.enum(IMPLEMENTATION_KINDS), referenceIds: ids }),
   })).min(1),
   eliminatedAsIsSteps: list(DESIGN_ELIMINATED_ROW.extend({ reason: text.max(OUTLINE_REASON_MAX_CHARS) })),
@@ -161,7 +163,7 @@ function patchNotes(errors: readonly ValidationIssue[], outline: unknown, input:
  * its ids, links and kinds. Titles, purposes, rationales, questions and the process name are left out, so the repair request still
  * carries none of the model's prose beyond the items it is asked to fix. */
 const OUTLINE_DIGEST = {
-  steps: ["id", "sequence", "asIsStepIds", "requirementIds", "enablesStepIds", "implementation", "postingSummary"],
+  steps: ["id", "sequence", "asIsStepIds", "requirementIds", "enablesStepIds", "answerIds", "implementation", "postingSummary"],
   coverage: ["requirementId", "disposition", "stepIds", "decisionId", "decisionIds", "questionIds"],
   openQuestions: ["id", "affectedStepIds", "decisionIds"], eliminatedAsIsSteps: ["asIsStepId"], conflictDecisions: ["conflictId", "decisionId"],
 } as const;
@@ -198,6 +200,7 @@ function skeleton(outline: Outline): DetailedDesign {
   const steps = outline.steps.map((step): DetailedDesign["steps"][number] => ({
     id: step.id, sequence: step.sequence, title: step.title, asIsStepIds: step.asIsStepIds, requirementIds: step.requirementIds,
     ...(step.enablesStepIds && { enablesStepIds: step.enablesStepIds }),
+    ...(step.answerIds && { answerIds: step.answerIds }),
     actor: PLACEHOLDER, trigger: PLACEHOLDER, inputDocuments: [PLACEHOLDER], outputDocuments: [PLACEHOLDER],
     actions: [{ actor: PLACEHOLDER, system: PLACEHOLDER, operation: PLACEHOLDER, fields: [PLACEHOLDER] }],
     businessRules: [{ id: `${step.id}-PH-BR`, condition: PLACEHOLDER, response: PLACEHOLDER }],
@@ -257,6 +260,8 @@ export function assemble(outline: Outline, details: ReadonlyMap<string, StepDeta
         id: step.id, sequence: step.sequence, title: step.title, asIsStepIds: step.asIsStepIds, requirementIds: step.requirementIds,
         ...(step.enablesStepIds && { enablesStepIds: step.enablesStepIds }),
         ...rest,
+        // The outline decided why the step exists, so the ids it cited stay; the step stage may only add to them.
+        ...((step.answerIds || rest.answerIds) && { answerIds: [...new Set([...step.answerIds ?? [], ...rest.answerIds ?? []])] }),
         businessRules: businessRules.map(rule => ({ ...rule, id: unique(step.id, rule.id) })),
         implementation: { kind: step.implementation.kind, detail: implementation.detail, referenceIds: step.implementation.referenceIds },
         acceptanceTests: acceptanceTests.map(test => ({ ...test, id: unique(step.id, test.id) })),
