@@ -15,7 +15,7 @@ function required(key: string): string {
   if (!value) throw new Error(`Missing ${key}`);
   return value;
 }
-const origin = "https://sap-web-965411321011.europe-west1.run.app";
+const origin = "https://sap-pm.voxdonna.com";
 if (access.DEMO_URL !== origin) throw new Error("Unexpected demo origin");
 const run = new Date().toISOString().replace(/[:.]/g, "-");
 const output = `test-results/live-audit/${run}`;

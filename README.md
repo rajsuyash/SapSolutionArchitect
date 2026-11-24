@@ -16,7 +16,7 @@ The worker must start with its working directory at the repository root so it fi
 
 ## Live demo
 
-- URL: https://sap-web-965411321011.europe-west1.run.app
+- URL: https://sap-pm.voxdonna.com
 - Hosting: Google Cloud project `sap-solution-architect-demo` (`europe-west1`): Cloud Run service `sap-web`, Cloud Run worker pool `sap-worker`, Cloud SQL Postgres `sap-pg`, and a Cloud Storage bucket for files. See [Deployment](#deployment).
 - The browser first requests the private demo credentials, then the application account credentials. The presenter credentials are stored locally in the ignored `.env.demo-access` file; never commit or publish this file.
 - Three fictional project scenarios live in `fixtures/e2e/synthetic-projects.json`. The deployed demo uses real Anthropic analysis, not the test stub.
@@ -60,7 +60,7 @@ gcloud builds submit <dir> --config=deploy/gcp/cloudbuild.yaml --substitutions=_
 - **Database:** Cloud SQL Postgres 16 `sap-pg` (db-f1-micro), private IP only (org policy forbids a public IP); database and user `sap_pm`. Services reach it through Direct VPC egress: `--network=default --subnet=default --vpc-egress=private-ranges-only`.
 - **Migrations:** Cloud Run job `sap-migrate` runs the same image with `node --import tsx scripts/seed.ts --migrate-only` under the existing migration lock. Run `gcloud run jobs deploy sap-migrate --image=... --execute-now --wait` (or `gcloud run jobs execute sap-migrate --wait` after updating the image) before deploying the worker.
 - **Worker:** deploy with `gcloud run worker-pools deploy sap-worker` (this command needs the Python `grpc` module available to gcloud). Wait for "Worker ready" in its logs before deploying web.
-- **Web:** `sap-web` is public via `--no-invoker-iam-check` (org policy blocks `allUsers`); the demo gate and login protect it. URL: https://sap-web-965411321011.europe-west1.run.app, which is also `APP_URL`.
+- **Web:** `sap-web` is public via `--no-invoker-iam-check` (org policy blocks `allUsers`); the demo gate and login protect it. URL: https://sap-pm.voxdonna.com, which is also `APP_URL` on web and worker (Cloud Run domain mapping; DNS CNAME `sap-pm` → `ghs.googlehosted.com` at Hostinger; switched 2026-11-24). The app accepts state-changing requests only from `APP_URL`'s origin, so the service's own `*.run.app` URL loads pages but fails sign-in and saves. The Google OAuth client must list `<APP_URL>/api/auth/google/callback` as a redirect URI.
 - **Identity and config:** services run as `sap-runtime@sap-solution-architect-demo.iam.gserviceaccount.com`. Secrets live in Secret Manager and are mounted with `--set-secrets`: `database-url`→`DATABASE_URL`, `auth-secret`→`AUTH_SECRET`, `anthropic-api-key`→`ANTHROPIC_API_KEY`, `demo-access-password`→`DEMO_ACCESS_PASSWORD`, `s3-access-key-id`→`S3_ACCESS_KEY_ID`, `s3-secret-access-key`→`S3_SECRET_ACCESS_KEY`. Plain env: `S3_ENDPOINT=https://storage.googleapis.com`, `S3_REGION=auto`, `S3_BUCKET=sap-solution-architect-demo-files` (Cloud Storage through its S3-compatible API with an HMAC key).
 
 Production should also set `AI_FALLBACK_PROVIDER=openrouter` with the `openrouter-api-key` secret mounted as `OPENROUTER_API_KEY` (and optionally `AI_FALLBACK_MODEL` / `AI_FALLBACK_MODEL_DESIGN`) on both web and worker, so a DeepInfra credit failure (HTTP 402) moves to OpenRouter instead of failing the consultant response; see "Credit fallback" above.
@@ -130,7 +130,7 @@ pnpm test:browser:synthetic
 
 The Playwright harness creates and removes an isolated local database, serves the production build over HTTPS, and tests all three fictional journeys with a deterministic worker. It covers progress after reload, retry, persisted scope review, and tenant isolation; it does not evaluate real AI quality. The worker verifies its S3 bucket on startup, so the harness needs object storage: it uses the MinIO from `.env.example` when reachable, otherwise it starts a tiny in-process stub (`tests/browser/support/s3-stub.ts`) that implements only HeadBucket and CreateBucket and answers 501 NotImplemented to everything else, so Docker is not required. Overrides: `BROWSER_TEST_S3_ENDPOINT` (use that endpoint as-is; optionally `BROWSER_TEST_S3_BUCKET`, `BROWSER_TEST_S3_ACCESS_KEY_ID`, `BROWSER_TEST_S3_SECRET_ACCESS_KEY` for the worker), `BROWSER_TEST_S3_STUB=1` (force the stub) or `=0` (forbid it). Local evidence is saved under ignored `playwright-report/` and `test-results/`. Live checks and screenshots are under `test-results/live-demo/`.
 
-For an explicitly authorized audit of the live demo (https://sap-web-965411321011.europe-west1.run.app):
+For an explicitly authorized audit of the live demo (https://sap-pm.voxdonna.com):
 
 ```sh
 node --import tsx scripts/test-live-demo.ts --create-synthetic-data
