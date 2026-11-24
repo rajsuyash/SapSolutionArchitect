@@ -1,17 +1,18 @@
 "use client";
 
-import { useState, type ReactNode } from "react";
-import { REQUIREMENT_KIND_LABELS, STEP_KEYS, STEP_LABELS, WORKSPACE_FIELDS, carriedGaps, describeBlocker, describeField, describeProposal,
-  requirementLabel, stepLabel } from "../lib/workspace-fields";
+import { useEffect, useState, type ReactNode } from "react";
+import { NONE_APPLY_REASON, OBSERVATION_CLOSE_REASON, REQUIREMENT_KIND_LABELS, STEP_KEYS, STEP_LABELS, WORKSPACE_FIELDS, describeBlocker, describeField, describeProposal,
+  emptyListKeys, isPossiblySettled, noneApplyLabel, requirementLabel, stepLabel } from "../lib/workspace-fields";
 import { isActive, type Command, type Fact, type JobView, type Workspace, type WorkspaceView } from "./consultant-api";
 import { FieldRow, type FactUpdate } from "./consultant-field";
 import { EditableGroup, type GroupField } from "./consultant-group";
-import { ObservationCard, ProposalCard } from "./consultant-review";
+import { ObservationCard, ProposalCard, SettledGroup } from "./consultant-review";
 import styles from "./consultant.module.css";
+import { SupportLink, isAccountBlocked, needsSupport } from "./support";
 
 export type Run = (commands: Command | Command[]) => Promise<boolean>;
 type Props = { workspace: Workspace & { state: WorkspaceView }; jobs: JobView[]; locked: boolean; run: Run;
-  onGenerate: () => Promise<boolean>; reportHref: (jobId: string) => string };
+  onGenerate: () => Promise<boolean>; reportHref: (jobId: string) => string; generateError: { message: string; code: string } | null };
 
 /** The command that records a fact depends on which kind of detail the id belongs to. */
 function setFact(state: WorkspaceView, fieldId: string, update: FactUpdate): Command {
@@ -24,13 +25,45 @@ function setFact(state: WorkspaceView, fieldId: string, update: FactUpdate): Com
 
 function Section({ id, title, children, hint }: { id: string; title: string; children: ReactNode; hint?: string }) {
   return <section aria-labelledby={id} className={styles.section}>
-    <h3 id={id}>{title}</h3>{hint && <p className={styles.muted}>{hint}</p>}{children}
+    <h3 id={id} tabIndex={-1}>{title}</h3>{hint && <p className={styles.muted}>{hint}</p>}{children}
   </section>;
+}
+
+/** A reference section that folds away. Native <details> keeps the children mounted, so drafts being typed survive a collapse.
+ * It is open while something is recorded in it, unless the person has chosen otherwise; their explicit choice always wins. */
+function Collapsible({ id, title, figure, recorded, hint, children }: { id: string; title: string; figure: string; recorded: boolean; hint?: string; children: ReactNode }) {
+  const [choice, setChoice] = useState<boolean | null>(null);
+  const open = choice ?? recorded;
+  return <section aria-labelledby={id} className={styles.section}>
+    <details open={open} onToggle={(event) => {
+      // React changing the attribute also fires "toggle"; only a state that differs from what was rendered is the person's doing.
+      if (event.currentTarget.open !== open) setChoice(event.currentTarget.open);
+    }} className={styles.fold}>
+      <summary className={styles.foldRow}><h3 id={id}>{title}</h3><span className={styles.figure}>{figure}</span></summary>
+      {hint && <p className={styles.muted}>{hint}</p>}{children}
+    </details>
+  </section>;
+}
+
+const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? "" : "s"}`;
+/** Shared by the Summary headline and the chat pointer so both say the same thing. The pointer also names the pending
+ * "points to check", so its numbers add up to the Summary tab's count. */
+export const waitingCopy = (answers: number, points = 0) => {
+  const parts = [answers > 0 && plural(answers, "proposed answer"), points > 0 && `${plural(points, "point")} to check`].filter(Boolean);
+  return `${parts.join(" and ")} ${answers + points === 1 ? "is" : "are"} waiting for your review.`;
+};
+const BLOCKER_PREVIEW = 3;
+/** The project's problem statement is copied into "Business problem" when the conversation is created, so it says nothing about
+ * whether the person has started answering and must not, on its own, open a section. */
+const PREFILLED = new Set(["business_problem"]);
+/** "answered" counts real answers and explicit not-applicable; "recorded" also counts unknown / waiting-on-owner. */
+function tally(fields: readonly { id: string; fact: { status: string } }[]) {
+  return { answered: fields.filter(({ fact }) => fact.status === "KNOWN" || fact.status === "NOT_APPLICABLE").length, total: fields.length,
+    recorded: fields.some(({ id, fact }) => fact.status !== "EMPTY" && !PREFILLED.has(id)) };
 }
 
 function resultCopy(job: JobView | undefined, current: boolean) {
   if (!job) return null;
-  if (isActive(job)) return "Generating the To-Be design from your confirmed understanding. You can leave this page and return.";
   if (job.status === "FAILED") return job.error?.message ?? "The To-Be design could not be generated. Your confirmed answers are safe; you can retry.";
   if (job.status !== "SUCCEEDED") return null;
   const lead = job.result?.status === "BLOCKED"
@@ -39,7 +72,21 @@ function resultCopy(job: JobView | undefined, current: boolean) {
   return `${lead}${current ? "" : " Discovery changed after it was generated; confirm again before generating a new draft."}`;
 }
 
-export function ConsultantSummary({ workspace, jobs, locked, run, onGenerate, reportHref }: Props) {
+const PROGRESS_TICK_MS = 5000;
+const duration = (ms: number) => { const total = Math.floor(ms / 1000); return total < 60 ? `${total} s` : `${Math.floor(total / 60)} min ${total % 60} s`; };
+/** The job view carries no start time, so this counts from when this page first saw the job running; it never claims a total.
+ * The ticking figure sits outside the live region so screen readers hear the status once, not every few seconds. */
+function GenerationProgress() {
+  const [since] = useState(() => Date.now());
+  const [now, setNow] = useState(since);
+  useEffect(() => { const timer = setInterval(() => setNow(Date.now()), PROGRESS_TICK_MS); return () => clearInterval(timer); }, []);
+  return <>
+    <p id="to-be-status" role="status" data-testid="to-be-status" data-state="RUNNING">Generating the To-Be design from your confirmed understanding. This usually takes several minutes. You can leave this page and return.</p>
+    <p className={styles.muted} data-testid="to-be-elapsed">Waiting on this page for {duration(now - since)}.</p>
+  </>;
+}
+
+export function ConsultantSummary({ workspace, jobs, locked, run, onGenerate, reportHref, generateError }: Props) {
   const { state, readiness } = workspace;
   const editable = workspace.canEdit && !locked;
   const confirmed = !!workspace.confirmedSnapshotId && !!state.confirmation;
@@ -49,6 +96,8 @@ export function ConsultantSummary({ workspace, jobs, locked, run, onGenerate, re
   const stepId = steps.some(step => step.id === requirement.stepId) ? requirement.stepId : steps[0]?.id ?? "";
   const pending = state.proposals.filter(proposal => proposal.status === "PENDING");
   const reviews = state.observations.filter(observation => observation.status === "PENDING");
+  const settled = reviews.filter(observation => isPossiblySettled(state, observation));
+  const open = reviews.filter(observation => !settled.includes(observation));
   type Plain = Pick<Fact, "status" | "value" | "rationale" | "owner">;
   const fieldRow = (id: string, fact: Plain, label?: string, grouped = false) => {
     const info = describeField(state, id);
@@ -58,43 +107,60 @@ export function ConsultantSummary({ workspace, jobs, locked, run, onGenerate, re
   const saveGroup = (changes: { id: string; update: FactUpdate }[]) => run(changes.map(change => setFact(state, change.id, change.update)));
   const catalogFields = (domain: string): GroupField[] => WORKSPACE_FIELDS.filter(field => field.domain === domain)
     .map(field => ({ id: field.id, label: field.label, fact: state.facts.find(fact => fact.id === field.id)! }));
-  /** A catalog section: one heading, one edit toggle, answers shown as a definition list. */
-  const catalogGroup = (domain: string, headingId: string, title: string, toggleLabel: string) => {
+  /** A catalog section body: one edit toggle, answers shown as a definition list. The heading lives in the section's summary row. */
+  const catalogGroup = (domain: string, title: string, toggleLabel: string) => {
     const fields = catalogFields(domain);
-    return <EditableGroup heading={<h3 id={headingId}>{title}</h3>} toggleLabel={toggleLabel} formLabel={`Edit ${title.toLowerCase()}`}
+    return <EditableGroup heading={null} toggleLabel={toggleLabel} formLabel={`Edit ${title.toLowerCase()}`}
       fields={fields} disabled={!editable} onSave={saveGroup}>
       <dl className={styles.fieldList}>{fields.map(field => fieldRow(field.id, field.fact, undefined, true))}</dl>
     </EditableGroup>;
   };
-  const softBlockers = readiness?.blockers.filter(blocker => blocker.soft) ?? [];
-  const carried = carriedGaps(state, readiness?.blockers ?? []);
-  const canConfirmDraft = !readiness?.ready && !!readiness?.draftReady && !confirmed;
+  const blockers = readiness?.blockers ?? [];
+  const blockerItem = (blocker: (typeof blockers)[number], index: number) => <li key={index}>{describeBlocker(state, blocker)}</li>;
+  const context = tally(catalogFields("CONTEXT"));
+  const asIs = tally(catalogFields("AS_IS"));
+  const desired = tally(catalogFields("DESIRED"));
+  const requirementCount = state.requirements.length + state.requirementDrafts.length;
+  const draftConfirmed = confirmed && !!state.confirmation?.withGaps && !readiness?.ready;
+  const generateBlocked = !!generateError && (isAccountBlocked(generateError.code) || generateError.code === "RATE_LIMITED"); // asking again cannot help
+  /** A draft can be confirmed and the full confirmation cannot: the draft action is then the only confirm action. */
+  const draftOffer = !readiness?.ready && !!readiness?.draftReady && !confirmed && workspace.canConfirm;
   const unresolved = [...state.facts, ...state.stepDrafts.flatMap(draft => draft.fields), ...state.requirementDrafts.map(draft => draft.statement)]
     .filter(fact => fact.status === "UNKNOWN" || fact.status === "OWNER_PENDING");
 
   return <div className={styles.summary} data-testid="summary">
-    <Section id="readiness-heading" title="Ready to confirm?">
+    {readiness && <p className={styles.headline} role="status" data-testid="progress">
+      {readiness.ready ? "Everything needed is answered." : draftConfirmed
+        ? `Confirmed as a draft: ${plural(blockers.length, "open item")} carried into the To-Be as open questions.`
+        : draftOffer ? `${plural(blockers.length, "open item")} left. You can confirm a draft now.`
+        : `${plural(blockers.length, "thing")} still needed before you can confirm.${pending.length ? ` ${waitingCopy(pending.length)}` : ""}`}</p>}
+    <Section id="readiness-heading" title={confirmed ? "Confirmed" : "Ready to confirm?"}>
       {readiness?.ready
         ? <p role="status" className={styles.ok}>Everything required is answered. {confirmed ? "You have confirmed this understanding." : "Review it once more, then confirm."}</p>
-        : <><p role="status">{readiness?.blockers.length ?? 0} thing{readiness?.blockers.length === 1 ? "" : "s"} still needed before this can be confirmed:</p>
-          <ul data-testid="blockers">{readiness?.blockers.map((blocker, index) => <li key={index}>{describeBlocker(state, blocker)}</li>)}</ul>
-          {canConfirmDraft && workspace.canConfirm && <>
-            <p id="draft-gaps-note" className={styles.muted}>Nothing else blocks a draft. You can confirm now and the To-Be will carry these as &lsquo;to confirm&rsquo; or open questions:</p>
-            <ul data-testid="draft-gaps">{softBlockers.map((blocker, index) => <li key={index}>{describeBlocker(state, blocker)}</li>)}</ul></>}</>}
+        : <><p id={draftOffer ? "draft-gaps-note" : undefined}>{draftConfirmed ? "Open items carried into the To-Be:"
+            : draftOffer ? "Nothing else blocks a draft. You can confirm it as a draft with gaps now; the To-Be will carry these as \u2018to confirm\u2019 or open questions:"
+              : "Still needed before this can be confirmed:"}</p>
+          {/* When a draft is allowed every remaining blocker is soft, so there is one list, not a "needed" list and a "gaps" list. */}
+          <div data-testid={draftOffer ? "draft-gaps" : "blockers"}><ul>{blockers.slice(0, BLOCKER_PREVIEW).map(blockerItem)}</ul>
+            {blockers.length > BLOCKER_PREVIEW && <details><summary className={styles.more}>Show all {blockers.length}</summary>
+              <ul>{blockers.slice(BLOCKER_PREVIEW).map((blocker, index) => blockerItem(blocker, index + BLOCKER_PREVIEW))}</ul></details>}</div></>}
       {workspace.canConfirm
         ? <div className={styles.row}>
-          <button type="button" className={styles.primary} disabled={!editable || !readiness?.ready || confirmed}
-            onClick={() => void run({ type: "CONFIRM" })}>{confirmed ? "Confirmed" : "Confirm current process"}</button>
-          {canConfirmDraft && <button type="button" className={styles.small} data-testid="confirm-draft" aria-describedby="draft-gaps-note"
-            disabled={!editable} onClick={() => void run({ type: "CONFIRM", allowGaps: true })}>Confirm as draft with gaps</button>}
-          {confirmed && <button type="button" className={styles.primary} disabled={!editable || isActive(toBe)} onClick={() => void onGenerate()}>
-            {toBe?.status === "FAILED" ? "Retry To-Be generation" : toBe ? "Generate a new To-Be draft" : "Generate To-Be design"}</button>}
+          {draftOffer
+            ? <button type="button" className={styles.primary} data-testid="confirm-draft" aria-describedby="draft-gaps-note"
+              disabled={!editable} onClick={() => void run({ type: "CONFIRM", allowGaps: true })}>Confirm as draft with gaps</button>
+            : <button type="button" className={styles.primary} disabled={!editable || !readiness?.ready || confirmed}
+              onClick={() => void run({ type: "CONFIRM" })}>{confirmed ? "Confirmed" : "Confirm current process"}</button>}
+          {confirmed && <button type="button" className={styles.primary} disabled={!editable || isActive(toBe) || generateBlocked} onClick={() => void onGenerate()}>
+            {isActive(toBe) ? "Generating To-Be design…" : toBe?.status === "FAILED" ? "Retry To-Be generation" : toBe ? "Generate a new To-Be draft" : "Generate To-Be design"}</button>}
         </div>
         : <p className={styles.muted}>Only project leads and consultants can confirm. You can still answer questions and add details.</p>}
-      {confirmed && state.confirmation?.withGaps && <p className={styles.muted} data-testid="draft-confirmed">
-        Confirmed as a draft with gaps: {carried.total ? `${carried.parts} ${carried.total === 1 ? "is" : "are"}` : "some open items are"} carried into the To-Be as open questions.</p>}
       {confirmed && <p className={styles.muted}>Any change to the answers will require confirming again.</p>}
-      {toBe && <p id="to-be-status" role="status" data-testid="to-be-status" data-state={toBe.result?.status ?? toBe.status}>
+      {generateError && <div role="alert" className={styles.alert} data-testid="to-be-error"><p>{generateError.message}</p>
+        {needsSupport(generateError.code) && <p><SupportLink /></p>}</div>}
+      {/* A newer refusal replaces the older job's failure text instead of sitting beside it. */}
+      {!generateError && isActive(toBe) && <GenerationProgress key={toBe!.id} />}
+      {!generateError && toBe && !isActive(toBe) && <p id="to-be-status" role="status" data-testid="to-be-status" data-state={toBe.result?.status ?? toBe.status}>
         {resultCopy(toBe, toBe.result?.sourceRevision === state.confirmation?.revision)}</p>}
       {toBe?.status === "SUCCEEDED" && <p><a href={reportHref(toBe.id)} data-testid="report-link">Open the To-Be report</a>
         <span className={styles.muted}> — compare current and proposed steps, then print or download it.</span></p>}
@@ -119,15 +185,21 @@ export function ConsultantSummary({ workspace, jobs, locked, run, onGenerate, re
     </Section>}
 
     {reviews.length > 0 && <Section id="observations-heading" title="Points to check">
-      <ul className={styles.list}>{reviews.map(observation => <ObservationCard key={observation.id} observation={observation} disabled={!editable}
+      {open.length > 0 && <ul className={styles.list}>{open.map(observation => <ObservationCard key={observation.id} observation={observation} disabled={!editable}
         labels={observation.fieldIds.map(id => describeField(state, id).label)}
-        onReview={(decision, rationale) => run({ type: "REVIEW_OBSERVATION", observationId: observation.id, decision, rationale })} />)}</ul>
+        onReview={(decision, rationale) => run({ type: "REVIEW_OBSERVATION", observationId: observation.id, decision, rationale })} />)}</ul>}
+      {/* ponytail: one command per point, sent in turn like the group edit (ceiling: 500 stored points, one round trip each); an atomic bulk command is not worth a new wire type. */}
+      <SettledGroup disabled={!editable} items={settled.map(observation => ({ observation, labels: observation.fieldIds.map(id => describeField(state, id).label) }))}
+        onClose={ids => run(ids.map(observationId => ({ type: "REVIEW_OBSERVATION", observationId, decision: "RESOLVE", rationale: OBSERVATION_CLOSE_REASON })))} />
     </Section>}
 
-    <section aria-labelledby="context-heading" className={styles.section}>{catalogGroup("CONTEXT", "context-heading", "Business context", "Edit answers")}</section>
+    <Collapsible id="context-heading" title="Business context" figure={`${context.answered} of ${context.total} answered`} recorded={context.recorded}>
+      {catalogGroup("CONTEXT", "Business context", "Edit answers")}
+    </Collapsible>
 
-    <section aria-labelledby="asis-heading" className={styles.section}>
-      {catalogGroup("AS_IS", "asis-heading", "Current process (As-Is)", "Edit answers")}
+    <Collapsible id="asis-heading" title="Current process (As-Is)" recorded={asIs.recorded || steps.length > 0}
+      figure={`${plural(steps.length, "step")}, ${asIs.answered} of ${asIs.total} answered`}>
+      {catalogGroup("AS_IS", "Current process (As-Is)", "Edit answers")}
       <h4 className={styles.subheading}>Current steps</h4>
       {steps.length === 0 && <p className={styles.muted}>No steps yet. Describe how the work happens today in the chat, or add a step here.</p>}
       {state.steps.map((step, index) => <article key={step.id} className={styles.card} aria-label={`Step ${index + 1}: ${step.name}`}>
@@ -141,20 +213,28 @@ export function ConsultantSummary({ workspace, jobs, locked, run, onGenerate, re
       </article>)}
       {state.stepDrafts.map(draft => {
         const label = stepLabel(state, draft.id);
+        const emptyKeys = emptyListKeys(draft);
         const fields: GroupField[] = STEP_KEYS.map(key => ({ id: `${draft.id}_${key}`, label: STEP_LABELS[key],
           fact: draft.fields.find(field => field.id === `${draft.id}_${key}`)! }));
         return <article key={draft.id} className={styles.card} aria-label={label}>
           <EditableGroup heading={<h4 className={styles.fieldLabel}>{label}</h4>} toggleLabel="Edit step" formLabel={`Edit ${label}`}
             fields={fields} disabled={!editable} onSave={saveGroup}>
             <dl className={styles.fieldList}>{fields.map(field => fieldRow(field.id, field.fact, field.label, true))}</dl>
+            {editable && emptyKeys.length > 0 && <div className={styles.row}>
+              {/* ponytail: one command per detail, sent in turn like the group edit; an atomic multi-field command is not worth a new wire type. */}
+              <button type="button" className={styles.small} data-testid="step-none-apply"
+                onClick={() => void run(emptyKeys.map(key => setFact(state, `${draft.id}_${key}`,
+                  { status: "NOT_APPLICABLE", value: null, rationale: NONE_APPLY_REASON, owner: null })))}>{noneApplyLabel(emptyKeys)}</button>
+            </div>}
           </EditableGroup>
         </article>;
       })}
       {workspace.canEdit && <button type="button" className={styles.small} disabled={!editable}
         onClick={() => void run({ type: "START_STEP_DRAFT" })}>Add a current step</button>}
-    </section>
+    </Collapsible>
 
-    <Section id="requirements-heading" title="Pain points and requirements">
+    <Collapsible id="requirements-heading" title="Pain points and requirements" recorded={requirementCount > 0}
+      figure={requirementCount ? `${requirementCount} recorded` : "none yet"}>
       {state.requirements.length + state.requirementDrafts.length === 0 && <p className={styles.muted}>None recorded yet.</p>}
       {state.requirements.map(item => <article key={item.id} className={styles.card}>
         <h4 className={styles.fieldLabel}>{REQUIREMENT_KIND_LABELS[item.kind]} for {stepLabel(state, item.asIsStepId)}{item.critical ? " (critical)" : ""}</h4>
@@ -180,15 +260,18 @@ export function ConsultantSummary({ workspace, jobs, locked, run, onGenerate, re
           <button type="submit" className={styles.small} disabled={!editable || !stepId}>Add item</button>
         </div>
       </form>}
-    </Section>
+    </Collapsible>
 
-    <section aria-labelledby="desired-heading" className={styles.section}>{catalogGroup("DESIRED", "desired-heading", "Desired future", "Edit answers")}</section>
+    <Collapsible id="desired-heading" title="Desired future" figure={`${desired.answered} of ${desired.total} answered`} recorded={desired.recorded}>
+      {catalogGroup("DESIRED", "Desired future", "Edit answers")}
+    </Collapsible>
 
-    <Section id="open-heading" title="Open decisions" hint="Items marked unknown or waiting on someone. They stay visible until answered.">
+    <Collapsible id="open-heading" title="Open decisions" recorded={unresolved.length > 0} figure={unresolved.length ? `${unresolved.length} open` : "none"}
+      hint="Items marked unknown or waiting on someone. They stay visible until answered.">
       {unresolved.length === 0 ? <p className={styles.muted}>None.</p> : <ul data-testid="open-decisions">{unresolved.map(fact => {
         const info = describeField(state, fact.id);
         return <li key={fact.id}>{info.label} — {fact.status === "OWNER_PENDING" ? `waiting for ${fact.owner}` : "not known yet"}</li>;
       })}</ul>}
-    </Section>
+    </Collapsible>
   </div>;
 }

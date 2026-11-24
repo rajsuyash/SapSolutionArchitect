@@ -4,9 +4,10 @@ import { z } from "zod";
 import { AuthError, type AuthService } from "./auth";
 import { withTenantSession } from "./tenant";
 import { containsSensitiveText, revalidateStoredTurn, type Scope } from "./ai/discovery-interview";
+import { parseStoredToBe } from "./consultant-report";
 import { applyWorkspaceCommand, backfillCatalog, buildInterviewInput, compileDiscovery, createWorkspace,
   getWorkspaceReadiness, recordInterviewTurn, settleChatTurn, WorkspaceCommandSchema, WorkspaceStateSchema,
-  type WorkspaceState } from "./discovery-workspace-model";
+  type AnswerContext, type WorkspaceState } from "./discovery-workspace-model";
 
 const uuid = z.uuid();
 const variant = z.string().regex(/^[A-Z][A-Z0-9_-]{0,39}$/);
@@ -75,6 +76,18 @@ function requireConfirm(a: Access) {
   requireEdit(a);
   if (!mayConfirm(a)) throw new AuthError("FORBIDDEN", 403, "Only project leads and consultants can confirm discovery");
 }
+/** The question text and owner of a stored, succeeded To-Be of this very variant; the client only names the job and question id. */
+async function loadAnswerContext(client: PoolClient, args: WorkspaceWorkerArgs, jobId: string, questionId: string): Promise<AnswerContext> {
+  const missing = () => new AuthError("QUESTION_NOT_FOUND", 404, "That question was not found in the design");
+  const job = (await client.query<{ result: unknown }>(`SELECT result FROM consultant_jobs WHERE id=$1 AND org_id=$2 AND project_id=$3
+    AND variant_code=$4 AND kind='TO_BE' AND status='SUCCEEDED'`, [jobId, args.orgId, args.projectId, args.variantCode])).rows[0];
+  if (!job) throw missing();
+  const stored = parseStoredToBe(job.result);
+  const found = stored.design.openQuestions.find(q => q.id === questionId)
+    ?? stored.unresolvedInputQuestions.find(q => q.label === questionId || q.id === questionId);
+  if (!found) throw missing();
+  return { question: found.question, owner: found.owner };
+}
 async function latest(client: PoolClient, args: WorkspaceWorkerArgs): Promise<Row | undefined> {
   return (await client.query<Row>(`SELECT id,revision,state,request_hash,confirmed_snapshot_id,created_at
     FROM discovery_workspace_revisions WHERE org_id=$1 AND project_id=$2 AND variant_code=$3
@@ -113,6 +126,22 @@ export async function loadWorkspaceForWorker(client: PoolClient, args: Workspace
   const row = await latest(client, args);
   if (!row) throw absent();
   return result(row, a);
+}
+
+/** What the To-Be report shows of the workspace: the answers recorded for one job (with the answerer's display name, never an email),
+ * the revision they were read from, and whether this viewer may record more. Read-only: no workspace lock, so it never waits behind a save.
+ * Everything comes from one latest-row read inside the caller's tenant transaction. */
+export async function loadReportAnswers(client: PoolClient, args: WorkspaceWorkerArgs, jobId: string) {
+  validIdentity(args.projectId, args.variantCode);
+  const a = await access(client, args);
+  const row = await latest(client, args);
+  const canAnswer = mayConfirm(a);
+  if (!row) return { answers: [], workspaceRevision: null, canAnswer };
+  const mine = (readState(row).answers ?? []).filter(item => item.sourceJobId === jobId);
+  const names = new Map((await client.query<{ id: string; name: string }>(`SELECT id,name FROM users WHERE org_id=$1 AND id=ANY($2::uuid[])`,
+    [args.orgId, [...new Set(mine.map(item => item.answeredBy).filter(id => uuid.safeParse(id).success))]])).rows.map(user => [user.id, user.name]));
+  return { workspaceRevision: row.revision, canAnswer, answers: mine.map(item => ({ questionId: item.questionId, answer: item.answer,
+    answeredAt: item.answeredAt, answeredBy: names.get(item.answeredBy) ?? "A team member" })) };
 }
 
 /** Called only inside the worker's transaction after it has fenced the job.
@@ -206,9 +235,11 @@ export function createDiscoveryWorkspaceRepository(pool: Pool, auth: AuthService
         requireEdit(a);
         const parsed = WorkspaceCommandSchema.safeParse(rawCommand);
         if (!parsed.success) throw new AuthError("INVALID_WORKSPACE_COMMAND", 400, "Check the discovery edit");
-        if (parsed.data.type === "CONFIRM") requireConfirm(a);
-        if (parsed.data.type === "SEND_MESSAGE" && containsSensitiveText(parsed.data.text)) {
-          throw new AuthError("SENSITIVE_MESSAGE", 400, "Remove emails, passwords or tokens before sending", "text");
+        if (parsed.data.type === "CONFIRM" || parsed.data.type === "ANSWER_QUESTION") requireConfirm(a);
+        const typed = parsed.data.type === "SEND_MESSAGE" ? { field: "text", value: parsed.data.text }
+          : parsed.data.type === "ANSWER_QUESTION" ? { field: "answer", value: parsed.data.answer } : undefined;
+        if (typed && containsSensitiveText(typed.value)) {
+          throw new AuthError("SENSITIVE_MESSAGE", 400, "Remove emails, passwords or tokens before sending", typed.field);
         }
         const hash = digest({ expectedRevision, command: parsed.data });
         const prior = await replay(client, args, key!, hash);
@@ -217,8 +248,10 @@ export function createDiscoveryWorkspaceRepository(pool: Pool, auth: AuthService
         if (!current) throw absent();
         const state = readState(current);
         if (state.revision !== expectedRevision) throw conflict();
+        const answerContext = parsed.data.type === "ANSWER_QUESTION"
+          ? await loadAnswerContext(client, args, parsed.data.sourceJobId, parsed.data.questionId) : undefined;
         let next: WorkspaceState;
-        try { next = applyWorkspaceCommand(state, parsed.data, metadata(user.id)); }
+        try { next = applyWorkspaceCommand(state, parsed.data, metadata(user.id), answerContext); }
         catch (error) {
           if (error instanceof Error && error.message === "WORKSPACE_NOT_READY") {
             throw new AuthError("WORKSPACE_NOT_READY", 409, "Resolve the discovery gaps before confirmation");

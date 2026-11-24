@@ -52,6 +52,10 @@ Requirement kinds distinguish a pain point, a future requirement and a control.
 Input open questions remain unresolved until a human decision; the server retains
 them separately.
 An open question stays open: no action, effect, decision or acceptance test may assume an answer to it.
+answeredQuestions (a top-level request key: id ANS-n, question, answer) are answers a project lead or consultant recorded to questions an earlier design raised. Treat each
+answer as settled business input: design the behaviour it states, never hold it as pending, and do not raise the question again or cite an ANS id as an open question. Every step
+that implements an answer lists its ANS id in answerIds. The step in the request may already carry answerIds from the outline; they are kept, and you add any further ANS id you apply. An answer is not an approved decision. If an answer is itself unclear or conflicts with a source, keep the behaviour
+held and say in the action or rule text which statement conflicts, quoting both; do not ignore the answer.
 An As-Is step value of "To confirm" is unknown: never invent it. Design around
 it and leave it to the open questions.
 Before you write each action, rule, effect, exception and acceptance test, check it against EVERY
@@ -363,7 +367,7 @@ in detail, the problem (for example the unrecognized key name); fix exactly thos
 Your output has exactly these keys: actor, trigger, stepType, phase, interimProcess,
 inputDocuments, outputDocuments, actions, businessRules, exceptions,
 exceptionsNotApplicableReason, masterData, effects, implementation (only detail),
-decisionIds (optional), addedValue and acceptanceTests. Do not repeat id, sequence,
+decisionIds (optional), answerIds (optional), addedValue and acceptanceTests. Do not repeat id, sequence,
 title, asIsStepIds, requirementIds or enablesStepIds.
 
 actions is an array of objects, never a string: each is {actor, system, operation, fields}

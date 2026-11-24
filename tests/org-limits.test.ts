@@ -88,6 +88,20 @@ describe.skipIf(process.env.RUN_DB_TESTS !== "1")("workspace trial, suspension a
     await expect(runConsultant(owner)).resolves.toBeTruthy();
   });
 
+  it("does not count FAILED jobs of either table against the quota, but still counts non-failed ones", async () => {
+    const owner = await org("daily_ai_job_quota=2");
+    await runAnalysis(owner); await runConsultant(owner);
+    await expect(runAnalysis(owner)).rejects.toMatchObject({ code: "RATE_LIMITED", status: 429 }); // two non-failed rows: refused as before
+    for (const table of ["jobs", "consultant_jobs"]) {
+      const { rowCount } = await pool.query(`UPDATE ${table} SET status='FAILED', finished_at=now() WHERE org_id=$1`, [owner.user.orgId]);
+      expect(rowCount).toBe(1);
+    }
+    await expect(runConsultant(owner)).resolves.toBeTruthy();
+    await expect(runAnalysis(owner)).resolves.toBeTruthy();
+    await expect(runAnalysis(owner)).rejects.toMatchObject({ code: "RATE_LIMITED", status: 429 });
+    expect(await rows(owner)).toBe(4); // 2 failed + 2 counted
+  });
+
   // Background extraction rows are cost records of the same chat turn: copy the org's INTERVIEW row n times as EXTRACTION rows.
   const addExtractions = async (owner: Owner, n: number) => {
     const { rowCount } = await pool.query(`INSERT INTO consultant_jobs (id,org_id,project_id,variant_code,kind,input_revision,message_id,

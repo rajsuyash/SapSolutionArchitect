@@ -23,7 +23,8 @@ export type ReportLike = {
 };
 /** The slice of a saved workspace state (the API view lacks `sources`, so they are rebuilt from messages). */
 export type StateLike = { revision?: number; problemStatement: string; messages: { id: string; text: string }[];
-  facts: { id: string; status: string; value: string | null; evidence: { sourceId: string; quote: string } | null }[] };
+  facts: { id: string; status: string; value: string | null; evidence: { sourceId: string; quote: string } | null }[];
+  answers?: { questionId: string; question: string; answer: string; owner: string; answeredBy: string; answeredAt: string }[] };
 
 export function loadReport(path: string): ReportLike {
   const raw = readJson(path) as Partial<ReportLike>;
@@ -60,6 +61,8 @@ export function rebuildDiscovery(report: ReportLike, state: StateLike | null): {
   });
   const discovery = validateDiscovery({ schemaVersion: 1, variantName: report.variant.name, targetRelease: report.targetRelease, sources,
     asIsSteps: report.discovery.asIsSteps, requirements: report.discovery.requirements, conflicts: report.discovery.conflicts,
-    openQuestions: report.discovery.openQuestions, ...(companyContext.length && { companyContext }) });
+    openQuestions: report.discovery.openQuestions, ...(companyContext.length && { companyContext }),
+    // Only when answered, exactly as compileDiscovery does.
+    ...(state?.answers?.length && { answeredQuestions: state.answers.map(a => ({ id: a.questionId, question: a.question, answer: a.answer, owner: a.owner, answeredBy: a.answeredBy, answeredAt: a.answeredAt })) }) });
   return { discovery, digestsVerified };
 }

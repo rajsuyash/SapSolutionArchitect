@@ -13,12 +13,18 @@ const metrics = (stage: "interview_turn" | "extraction_turn" | "to_be") => ({ st
 function interviewTurn(input: InterviewInput) {
   const message = input.currentMessage;
   const quote = message.text.split(/(?<=\.)\s/)[0]!.trim();
-  const first = input.history.length === 0;
+  // "First" means no earlier user message. Not an empty history: the chat job and the extraction job run concurrently, so the
+  // assistant's reply may or may not be recorded yet when extraction reads the state, and that must not change what is proposed.
+  const first = !input.history.some(item => item.role === "user");
   const open = input.fields.find(field => field.id === "current_systems" && field.status === "EMPTY");
+  // The model's short answer: when the sentence names the system, only those words are the proposed answer and the sentence is its source.
+  const short = quote.endsWith(" in a spreadsheet.") ? "a spreadsheet" : null;
   // A walkthrough message (marked by its first sentence) also yields an interviewer-proposed step and requirement:
   // the 2nd sentence becomes the step, the 3rd a pain point on it. `new_0` is that step within this turn.
   const sentences = message.text.split(/(?<=\.)\s/).map(sentence => sentence.trim());
-  const walkthrough = sentences[0] === "Dispatch books the truck by phone." && sentences.length >= 3;
+  // "...with details." marks a walkthrough whose step sentence also states who does it, in which system and what starts it.
+  const detailed = sentences[0] === "Dispatch books the truck by phone, with details." && sentences.length >= 3;
+  const walkthrough = (sentences[0] === "Dispatch books the truck by phone." || detailed) && sentences.length >= 3;
   return {
     schemaVersion: 1 as const, contextRevision: input.contextRevision,
     reply: "Thank you for that context." as const,
@@ -26,12 +32,17 @@ function interviewTurn(input: InterviewInput) {
     questions: input.activeGaps.slice(0, 2).map(gap => ({ gapKey: gap.key, question: gap.detail.slice(0, 480),
       whyItMatters: "This lets me describe the current process accurately before we design anything." })),
     proposedUpdates: first && open ? [{ fieldId: open.id, operation: "PROPOSE_SET" as const, previousValue: null,
-      value: quote, sourceId: message.id, quote }] : [],
-    proposedSteps: walkthrough ? [{ sourceId: message.id, quote: sentences[1]!, value: sentences[1]!, nameHint: "logs the return" }] : [],
+      value: short ?? quote, sourceId: message.id, quote }] : [],
+    proposedSteps: walkthrough ? [{ sourceId: message.id, quote: sentences[1]!, value: sentences[1]!, nameHint: "logs the return",
+      ...(detailed ? { details: [{ key: "actor" as const, value: "The clerk", quote: sentences[1]! }, { key: "system" as const, value: "a spreadsheet", quote: sentences[1]! },
+        { key: "trigger" as const, value: "when the truck arrives", quote: sentences[1]! }] } : {}) }] : [],
     proposedRequirements: walkthrough ? [{ stepRef: "new_0", kind: "PAIN_POINT" as const, critical: false,
       sourceId: message.id, quote: sentences[2]!, value: sentences[2]! }] : [],
+    // A message starting "Conflicting returns." also raises a possible contradiction, which is never offered for one-click closing.
     observations: first && open ? [{ kind: "FOLLOW_UP_SUGGESTION" as const, fieldIds: [open.id],
-      detail: "Check whether late returns are logged anywhere other than the spreadsheet." }] : [],
+      detail: "Check whether late returns are logged anywhere other than the spreadsheet." },
+    ...(message.text.startsWith("Conflicting returns.") ? [{ kind: "POSSIBLE_CONFLICT" as const, fieldIds: ["current_trigger"],
+      detail: "The return date may differ from the billing date." }] : [])] : [],
   };
 }
 
@@ -41,7 +52,9 @@ function design(input: ToBeInput) {
   return { ...rentalDraft, steps: [{ ...target, asIsStepIds: [step.id], requirementIds: [requirement.id],
     acceptanceTests: target.acceptanceTests.map(test => ({ ...test, requirementIds: [requirement.id] })) }],
   coverage: [{ requirementId: requirement.id, disposition: "IMPLEMENTED", stepIds: [target.id], decisionId: null,
-    rationale: "Covered by the proposed hire step." }], conflictDecisions: [], openQuestions: [] };
+    rationale: "Covered by the proposed hire step." }], conflictDecisions: [],
+  // One open question so the report's answer form has a row to drive (the rental fixture's own Q-1, tied to the stub's only step).
+  openQuestions: [{ ...rentalDraft.openQuestions[0]!, affectedStepIds: [target.id] }] };
 }
 
 // A message starting "Slow extraction." holds its extraction back so the browser can see chat answer first.

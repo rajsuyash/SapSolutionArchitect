@@ -15,7 +15,7 @@ import { shortenInputIds } from "./input-id-labels";
 import { repairRegisterGroup, repairStepBody } from "./part-repair";
 import { inputQuestionLabel } from "../to-be-derived";
 import { LEAK_DETAIL, TOOL_MARKUP_LEAKED, findToolMarkup, hasToolMarkup } from "./tool-markup";
-import { toBeContext, validateToBeOutput, type ToBeInput, type ToBeOutput } from "./to-be";
+import { answeredForModel, toBeContext, validateToBeOutput, type ToBeInput, type ToBeOutput } from "./to-be";
 import { extractSapCodes, textFields, designIds } from "./design-text-lint";
 import { ReviewSchema, compactDesign, partKey, repairNote, routeFindings, reviewBlockers, type Part, type RoutedFinding, type ReviewOutcome } from "./to-be-review";
 import { collectTargets, explainBlocker, findingLine, fixNote, newQuestionNote, newStepNote, partPath, type MissingQuestion } from "./to-be-fix";
@@ -48,6 +48,8 @@ export const OutlineSchema = z.strictObject({
     id, sequence: z.number().int().positive(), title: text, purpose: text.max(OUTLINE_PURPOSE_MAX_CHARS),
     postingSummary: z.string().trim().max(POSTING_SUMMARY_MAX_CHARS).default(""),
     asIsStepIds: ids, requirementIds: ids, enablesStepIds: DetailedDesignSchema.shape.steps.element.shape.enablesStepIds,
+    /** Answered questions (ANS-n) the step was added or shaped for; the finished step keeps them whatever the step stage says. */
+    answerIds: DetailedDesignSchema.shape.steps.element.shape.answerIds,
     implementation: z.strictObject({ kind: z.enum(IMPLEMENTATION_KINDS), referenceIds: ids }),
   })).min(1),
   eliminatedAsIsSteps: list(DESIGN_ELIMINATED_ROW.extend({ reason: text.max(OUTLINE_REASON_MAX_CHARS) })),
@@ -161,7 +163,7 @@ function patchNotes(errors: readonly ValidationIssue[], outline: unknown, input:
  * its ids, links and kinds. Titles, purposes, rationales, questions and the process name are left out, so the repair request still
  * carries none of the model's prose beyond the items it is asked to fix. */
 const OUTLINE_DIGEST = {
-  steps: ["id", "sequence", "asIsStepIds", "requirementIds", "enablesStepIds", "implementation", "postingSummary"],
+  steps: ["id", "sequence", "asIsStepIds", "requirementIds", "enablesStepIds", "answerIds", "implementation", "postingSummary"],
   coverage: ["requirementId", "disposition", "stepIds", "decisionId", "decisionIds", "questionIds"],
   openQuestions: ["id", "affectedStepIds", "decisionIds", "scopeOfRequirementIds"], eliminatedAsIsSteps: ["asIsStepId"], conflictDecisions: ["conflictId", "decisionId"],
 } as const;
@@ -176,13 +178,13 @@ function outlineDigest(outline: unknown, errors: readonly ValidationIssue[]) {
 
 /** Patch model input: the discovery, the catalog slice and the last outline the server checked (see outlineDigest), with the errors and where each one is. */
 export function outlinePatchRequest(input: ToBeInput, references: DesignContext["references"], outline: unknown, validationErrors: ValidationIssue[]) {
-  return { input, approvedDecisions: [] as never[], references: references.map(outlineReference), outline: outlineDigest(outline, validationErrors), validationErrors,
+  return { input: modelInput(input), approvedDecisions: [] as never[], references: references.map(outlineReference), outline: outlineDigest(outline, validationErrors), validationErrors,
     ...catalogNote(input, references), repairNote: patchNotes(validationErrors, outline, input, references) };
 }
 
 /** The fix pass asks for a patch that adds the step(s) or open question(s) the design lacks. Unlike a repair patch it carries the whole last outline: the model has to see what exists to add to it. */
 export function fixPatchRequest(input: ToBeInput, references: DesignContext["references"], outline: unknown, lines: readonly string[], questions: readonly MissingQuestion[] = []) {
-  return { input, approvedDecisions: [] as never[], references: references.map(outlineReference), outline, validationErrors: [] as ValidationIssue[],
+  return { input: modelInput(input), approvedDecisions: [] as never[], references: references.map(outlineReference), outline, validationErrors: [] as ValidationIssue[],
     ...catalogNote(input, references), repairNote: [...(lines.length ? [newStepNote(lines)] : []), ...(questions.length ? [newQuestionNote(questions)] : [])].join(" ") };
 }
 
@@ -198,6 +200,7 @@ function skeleton(outline: Outline): DetailedDesign {
   const steps = outline.steps.map((step): DetailedDesign["steps"][number] => ({
     id: step.id, sequence: step.sequence, title: step.title, asIsStepIds: step.asIsStepIds, requirementIds: step.requirementIds,
     ...(step.enablesStepIds && { enablesStepIds: step.enablesStepIds }),
+    ...(step.answerIds && { answerIds: step.answerIds }),
     actor: PLACEHOLDER, trigger: PLACEHOLDER, inputDocuments: [PLACEHOLDER], outputDocuments: [PLACEHOLDER],
     actions: [{ actor: PLACEHOLDER, system: PLACEHOLDER, operation: PLACEHOLDER, fields: [PLACEHOLDER] }],
     businessRules: [{ id: `${step.id}-PH-BR`, condition: PLACEHOLDER, response: PLACEHOLDER }],
@@ -257,6 +260,8 @@ export function assemble(outline: Outline, details: ReadonlyMap<string, StepDeta
         id: step.id, sequence: step.sequence, title: step.title, asIsStepIds: step.asIsStepIds, requirementIds: step.requirementIds,
         ...(step.enablesStepIds && { enablesStepIds: step.enablesStepIds }),
         ...rest,
+        // The outline decided why the step exists, so the ids it cited stay; the step stage may only add to them.
+        ...((step.answerIds || rest.answerIds) && { answerIds: [...new Set([...step.answerIds ?? [], ...rest.answerIds ?? []])] }),
         businessRules: businessRules.map(rule => ({ ...rule, id: unique(step.id, rule.id) })),
         implementation: { kind: step.implementation.kind, detail: implementation.detail, referenceIds: step.implementation.referenceIds },
         acceptanceTests: acceptanceTests.map(test => ({ ...test, id: unique(step.id, test.id) })),
@@ -301,9 +306,17 @@ const OUTLINE_OBJECT_CHARS = 100;
 export const outlineReference = ({ id, fitType, capability, objects }: DesignContext["references"][number]) =>
   ({ id, fitType, capability, objects: objects?.slice(0, OUTLINE_REFERENCE_OBJECTS).map(object => object.slice(0, OUTLINE_OBJECT_CHARS)) });
 
+/** Stage inputs that carry recorded answers next to inputOpenQuestions: the ANS-labelled form, only when there are answers. */
+const answersPart = (discovery: ToBeInput["discovery"]) => { const answeredQuestions = answeredForModel(discovery); return answeredQuestions ? { answeredQuestions } : {}; };
+/** The whole-input stages (outline, patch, fix) see the discovery as saved, except that its answers carry ANS ids instead of the old design question ids. */
+function modelInput(input: ToBeInput): ToBeInput {
+  const answeredQuestions = answeredForModel(input.discovery);
+  return answeredQuestions ? { ...input, discovery: { ...input.discovery, answeredQuestions: answeredQuestions as never } } : input;
+}
+
 /** Outline model input: the discovery as saved, the decision register, and the catalog as a compact id/fit/capability/objects slice. */
 export function outlineRequest(input: ToBeInput, references: DesignContext["references"], validationErrors: ValidationIssue[]) {
-  return { input, approvedDecisions: [] as never[], references: references.map(outlineReference),
+  return { input: modelInput(input), approvedDecisions: [] as never[], references: references.map(outlineReference),
     validationErrors, ...catalogNote(input, references), ...repairNotes(validationErrors) };
 }
 
@@ -343,7 +356,7 @@ export function stepRequest(input: ToBeInput, references: DesignContext["referen
       statement: r.statement, sourceId: r.evidence.sourceId, quote: r.evidence.quote })),
     sources: discovery.sources.filter(source => sourceIds.has(source.id)).map(({ id, locator, text }) => ({ id, locator, text })),
     conflicts: discovery.conflicts.filter(conflict => conflict.sourceIds.some(sourceId => sourceIds.has(sourceId))),
-    inputOpenQuestions: discovery.openQuestions,
+    inputOpenQuestions: discovery.openQuestions, ...answersPart(discovery),
     references: references.filter(reference => step.implementation.referenceIds.includes(reference.id)),
     approvedDecisions: [], validationErrors, ...catalogNote(input, references), ...repairNotes(validationErrors, [], !!repair),
     ...(repair && { ...(repair.note && { repairNote: repair.note }), currentAnswer: repair.current }),
@@ -386,7 +399,7 @@ export function registerRequest(input: ToBeInput, references: DesignContext["ref
     // The catalog is the largest part of a register request. Scope and governance rows carry no SAP basis, so they are not sent it.
     ...(NO_CATALOG_GROUPS.includes(group) ? {} : { references: references.map(({ id, fitType, capability, objects }) => ({ id, fitType, capability, objects })) }),
     ...(steps && { steps: stepDigest(steps) }),
-    inputOpenQuestions: discovery.openQuestions, validationErrors, ...catalogNote(input, references), ...repairNotes(validationErrors, registerHints(input, validationErrors), !!repair),
+    inputOpenQuestions: discovery.openQuestions, ...answersPart(discovery), validationErrors, ...catalogNote(input, references), ...repairNotes(validationErrors, registerHints(input, validationErrors), !!repair),
     ...(repair && { ...(repair.note && { repairNote: repair.note }), currentAnswer: repair.current }),
   };
 }
@@ -398,7 +411,7 @@ export function reviewRequest(input: ToBeInput, design: DetailedDesign, outline?
     targetProduct: input.targetProduct, targetRelease: discovery.targetRelease, variantName: discovery.variantName,
     companyContext: (discovery.companyContext ?? []).map(({ fieldId, value }) => ({ fieldId, value })),
     requirements: discovery.requirements.map(r => ({ id: r.id, kind: r.kind, critical: r.critical, statement: r.statement })),
-    inputOpenQuestions: discovery.openQuestions.map(({ id, question }) => ({ id, question })),
+    inputOpenQuestions: discovery.openQuestions.map(({ id, question }) => ({ id, question })), ...answersPart(discovery),
     ...(outline && Object.keys(postingContract(outline).contract).length && { processContract: postingContract(outline).contract }),
     design: compactDesign(design),
   };

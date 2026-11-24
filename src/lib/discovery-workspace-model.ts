@@ -2,8 +2,8 @@ import { z } from "zod";
 import type { CompanyContext } from "./company-context";
 import { MAX_OPEN_QUESTIONS, validateDiscovery, type DiscoveryInput } from "./discovery";
 import { describeField, REASK_AFTER_USER_TURNS, REASK_SUFFIX, STEP_GAP_PREFIX, STEP_KEYS as stepKeys, STEP_LABELS, STEP_QUESTIONS as stepQuestions,
-  carriedGaps, describeBlocker, stepLabel, TO_CONFIRM, WORKSPACE_FIELDS } from "./workspace-fields";
-import { parseInterviewInput, revalidateStoredTurn, type InterviewInput, type InterviewTurn, type Scope } from "./ai/discovery-interview";
+  CORE_STEP_KEYS, LIST_STEP_KEYS, STEP_DETAIL_KEYS, carriedGaps, describeBlocker, missingStepKeys, stepLabel, TO_CONFIRM, WORKSPACE_FIELDS } from "./workspace-fields";
+import { parseInterviewInput, revalidateStoredTurn, spanOfQuote, type InterviewInput, type InterviewTurn, type Scope } from "./ai/discovery-interview";
 
 // Re-exported for server callers; the client imports ./workspace-fields directly.
 export { WORKSPACE_FIELDS };
@@ -41,7 +41,10 @@ const requirementKind = z.enum(["PAIN_POINT", "TO_BE_REQUIREMENT", "CONTROL"]);
 const ProposalSchema = z.strictObject({
   id, fieldId: id, operation: z.enum(["PROPOSE_SET", "PROPOSE_REPLACE", "PROPOSE_STEP", "PROPOSE_REQUIREMENT"]),
   previousValue: text().nullable(), value: text(), sourceId: id, quote: text(),
-  nameHint: text(200).nullable().optional(), stepRef: id.optional(), kind: requirementKind.optional(), critical: z.boolean().optional(),
+  nameHint: text(200).nullable().optional(),
+  /** PROPOSE_STEP only: details of the step that its source message states; accepting the step records them as known facts. Absent on older proposals. */
+  details: z.array(z.strictObject({ key: z.enum(STEP_DETAIL_KEYS), value: text(), quote: text() })).max(STEP_DETAIL_KEYS.length).optional(),
+  stepRef: id.optional(), kind: requirementKind.optional(), critical: z.boolean().optional(),
   status: z.enum(["PENDING", "ACCEPTED", "REJECTED"]), createdAt: z.iso.datetime(), decidedBy: id.nullable(),
 });
 const MessageSchema = z.strictObject({ id, role: z.enum(["user", "assistant"]), text: text(20000),
@@ -54,6 +57,9 @@ const QuestionSchema = z.strictObject({ gapKey: id, fieldId: id, question: text(
 const ObservationSchema = z.strictObject({ id, kind: z.enum(["POSSIBLE_CONFLICT", "FOLLOW_UP_SUGGESTION"]),
   fieldIds: z.array(id).min(1).max(10), detail: text(1000), status: z.enum(["PENDING", "DISMISSED", "RESOLVED"]),
   rationale: text(1000).nullable(), reviewedBy: id.nullable() });
+/** An answer to a To-Be open question. `question` and `owner` are copied by the server from the stored To-Be job, never from the client. */
+const AnswerSchema = z.strictObject({ id, sourceJobId: z.uuid(), questionId: id, question: text(), owner: text(), answer: text(2000),
+  answeredBy: id, answeredAt: z.iso.datetime() });
 /** `withGaps`: confirmed as a draft whose incomplete step details travel on as open questions. Absent on older confirmations. */
 const ConfirmationSchema = z.strictObject({ revision: z.number().int().positive(), by: id, at: z.iso.datetime(), withGaps: z.boolean().optional() });
 
@@ -69,6 +75,10 @@ export const WorkspaceStateSchema = z.strictObject({
   /** User messages whose extraction (proposals) is recorded, so a retried or replayed extraction is a no-op. Absent in
    * workspaces saved before extraction became a separate step. */
   extractedMessageIds: z.array(id).max(1000).optional(),
+  /** The subset of those whose extraction recorded nothing at all (no proposal, no observation), so the chat can say so. Absent on older workspaces. */
+  emptyExtractionMessageIds: z.array(id).max(1000).optional(),
+  /** Answers to open questions of a generated To-Be, carried into the discovery snapshot on confirm. Absent on older workspaces. */
+  answers: z.array(AnswerSchema).max(200).optional(),
   confirmation: ConfirmationSchema.nullable(),
 });
 export type WorkspaceState = z.infer<typeof WorkspaceStateSchema>;
@@ -110,6 +120,7 @@ export const WorkspaceCommandSchema = z.discriminatedUnion("type", [
   z.strictObject({ type: z.literal("DECIDE_PROPOSALS"), ids: z.array(id).min(1).max(100), decision: z.enum(["ACCEPT", "REJECT"]) }),
   z.strictObject({ type: z.literal("REVIEW_OBSERVATION"), observationId: id,
     decision: z.enum(["DISMISS", "RESOLVE"]), rationale: text(1000) }),
+  z.strictObject({ type: z.literal("ANSWER_QUESTION"), sourceJobId: z.uuid(), questionId: id, answer: text(2000) }),
   z.strictObject({ type: z.literal("CONFIRM"), allowGaps: z.boolean().optional() }),
 ]);
 export type WorkspaceCommand = z.infer<typeof WorkspaceCommandSchema>;
@@ -147,8 +158,10 @@ function checked(state: WorkspaceState): WorkspaceState {
     (f.status === "KNOWN" && !f.evidence) || (f.status === "KNOWN") !== (f.value !== null) ||
     (f.status === "NOT_APPLICABLE" && !f.rationale) || (f.status === "OWNER_PENDING" && !f.owner)) ||
     state.steps.some(s => !validEvidence(s.evidence)) || state.requirements.some(r => !validEvidence(r.evidence)) ||
-    state.proposals.some(p => !sources.get(p.sourceId)?.includes(p.quote) || p.value !== p.quote ||
-      (!!p.nameHint && !sources.get(p.sourceId)?.includes(p.nameHint)))) fail("INVALID_WORKSPACE_EVIDENCE");
+    state.proposals.some(p => !sources.get(p.sourceId)?.includes(p.quote) || (p.value !== p.quote && spanOfQuote(p.quote, p.value) !== p.value) ||
+      (!!p.nameHint && !sources.get(p.sourceId)?.includes(p.nameHint)) ||
+      (p.details ?? []).some(d => !sources.get(p.sourceId)?.includes(d.quote) || (d.value !== d.quote && spanOfQuote(d.quote, d.value) !== d.value)) ||
+      !unique((p.details ?? []).map(d => d.key)))) fail("INVALID_WORKSPACE_EVIDENCE");
   return backfillCatalog(state);
 }
 
@@ -215,15 +228,10 @@ function setFact(state: WorkspaceState, fact: WorkspaceState["facts"][number], c
   fact.acceptedBy = meta.actorId;
   fact.acceptedAt = meta.at;
 }
-const CORE_STEP_KEYS = ["name", "actor", "system", "trigger", "description"] as const;
-const LIST_STEP_KEYS = ["inputs", "outputs", "controls", "exceptions"] as const;
 type StepDraft = WorkspaceState["stepDrafts"][number];
 const draftFact = (draft: StepDraft, key: (typeof stepKeys)[number]) => draft.fields.find(f => f.id === `${draft.id}_${key}`)!;
-/** The step details still missing: core ones must be KNOWN, list ones KNOWN or NOT_APPLICABLE. */
-const missingKeys = (draft: StepDraft) => [
-  ...CORE_STEP_KEYS.filter(key => draftFact(draft, key).status !== "KNOWN"),
-  ...LIST_STEP_KEYS.filter(key => !["KNOWN", "NOT_APPLICABLE"].includes(draftFact(draft, key).status)),
-];
+/** The step details still missing (the rule lives in workspace-fields, shared with the "Finish Step" sentence). */
+const missingKeys = missingStepKeys;
 const draftComplete = (draft: StepDraft) => missingKeys(draft).length === 0;
 /** Evidence a gap-tolerant compile can cite: the description's, else the first known detail that has some. */
 const draftEvidence = (draft: StepDraft) => ["description", ...stepKeys].map(key => draftFact(draft, key as (typeof stepKeys)[number])).find(f => f.status === "KNOWN" && f.evidence)?.evidence ?? null;
@@ -256,6 +264,8 @@ function acceptProposal(state: WorkspaceState, proposal: WorkspaceState["proposa
     state.stepDrafts.push({ id: draftId, fields: stepKeys.map(key => {
       const factId = `${draftId}_${key}`;
       if (key === "description") return knownFact(factId, proposal.value, evidence, meta);
+      const detail = proposal.details?.find(item => item.key === key);
+      if (detail) return knownFact(factId, detail.value, { sourceId: proposal.sourceId, quote: detail.quote }, meta);
       return key === "name" && proposal.nameHint ? knownFact(factId, proposal.nameHint, { sourceId: proposal.sourceId, quote: proposal.nameHint }, meta)
         : emptyFact(factId);
     }) });
@@ -305,7 +315,9 @@ export function getWorkspaceReadiness(raw: WorkspaceState) {
   return { ready: blockers.length === 0, draftReady: blockers.every(b => b.soft), blockers };
 }
 
-export function applyWorkspaceCommand(rawState: WorkspaceState, rawCommand: unknown, meta: WorkspaceMeta): WorkspaceState {
+/** The question a client names in ANSWER_QUESTION, as read by the server from the stored To-Be job. */
+export type AnswerContext = { question: string; owner: string };
+export function applyWorkspaceCommand(rawState: WorkspaceState, rawCommand: unknown, meta: WorkspaceMeta, answerContext?: AnswerContext): WorkspaceState {
   checkMeta(meta);
   const state = structuredClone(checked(rawState));
   const parsed = WorkspaceCommandSchema.safeParse(rawCommand);
@@ -385,6 +397,13 @@ export function applyWorkspaceCommand(rawState: WorkspaceState, rawCommand: unkn
       else if (acceptProposal(state, proposal, meta)) decided++;
     }
     if (!decided) fail("STALE_PROPOSAL");
+  } else if (command.type === "ANSWER_QUESTION") {
+    if (!answerContext) fail("INVALID_WORKSPACE_COMMAND");
+    const entry = { id: `ans_${meta.id}`, sourceJobId: command.sourceJobId, questionId: command.questionId,
+      question: answerContext.question, owner: answerContext.owner, answer: command.answer, answeredBy: meta.actorId, answeredAt: meta.at };
+    const answers = state.answers ?? [];
+    const prior = answers.findIndex(a => a.sourceJobId === command.sourceJobId && a.questionId === command.questionId);
+    state.answers = prior >= 0 ? answers.map((a, i) => (i === prior ? entry : a)) : [...answers, entry];
   } else if (command.type === "REVIEW_OBSERVATION") {
     const observation = state.observations.find(o => o.id === command.observationId);
     if (!observation || observation.status !== "PENDING") fail("OBSERVATION_NOT_PENDING");
@@ -424,6 +443,8 @@ function toBeNote(state: WorkspaceState): string {
   return `Before a To-Be can be drafted: ${listed}${more}.${open} These are listed on the Summary tab.`;
 }
 
+const observationKey = (o: { kind: string; fieldIds: readonly string[] }) => JSON.stringify([o.kind, [...new Set(o.fieldIds)].sort()]);
+
 /** Persist only a validated model turn. It cannot change an accepted fact. */
 /** Persist a validated model turn. It cannot change an accepted fact. `scope` selects what is recorded: "chat" the assistant's
  * reply and questions, "extraction" the proposals and observations found in `currentMessageId` (no reply), "full" both. */
@@ -445,6 +466,9 @@ export function recordInterviewTurn(rawState: WorkspaceState, rawTurn: unknown, 
   }
   const userTurn = state.messages.filter(m => m.role === "user").length;
   if (scope !== "chat") state.extractedMessageIds = [...(state.extractedMessageIds ?? []), currentMessageId];
+  if (scope !== "chat" && !turn.proposedUpdates.length && !turn.proposedSteps.length && !turn.proposedRequirements.length && !turn.observations.length) {
+    state.emptyExtractionMessageIds = [...(state.emptyExtractionMessageIds ?? []), currentMessageId];
+  }
   // One question may cover several field gaps of one step: each covered gap is recorded as asked (so none is offered again).
   for (const { gapKeys, ...question } of turn.questions) for (const gapKey of [question.gapKey, ...(gapKeys ?? [])]) {
     state.questions.push({ ...question, gapKey, fieldId: input.activeGaps.find(g => g.key === gapKey)!.fieldId,
@@ -456,7 +480,7 @@ export function recordInterviewTurn(rawState: WorkspaceState, rawTurn: unknown, 
   turn.proposedUpdates.forEach((proposal, index) => state.proposals.push({ id: proposalId(index), ...proposal, ...base }));
   turn.proposedSteps.forEach((step, index) => state.proposals.push({ id: proposalId(fieldCount + index), fieldId: "step",
     operation: "PROPOSE_STEP", previousValue: null, value: step.value, sourceId: step.sourceId, quote: step.quote,
-    nameHint: step.nameHint, ...base }));
+    nameHint: step.nameHint, ...(step.details?.length ? { details: step.details } : {}), ...base }));
   turn.proposedRequirements.forEach((item, index) => {
     // new_<n> names the n-th step proposed in this same turn: store the id that proposal received.
     const fresh = /^new_(\d+)$/.exec(item.stepRef);
@@ -464,9 +488,14 @@ export function recordInterviewTurn(rawState: WorkspaceState, rawTurn: unknown, 
       operation: "PROPOSE_REQUIREMENT", previousValue: null, value: item.value, sourceId: item.sourceId, quote: item.quote,
       stepRef: fresh ? proposalId(fieldCount + Number(fresh[1])) : item.stepRef, kind: item.kind, critical: item.critical, ...base });
   });
-  turn.observations.forEach((observation, index) => state.observations.push({
-    id: `o_${meta.id}_${index}`, ...observation, status: "PENDING", rationale: null, reviewedBy: null,
-  }));
+  // A point already pending for the same kind and set of fields is not recorded again (closed ones may be raised again).
+  const raised = new Set(state.observations.filter(o => o.status === "PENDING").map(observationKey));
+  turn.observations.forEach((observation, index) => {
+    const key = observationKey(observation);
+    if (raised.has(key)) return;
+    raised.add(key);
+    state.observations.push({ id: `o_${meta.id}_${index}`, ...observation, status: "PENDING", rationale: null, reviewedBy: null });
+  });
   state.revision++;
   return checked(state);
 }
@@ -675,6 +704,9 @@ export function compileDiscovery(rawState: WorkspaceState, options: { allowGaps?
       id: `q_${f.id}`, question: WORKSPACE_FIELDS.find(def => def.id === f.id)!.question,
       owner: f.owner ?? "Process owner",
     })), ...gapQuestions, ...observationQuestions]),
+    // Only when answered, so a workspace without answers compiles to exactly what it did before.
+    ...(state.answers?.length ? { answeredQuestions: state.answers.map(a => ({ id: a.questionId, question: a.question, answer: a.answer,
+      owner: a.owner, answeredBy: a.answeredBy, answeredAt: a.answeredAt })) } : {}),
   };
   return validateDiscovery(input);
 }

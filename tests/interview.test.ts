@@ -23,13 +23,14 @@ const stored = (): InterviewTurn => ({
   observations: [{ kind: "POSSIBLE_CONFLICT", fieldIds: ["return-system"],
     detail: "The current message mentions a spreadsheet, while the earlier system field says paper log." }],
 });
-type ModelUpdate = { fieldId: string; operation: "PROPOSE_SET" | "PROPOSE_REPLACE"; previousValue: string | null; sentenceIds: string[]; value?: string };
+type ModelUpdate = { fieldId: string; operation: "PROPOSE_SET" | "PROPOSE_REPLACE"; previousValue: string | null; sentenceIds: string[]; value?: string; answer?: string };
 type ModelTurn = Omit<InterviewTurn, "proposedUpdates" | "proposedSteps" | "proposedRequirements"> & { proposedUpdates: ModelUpdate[];
   proposedSteps: { sentenceIds: string[]; nameHint?: string | null }[];
   proposedRequirements: { stepRef: string; kind: "PAIN_POINT" | "TO_BE_REQUIREMENT" | "CONTROL"; critical: boolean; sentenceIds: string[] }[] };
 /** The same turn as the model writes it: it cites sentence S1 of the fixture's current message instead of copying text. */
 const proposal = (): ModelTurn => ({ ...stored(), proposedSteps: [], proposedRequirements: [],
-  proposedUpdates: [{ fieldId: "return-action", operation: "PROPOSE_SET", previousValue: null, sentenceIds: ["S1"] }] });
+  proposedUpdates: [{ fieldId: "return-action", operation: "PROPOSE_SET", previousValue: null, sentenceIds: ["S1"],
+    answer: "The clerk records physical returns in the spreadsheet." }] });
 const valid = (raw: unknown, input = fixture()) => validateInterviewTurn(input, raw);
 /** The input as the extraction call sees it: numbered sentences, and none of the gaps or history it does not use. */
 const extractionView = (input: ReturnType<typeof fixture>) => ({ ...interviewModelView(input), activeGaps: [], closedGapKeys: [], history: [] });
@@ -223,7 +224,8 @@ describe("server-owned proposal value and sentence resolution", () => {
   });
   it("addresses a sentence that repeats in the source by its id", () => {
     const { result } = withText("Returns go to stores. Returns go to stores.", ["S2"]);
-    expect(result).toMatchObject({ success: true, warnings: [] });
+    // the fixture's answer is about another sentence, so it is refused and the whole quote is the value
+    expect(result).toMatchObject({ success: true, warnings: [{ path: "proposedUpdates.0", code: "answer_fallback", detail: "answer_not_in_quote" }] });
     expect(update(result).quote).toBe("Returns go to stores.");
   });
   it("is stable: an accepted turn passes the stored-turn check unchanged, and that check never normalises", () => {

@@ -99,46 +99,66 @@ type Draft = { schemaVersion: 1 | 2 | 3 } & { [K in RegisterKey]?: unknown[] };
 export const segments = (value: string, needsDigit = false) => value.split(/\r?\n|;/).map(norm).filter(part =>
   part.length >= 3 && !part.endsWith(":") && (!needsDigit || /\d/.test(part)));
 
-/** Units, time words and generic business nouns: they say nothing about WHICH measure a sentence is about ("customers pay 60-90 days" is not a baseline for every day-count KPI). */
-const GENERIC_KPI_WORDS = new Set(["days", "day", "working", "period", "count", "counts", "share", "number", "numbers", "percent", "percentage", "value", "values", "total", "within", "month", "months", "monthly", "week", "weeks", "weekly",
-  "quarter", "quarterly", "year", "yearly", "annual", "rate", "rates", "time", "times", "older", "than", "from", "with", "that", "this", "over", "under", "open", "closed", "late", "often", "later", "average", "daily", "hours", "end",
-  "receipt", "receipts", "invoice", "invoices", "payment", "payments", "paid", "order", "orders", "document", "documents", "report", "reports", "finance", "business", "process", "flow", "carrying", "carried", "billed", "need", "needs", "must", "pending"]);
+/** Business nouns: too common to say WHICH measure a sentence is about on their own, but two or more of them together can (see sharesBusinessNouns). */
+const BUSINESS_NOUNS = new Set(["invoice", "invoices", "receipt", "receipts", "payment", "payments", "paid", "order", "orders", "document", "documents", "open", "closed", "late", "later", "billed", "pending"]);
+/** Units, time/quantity words and function words: they never say which measure a sentence is about ("customers pay 60-90 days" is not a baseline for every day-count KPI). */
+const UNIT_KPI_WORDS = new Set(["days", "day", "working", "period", "count", "counts", "share", "number", "numbers", "percent", "percentage", "value", "values", "total", "within", "month", "months", "monthly", "week", "weeks", "weekly",
+  "quarter", "quarterly", "year", "yearly", "annual", "rate", "rates", "time", "times", "older", "than", "from", "with", "that", "this", "over", "under", "often", "average", "daily", "hours", "end",
+  "report", "reports", "finance", "business", "process", "flow", "carrying", "carried", "need", "needs", "must"]);
+const GENERIC_KPI_WORDS = new Set([...UNIT_KPI_WORDS, ...BUSINESS_NOUNS]);
 const kpiSubjectStems = (value: string) => new Set((norm(value).match(/[a-z]{4,}/g) ?? []).filter(word => !GENERIC_KPI_WORDS.has(word)).map(word => word.slice(0, 5)));
-/** True when `text` shares a distinctive content word (stem of 4+ letters, not a unit/time/generic business word) with the KPI's NAME. A name with no distinctive word proves nothing. */
-const sharesKpiSubject = (name: string, text: string) => {
+/** Stems of the business nouns in `value`; "paid" and "payment" share one stem, "late" and "later" another. */
+const businessStems = (value: string) => new Set((norm(value).match(/[a-z]{3,}/g) ?? []).filter(word => BUSINESS_NOUNS.has(word))
+  .map(word => (/^pa(id|yments?)$/.test(word) ? "pay" : word === "later" ? "late" : word).slice(0, 5)));
+/** How many business-noun stems the name and the text share. */
+const sharedBusinessStems = (name: string, text: string) => { const have = businessStems(name); return [...businessStems(text)].filter(stem => have.has(stem)).length; };
+/** Two or more business nouns that the name carries as well ("10 percent of invoices are paid late" for "Share of invoices paid after their due date (paid-late percentage)"). The name must hold EVERY business noun
+ * of the text, so "Late payment fees" does not take an invoice sentence. This is the ACCEPTANCE rule (strict); the KPI_VALUE_IGNORED review (checkRegisters) is looser so a clause this rule refuses is still reported.
+ * ponytail: no synonyms ("overdue" is not "late"), so an unusual wording is refused here and surfaces as a finding, not a silent loss. */
+const sharesBusinessNouns = (name: string, text: string) => businessStems(text).size >= 2 && sharedBusinessStems(name, text) === businessStems(text).size;
+/** True when `text` shares a distinctive content word (stem of 4+ letters, not a unit/time/generic business word) with the KPI's NAME. A name with no distinctive word proves nothing.
+ * `lenient` (baselines only) also accepts a text whose business nouns the name carries (sharesBusinessNouns). */
+const sharesKpiSubject = (name: string, text: string, lenient = false) => {
   const wanted = kpiSubjectStems(name);
   if (!wanted.size) return true;
   const have = kpiSubjectStems(text);
-  return [...wanted].some(stem => have.has(stem));
+  return [...wanted].some(stem => have.has(stem)) || (lenient && sharesBusinessNouns(name, text));
 };
+/** A comma that separates figures or clauses: never one between two digits ("4,000 euros" is one figure). */
+const COMMA = "(?<!\\d),|,(?!\\d)";
+/** One line/semicolon item split into its clauses on " and " or "," (never a comma between two digits: "4,000"), but only when EVERY piece carries a figure ("10 percent paid late and approval takes 8 days"): a figure-less piece stays attached. */
+const clausesOf = (item: string) => { const parts = item.split(new RegExp(`\\s+and\\s+|${COMMA}`)).map(part => part.trim()).filter(Boolean); return parts.length > 1 && parts.every(part => /\d/.test(part)) ? parts : [item]; };
 /** A target is verbatim when it sits inside ONE segment of the answer and does not paste two or more of that segment's comma-separated figures at once. No relevance to the KPI's name is asked. */
 const isVerbatimTarget = (claimed: string, source: string) => segments(source).some(part => part.includes(claimed)
-  && part.replace(/^[^:,;]{1,40}:\s*/, "").split(",").map(item => item.trim()).filter(item => item.length >= 3 && claimed.includes(item)).length < 2);
+  && part.replace(/^[^:,;]{1,40}:\s*/, "").split(new RegExp(COMMA)).map(item => item.trim()).filter(item => item.length >= 3 && claimed.includes(item)).length < 2);
 const stripEnumerator = (value: string) => value.replace(/^\s*\(\d+\)\s*/, "");
 
 /** A KPI value must sit inside ONE line/semicolon item of the answer and speak only of this KPI's measure: pasting the whole answer (or its other
- * comma-separated figures) onto every KPI is not a figure for the measure. A leading "label:" or "(6)" is ignored when judging relevance. `name` is the KPI's name. */
-const isAboutMeasure = (claimed: string, source: string, name: string) => {
+ * comma-separated figures) onto every KPI is not a figure for the measure. A leading "label:" or "(6)" is ignored when judging relevance. `name` is the KPI's name.
+ * `lenient` (baselines) also splits the value into clauses (clausesOf) and accepts business-noun relevance, so a sentence that joins two measures with " and " is about neither. */
+const isAboutMeasure = (claimed: string, source: string, name: string, lenient = false) => {
   if (!segments(source).some(part => part.includes(claimed))) return false;
-  const items = stripEnumerator(claimed).replace(/^[^:,;]{1,40}:\s*/, "").split(/[,;]/).map(item => item.trim()).filter(Boolean);
-  return items.length > 0 && items.every(item => sharesKpiSubject(name, item));
+  const items = stripEnumerator(claimed).replace(/^[^:,;]{1,40}:\s*/, "").split(new RegExp(`${COMMA}|;`)).map(item => item.trim()).filter(Boolean).flatMap(item => lenient ? clausesOf(item) : [item]);
+  return items.length > 0 && items.every(item => sharesKpiSubject(name, item, lenient));
 };
 
 /** A KPI baseline/target is a copy task, so the server settles it instead of failing the design: a value that is "not provided", or that already passes both KPI checks,
- * stays; any other becomes the first line/semicolon item of the company-context answer that is about the KPI's own measure, else "not provided". Never invents text.
+ * stays; any other becomes the first line/semicolon item (a baseline: the first clause of one, see clausesOf) of the company-context answer that is about the KPI's own measure, else "not provided". Never invents text.
  * Each replacement is reported as a KPI_VALUE_NORMALISED warning (code and path only). */
 export function normaliseKpiRows<T extends { name: string; measuredFrom: string; baseline: string; target: string }>(
   kpis: readonly T[], companyContext: readonly { fieldId: string; value: string }[], basePath = "draft.kpis"): { rows: T[]; warnings: { code: string; path: string }[] } {
   const known = new Map(companyContext.map(item => [item.fieldId, item.value]));
   const warnings: { code: string; path: string }[] = [];
   const itemsOf = (source: string) => source.split(/\r?\n|;/).map(item => stripEnumerator(item.trim()).replace(/^[^:,;]{1,40}:\s*(?=\S)/, ""));
-  const settle = (value: string, source: string | undefined, subject: string) => {
+  const settle = (value: string, source: string | undefined, subject: string, taken: readonly string[] = []) => {
     const claimed = norm(value);
     if (isNotProvided(claimed)) return value;
-    if (source !== undefined && norm(source).includes(claimed) && isAboutMeasure(claimed, source, subject)) return value;
-    return source === undefined ? NOT_PROVIDED : itemsOf(source).find(item => segments(item).length > 0 && isAboutMeasure(norm(item), source, subject)) ?? NOT_PROVIDED;
+    if (source !== undefined && norm(source).includes(claimed) && isAboutMeasure(claimed, source, subject, true)) return value;
+    return source === undefined ? NOT_PROVIDED : itemsOf(source).flatMap(clausesOf).find(item => segments(item).length > 0
+      && !taken.some(held => norm(item).includes(held) || held.includes(norm(item))) && isAboutMeasure(norm(item), source, subject, true)) ?? NOT_PROVIDED;
   };
-  const baselines = kpis.map(row => settle(row.baseline, known.get("kpi_baselines"), row.name));
+  // A clause a replacement takes is not given to a second KPI (the model's own valid values are kept as they are).
+  const baselines = kpis.reduce<string[]>((done, row) => [...done, settle(row.baseline, known.get("kpi_baselines"), row.name, done.filter(item => !isNotProvided(item)).map(norm))], []);
 
   // A target is a verbatim single segment (or a contiguous part of one) of kpi_targets and needs no relevance test ("close in 5 days" stays on a "Job-work flow close" KPI);
   // the same text is never the target of two KPIs. A KPI left with "not provided" takes an unused segment that is about its own measure.
@@ -330,13 +350,18 @@ export function checkRegisters(draft: Draft, ctx: RegisterContext, error: Report
       const claimed = norm(value);
       if (isNotProvided(claimed)) continue;
       if (source === undefined || !norm(source).includes(claimed)) error("KPI_VALUE_NOT_VERBATIM", path);
-      else if (isTarget ? !isVerbatimTarget(claimed, source) : !isAboutMeasure(claimed, source, row.name)) error("KPI_VALUE_NOT_FOR_MEASURE", path, "a KPI baseline or target must be the part of the company-context answer that is about this KPI's own measure: copy only that part (one line, never the whole answer or other measures' figures), or write exactly \"not provided\" and keep the measure if only a target exists");
+      else if (isTarget ? !isVerbatimTarget(claimed, source) : !isAboutMeasure(claimed, source, row.name, true)) error("KPI_VALUE_NOT_FOR_MEASURE", path, "a KPI baseline or target must be the part of the company-context answer that is about this KPI's own measure: copy only that part (one line, never the whole answer or other measures' figures), or write exactly \"not provided\" and keep the measure if only a target exists");
     }
-    // "not provided" while the answer has a line about this measure is a value the design ignored (a review finding, fixable by the KPI call).
-    for (const [value, source] of [[row.baseline, baselines], [row.target, targets]] as const) {
-      if (isNotProvided(value) && source !== undefined && segments(source).some(part => part !== NOT_PROVIDED && /\d/.test(part) && kpiSubjectStems(row.name).size > 0 && sharesKpiSubject(row.name, part))) {
-        block("KPI_VALUE_IGNORED", path); break;
-      }
+    // "not provided" while the answer has a line about this measure is a value the design ignored (a review finding, fixable by the KPI call). Judged per clause (clausesOf), and a clause
+    // that another KPI's value of the same kind already holds is not ignored ("approval takes 8 days" sits in the same line as the late-payment figure). Targets keep the strict relevance test.
+    // A baseline is judged more loosely than the normaliser accepts it: besides a distinctive word, two shared business nouns count when no other KPI name shares more of them with the clause
+    // ("paid after their due date" vs "10 percent of invoices are paid late"), so a clause the normaliser refused is still reported.
+    for (const [field, source] of [["baseline", baselines], ["target", targets]] as const) {
+      if (!isNotProvided(row[field]) || source === undefined || kpiSubjectStems(row.name).size === 0) continue;
+      const heldByOthers = (part: string) => kpis.some((other, j) => { const held = norm(other[field]); return j !== i && !isNotProvided(held) && (held.includes(part) || part.includes(held)); });
+      const aboutRow = (part: string) => sharesKpiSubject(row.name, part) || (field === "baseline" && sharedBusinessStems(row.name, part) >= 2
+        && sharedBusinessStems(row.name, part) === Math.max(...kpis.map(other => sharedBusinessStems(other.name, part))));
+      if (segments(source).flatMap(clausesOf).some(part => part !== NOT_PROVIDED && /\d/.test(part) && aboutRow(part) && !heldByOthers(part))) { block("KPI_VALUE_IGNORED", path); break; }
     }
   });
   if (targets !== undefined) {

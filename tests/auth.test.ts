@@ -130,7 +130,7 @@ describe.skipIf(process.env.RUN_DB_TESTS !== "1")("auth services on isolated Pos
     const profile = (overrides: Record<string, string> = {}) => ({ sub: `sub-${randomUUID()}`, email: `g-${randomUUID()}@test.local`, name: "Gita Rao", ...overrides });
     const row = async (sql: string, params: unknown[]) => (await pool.query(sql, params)).rows[0];
 
-    it("creates a workspace, ADMIN user, 14-day trial and quota 10, then reuses the identity", async () => {
+    it("creates a workspace, ADMIN user, 14-day trial and quota 30, then reuses the identity", async () => {
       const input = profile();
       const first = await auth.googleSignIn(input);
       expect(first.user).toMatchObject({ email: input.email, name: "Gita Rao", orgRole: "ADMIN" });
@@ -138,7 +138,7 @@ describe.skipIf(process.env.RUN_DB_TESTS !== "1")("auth services on isolated Pos
       expect(await auth.authenticate(first.token)).toEqual(first.user);
       const org = await row(`SELECT name,daily_ai_job_quota AS quota,suspended_at,
         extract(epoch FROM trial_ends_at-clock_timestamp()) AS trial FROM organizations WHERE id=$1`, [first.user.orgId]);
-      expect(org).toMatchObject({ name: "Gita Rao's workspace", quota: 10, suspended_at: null });
+      expect(org).toMatchObject({ name: "Gita Rao's workspace", quota: 30, suspended_at: null });
       expect(Math.abs(Number(org.trial) - 14 * 86400)).toBeLessThan(2 * 3600); // calendar days: DST may shift an hour
       const stored = await row("SELECT password_hash,last_login_at FROM users WHERE id=$1", [first.user.id]);
       expect(stored.password_hash).toBeNull();

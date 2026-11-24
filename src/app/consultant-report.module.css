@@ -10,6 +10,10 @@
 .status { padding: 12px 14px; border-radius: 8px; border: 1px solid var(--border); }
 .status[data-status="BLOCKED"], .blockedNote { background: #fff4e6; border-color: #b26d3d; color: #62330d; }
 .status[data-status="HUMAN_REVIEW_REQUIRED"] { background: #eef6f4; border-color: #8fbfb3; }
+.blocking { margin: 14px 0; padding: 12px 14px; border-radius: 8px; border: 1px solid #b26d3d; background: #fff4e6; color: #62330d; }
+.blocking h2 { margin: 0 0 6px; font-size: 17px; }
+.blocking a { color: inherit; }
+.todo { margin: 4px 0 8px; }
 .blockedNote { padding: 10px 12px; border: 1px solid #b26d3d; border-radius: 8px; margin: 10px 0; }
 .facts { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 20px; margin: 14px 0; }
 .facts dt { color: var(--muted); font-size: 14px; }

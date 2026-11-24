@@ -74,10 +74,44 @@ describe("credit fallback", () => {
     expect(Object.keys(env.AI_MODEL_PRICES)).toContain(OPENROUTER_DEFAULT_MODEL);
   });
 
-  it.each([400, 401])("does not fall back on a non-credit %s", async (status) => {
+  it("does not fall back on a 401", async () => {
     vi.spyOn(console, "error").mockImplementation(() => {});
-    const n = network(() => errorJson(status));
+    const n = network(() => errorJson(401));
     await expect(createStageRunner(settings(), { fetch: n.fetch })("problem_analysis", input)).rejects.toMatchObject({ code: "AI_PROVIDER_ERROR" });
+    expect(n.seen.map(call => call.host)).toEqual(["primary"]);
+  });
+
+  it("re-sends a 400 invalid_request from the primary once to the fallback, logging the reason and no provider message", async () => {
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    const n = network(() => errorJson(400, "private detail"));
+    const result = await createStageRunner(settings(), { fetch: n.fetch })("problem_analysis", input);
+    expect(n.seen).toEqual([{ host: "primary", model: FLASH }, { host: "fallback", model: "fb/chat" }]); // the 400 is not retried on the primary
+    expect(result.metrics).toMatchObject({ provider: "openrouter", model: "fb/chat" });
+    expect(lines(log).filter(line => line.event === "ai_provider_fallback")).toEqual([
+      { event: "ai_provider_fallback", fromProvider: "deepinfra", toProvider: "openrouter", model: "fb/chat", stage: "problem_analysis", reason: "invalid_request" }]);
+    expect(JSON.stringify(lines(log))).not.toMatch(/private|secret/);
+  });
+
+  it("starts the cooldown after a 400, so the next call goes straight to the fallback", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const n = network(() => errorJson(400));
+    const run = createStageRunner(settings(), { fetch: n.fetch, now: () => 1_000_000 });
+    await run("problem_analysis", input); n.seen.length = 0;
+    await run("problem_analysis", input);
+    expect(n.seen.map(call => call.host)).toEqual(["fallback"]);
+  });
+
+  it("surfaces the fallback's own error when the fallback also answers 400", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const n = network(() => errorJson(400), () => errorJson(400));
+    await expect(createStageRunner(settings(), { fetch: n.fetch })("problem_analysis", input)).rejects.toMatchObject({ code: "AI_PROVIDER_ERROR", metrics: { provider: "openrouter" } });
+    expect(n.seen.map(call => call.host)).toEqual(["primary", "fallback"]);
+  });
+
+  it("without AI_FALLBACK_PROVIDER a 400 surfaces as before", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const n = network(() => errorJson(400));
+    await expect(createStageRunner(parseEnvironment(base), { fetch: n.fetch })("problem_analysis", input)).rejects.toMatchObject({ code: "AI_PROVIDER_ERROR" });
     expect(n.seen.map(call => call.host)).toEqual(["primary"]);
   });
 

@@ -228,6 +228,98 @@ describe("a KPI value the answers hold but the row calls 'not provided' (KPI_VAL
   });
 });
 
+describe("one answer that holds two measures joined by 'and' (late payment and approval time)", () => {
+  const BASELINES = "10 percent of invoices are paid late and approval takes 8 days on average";
+  const TARGETS = "under 2 percent paid late and approval within 2 days";
+  const LATE = "10 percent of invoices are paid late", APPROVAL = "approval takes 8 days on average";
+  const NAMES = ["Share of supplier invoices paid after their due date, per calendar month (paid-late percentage)", "Average time from invoice receipt to approval (days)",
+    "Number of supplier invoices waiting for approval (count)", "Late payment fees charged by suppliers per month"];
+  const context = [{ fieldId: "kpi_baselines", value: BASELINES }, { fieldId: "kpi_targets", value: TARGETS }];
+  const row = (name: string, baseline: string, target = "not provided") => ({ name, measuredFrom: "x", baseline, target });
+  const rowsWith = (...baselines: string[]) => NAMES.map((name, i) => row(name, baselines[i] ?? "not provided"));
+  const answers = ctx(answered(["kpi_baselines", BASELINES], ["kpi_targets", TARGETS]));
+  const asKpis = (rows: ReturnType<typeof row>[]) => rows.map((item, i) => ({ id: `KPI-${i + 1}`, ...item, referenceIds: [], needsValidation: true, validationReason: "App to be confirmed", requirementIds: [], contextFieldIds: ["kpi_targets"], stepIds: ["TB-3"] }));
+  const evaluate = (rows: ReturnType<typeof row>[]) => evaluateDesign(answers, design(draft => { draft.kpis = asKpis(rows); }));
+  const found = (rows: ReturnType<typeof row>[]) => { const out = evaluate(rows); return { errors: out.errors.map(item => `${item.code}@${item.path}`), blockers: out.blockers.map(item => `${item.code}@${item.path}`) }; };
+
+  it("keeps the clause about the KPI's own measure even when it shares only generic business nouns with the name", () => {
+    const rows = rowsWith(LATE, APPROVAL);
+    const out = normaliseKpiRows(rows, context);
+    expect(out.rows.map(item => item.baseline)).toEqual([LATE, APPROVAL, "not provided", "not provided"]);
+    expect(out.warnings.filter(item => item.path.endsWith(".baseline"))).toEqual([]);
+  });
+  it("settles the whole pasted sentence to the clause about each KPI, and gives KPI 3 (approval clause already taken by KPI 2) and KPI 4 neither", () => {
+    const out = normaliseKpiRows(rowsWith(BASELINES, BASELINES, BASELINES, BASELINES), context);
+    expect(out.rows.map(item => item.baseline)).toEqual([LATE, APPROVAL, "not provided", "not provided"]);
+    expect(out.warnings.map(item => item.path).filter(path => path.endsWith(".baseline"))).toEqual(["draft.kpis.0.baseline", "draft.kpis.1.baseline", "draft.kpis.2.baseline", "draft.kpis.3.baseline"]);
+  });
+  it("a 'not provided' KPI 1 is KPI_VALUE_IGNORED at row 0 only: KPI 3 is silent because KPI 2 already holds the approval clause", () => {
+    const got = found(rowsWith("not provided", APPROVAL).map((item, i) => i === 0 ? { ...item, target: "under 2 percent paid late" } : i === 1 ? { ...item, target: "approval within 2 days" } : item));
+    expect(got.errors).toEqual([]);
+    expect(got.blockers.filter(code => code.startsWith("KPI_VALUE_IGNORED"))).toEqual(["KPI_VALUE_IGNORED@draft.kpis.0"]);
+  });
+  it("the normaliser and the check agree, and KPI 4 holding the late-payment clause is not for its measure", () => {
+    for (const given of [[LATE, APPROVAL], [BASELINES, BASELINES, "not provided", BASELINES]]) {
+      const rows = normaliseKpiRows(rowsWith(...given), context).rows;
+      expect(found(rows).errors.filter(code => /KPI_VALUE_NOT_(VERBATIM|FOR_MEASURE)/.test(code))).toEqual([]);
+    }
+    expect(found(rowsWith(LATE, APPROVAL, "not provided", LATE)).errors).toEqual(["KPI_VALUE_NOT_FOR_MEASURE@draft.kpis.3"]);
+  });
+  it("leaves targets as they were", () => {
+    const out = normaliseKpiRows([row(NAMES[0]!, LATE, "under 2 percent paid late"), row(NAMES[1]!, APPROVAL, "approval within 2 days")], context);
+    expect(out.rows.map(item => item.target)).toEqual(["under 2 percent paid late", "approval within 2 days"]);
+  });
+});
+
+describe("thousands separators are never clause boundaries", () => {
+  const FEES = "Late fees cost about 4,000 euros a month", LATE = "10 percent of invoices are paid late";
+  const FEE_NAME = "Late fees charged by suppliers per calendar month (euros)", LATE_NAME = "Share of supplier invoices paid late (paid-late percentage)";
+  const row = (name: string, baseline: string, target = "not provided") => ({ name, measuredFrom: "x", baseline, target });
+  const ask = (value: string) => [{ fieldId: "kpi_baselines", value }];
+  it("keeps 4,000 whole when the model pastes the whole two-clause sentence, and the late-payment KPI gets its own clause", () => {
+    const whole = `${FEES} and ${LATE}`;
+    const out = normaliseKpiRows([row(FEE_NAME, whole), row(LATE_NAME, whole)], ask(whole));
+    expect(out.rows.map(item => item.baseline)).toEqual([FEES, LATE]);
+  });
+  it("settles a non-verbatim value to the whole figure clause, not to the text before the comma", () => {
+    expect(normaliseKpiRows([row(FEE_NAME, "we pay 4,000 euros")], ask(FEES)).rows[0]!.baseline).toBe(FEES);
+  });
+  const errorsOf = (field: "baseline" | "target", value: string, source: string) => evaluateDesign(ctx(answered([field === "target" ? "kpi_targets" : "kpi_baselines", source])), design(draft => {
+    draft.kpis = [{ id: "KPI-1", name: "Late fees charged (monthly)", measuredFrom: "x", baseline: "not provided", target: "not provided", [field]: value, referenceIds: [], needsValidation: true, validationReason: "App to be confirmed",
+      requirementIds: [], contextFieldIds: ["kpi_targets"], stepIds: ["TB-3"] }]; })).errors.map(item => `${item.code}@${item.path}`).filter(code => code.startsWith("KPI_VALUE_NOT"));
+  it("a baseline with a thousands figure is for its measure even when the text after the comma shares no word with the name", () => {
+    expect(errorsOf("baseline", "Late fees cost about 4,000 a month", "Late fees cost about 4,000 a month")).toEqual([]);
+  });
+  it("a target that is one 4,000 figure is not counted as two figures of a list, while a real list of two still fails", () => {
+    expect(errorsOf("target", "4,000 euros", "Late fees: 4,000 euros, 12,000 euros")).toEqual([]);
+    expect(errorsOf("target", "4,000 euros, 12,000 euros", "Late fees: 4,000 euros, 12,000 euros")).toEqual(["KPI_VALUE_NOT_FOR_MEASURE@draft.kpis.0"]);
+    expect(errorsOf("target", "4,000 euros", "Late fees under 4,000 euros")).toEqual([]);
+  });
+});
+
+describe("a baseline lost to the normaliser is not lost silently", () => {
+  const BASELINES = "10 percent of invoices are paid late and approval takes 8 days on average";
+  const LATE = "10 percent of invoices are paid late", APPROVAL = "approval takes 8 days on average";
+  const NAMES = ["Share of supplier invoices paid after their due date", "Average time from invoice receipt to approval (days)", "Number of supplier invoices waiting for approval (count)", "Late payment fees charged by suppliers per month"];
+  const row = (name: string, baseline: string) => ({ name, measuredFrom: "x", baseline, target: "not provided" });
+  const answers = ctx(answered(["kpi_baselines", BASELINES]));
+  const asKpis = (rows: ReturnType<typeof row>[]) => rows.map((item, i) => ({ id: `KPI-${i + 1}`, ...item, referenceIds: [], needsValidation: true, validationReason: "App to be confirmed", requirementIds: [], contextFieldIds: ["kpi_baselines"], stepIds: ["TB-3"] }));
+  const blockers = (...baselines: string[]) => evaluateDesign(answers, design(draft => { draft.kpis = asKpis(NAMES.map((name, i) => row(name, baselines[i] ?? "not provided"))); }))
+    .blockers.map(item => `${item.code}@${item.path}`).filter(code => code.startsWith("KPI_VALUE_IGNORED"));
+  it("the normaliser still gives the name without 'late' nothing (acceptance rule unchanged)", () => {
+    const out = normaliseKpiRows([row(NAMES[0]!, LATE)], [{ fieldId: "kpi_baselines", value: BASELINES }]);
+    expect(out.rows[0]!.baseline).toBe("not provided");
+    expect(out.warnings).toEqual([{ code: "KPI_VALUE_NORMALISED", path: "draft.kpis.0.baseline" }]);
+  });
+  it("flags the not-provided baseline of 'paid after their due date' (the late-payment clause shares two business nouns), once the approval clause is held by KPI 2", () => {
+    expect(blockers("not provided", APPROVAL)).toContain("KPI_VALUE_IGNORED@draft.kpis.0");
+    expect(blockers("not provided", APPROVAL)).not.toContain("KPI_VALUE_IGNORED@draft.kpis.2"); // one shared noun only
+  });
+  it("does not flag 'Late payment fees' when another KPI holds the invoice clause", () => {
+    expect(blockers(LATE, APPROVAL)).toEqual([]);
+  });
+});
+
 describe("unknown SAP objects", () => {
   it("flags an identifier outside the catalog in a step or a register, at its path, naming the token only", () => {
     const step = evaluateDesign(ctx(), design(draft => { draft.steps[1]!.effects.financial = "Post to the ledger with movement type 777."; }));

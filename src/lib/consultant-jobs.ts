@@ -7,7 +7,7 @@ import { withTenantSession } from "./tenant";
 import { assertOrgCanRunAi } from "./org-limits";
 import { PROVIDER_CREDIT_MESSAGE } from "./ai/provider";
 import { validateDiscovery } from "./discovery";
-import { loadWorkspaceForWorker, persistWorkspaceTurn } from "./discovery-workspace";
+import { loadReportAnswers, loadWorkspaceForWorker, persistWorkspaceTurn } from "./discovery-workspace";
 import { CONSULTANT_EXTRACT_QUEUE, extractionScope, failureCode, missedExtractions } from "./consultant-extraction";
 import { buildInterviewInput } from "./discovery-workspace-model";
 import { loadToBeReferences, parseToBeInput, validateToBeOutput } from "./ai/to-be";
@@ -172,6 +172,23 @@ export function createConsultantJobs(pool: Pool, auth: AuthService, queue: PgBos
           AND kind<>'EXTRACTION' ORDER BY created_at DESC,id DESC LIMIT 20`, [user.orgId, projectId, variantCode])).rows;
         return { jobs: jobs.map(expose) };
       }),
+    /** For the project list: per visible project, whether its first variant (lowest variant code, as the overview picks it) is confirmed and the
+     * status of that variant's latest To-Be job (found among its 20 newest non-extraction jobs, as `latest` returns them). One query for all
+     * projects. Same read rule as `latest`: org filter plus project membership, demo projects excluded, and RLS applies on top. */
+    projectProgress: (token: string | null) => withTenantSession(pool, auth, token, async ({ client, user }) =>
+      (await client.query<{ projectId: string; mapped: boolean; toBeStatus: string | null }>(
+        `WITH first_variant AS (
+           SELECT DISTINCT ON (r.project_id) r.project_id,r.variant_code,r.confirmed_snapshot_id
+           FROM discovery_workspace_revisions r
+           JOIN projects p ON p.org_id=r.org_id AND p.id=r.project_id AND NOT p.is_demo
+           JOIN project_memberships m ON m.org_id=r.org_id AND m.project_id=r.project_id AND m.user_id=$2
+           WHERE r.org_id=$1 ORDER BY r.project_id,r.variant_code,r.revision DESC)
+         SELECT f.project_id AS "projectId",f.confirmed_snapshot_id IS NOT NULL AS mapped,t.status AS "toBeStatus"
+         FROM first_variant f LEFT JOIN LATERAL (
+           SELECT status FROM (SELECT kind,status,created_at,id FROM consultant_jobs WHERE org_id=$1 AND project_id=f.project_id
+             AND variant_code=f.variant_code AND kind<>'EXTRACTION' ORDER BY created_at DESC,id DESC LIMIT 20) recent
+           WHERE kind='TO_BE' ORDER BY created_at DESC,id DESC LIMIT 1) t ON f.confirmed_snapshot_id IS NOT NULL`,
+        [user.orgId, user.id])).rows),
     /** Full validated To-Be result for one finished job. Visible to any project member; tenant isolation,
      * job/workspace binding and SUCCEEDED-only are all enforced by the query. Metrics are never selected into the view. */
     async report(token: string | null, projectId: string, variantCode: string, jobId: string, options: SapReferenceOptions = {}): Promise<ReportData> {
@@ -187,7 +204,8 @@ export function createConsultantJobs(pool: Pool, auth: AuthService, queue: PgBos
           WHERE id=$1 AND org_id=$2 AND project_id=$3 AND variant_code=$4`, [job.snapshot_id, user.orgId, projectId, variantCode])).rows[0];
         const project = (await client.query(`SELECT name,client_name FROM projects WHERE org_id=$1 AND id=$2`, [user.orgId, projectId])).rows[0];
         if (!snapshot || !project) throw new AuthError("REPORT_NOT_FOUND", 404, "Report not found");
-        return { job, snapshot, project };
+        const workspace = await loadReportAnswers(client, { orgId: user.orgId, projectId, variantCode, requestedBy: user.id }, jobId);
+        return { job, snapshot, project, workspace };
       });
       const stored = parseStoredToBe(rows.job.result);
       const discovery = validateDiscovery(rows.snapshot.payload);
@@ -202,7 +220,8 @@ export function createConsultantJobs(pool: Pool, auth: AuthService, queue: PgBos
           ({ id, title, locator, revision, digest: createHash("sha256").update(text, "utf8").digest("hex") })) },
         snapshotId: stored.snapshotId,
         design: stored.design, blockers: stored.evaluation.blockers, unresolvedInputQuestions: stored.unresolvedInputQuestions,
-        references: catalog.filter(reference => cited.has(reference.id)), catalogReferenceCount: catalog.length };
+        references: catalog.filter(reference => cited.has(reference.id)), catalogReferenceCount: catalog.length,
+        answers: rows.workspace.answers, workspaceRevision: rows.workspace.workspaceRevision, canAnswer: rows.workspace.canAnswer };
     },
     async recover() {
       await pool.query(`UPDATE consultant_jobs j SET status='FAILED',run_token=NULL,deadline_at=NULL,finished_at=clock_timestamp(),

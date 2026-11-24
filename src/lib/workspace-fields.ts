@@ -53,6 +53,34 @@ export const STEP_LABELS: Record<StepKey, string> = {
   name: "Step name", actor: "Who does it", system: "System or record used", trigger: "What starts it",
   description: "What happens", inputs: "Inputs", outputs: "Outputs", controls: "Checks and approvals", exceptions: "Exceptions",
 };
+/** The step details a finished step needs: core ones must be KNOWN, list ones KNOWN or NOT_APPLICABLE. One rule for readiness,
+ * the To-Be compile and the "Finish Step" sentence. */
+export const CORE_STEP_KEYS = ["name", "actor", "system", "trigger", "description"] as const;
+export const LIST_STEP_KEYS = ["inputs", "outputs", "controls", "exceptions"] as const;
+/** The details a proposed step may carry (everything but its name and description, which its own text provides). */
+export const STEP_DETAIL_KEYS = ["actor", "system", "trigger", "inputs", "outputs", "controls", "exceptions"] as const;
+export type StepDetailKey = (typeof STEP_DETAIL_KEYS)[number];
+export const missingStepKeys = (draft: { id: string; fields: readonly { id: string; status: string }[] }): StepKey[] => {
+  const status = (key: StepKey) => draft.fields.find(field => field.id === `${draft.id}_${key}`)?.status;
+  return [...CORE_STEP_KEYS.filter(key => status(key) !== "KNOWN"), ...LIST_STEP_KEYS.filter(key => status(key) !== "KNOWN" && status(key) !== "NOT_APPLICABLE")];
+};
+/** The list details of a step draft that are still EMPTY: exactly what the per-step "none apply" button covers. A detail that is
+ * KNOWN, UNKNOWN, waiting on the process owner or already not applicable is never in it. */
+export const emptyListKeys = (draft: { id: string; fields: readonly { id: string; status: string }[] }): (typeof LIST_STEP_KEYS)[number][] =>
+  LIST_STEP_KEYS.filter(key => draft.fields.find(field => field.id === `${draft.id}_${key}`)?.status === "EMPTY");
+/** Stored as the reason on each detail the button marks not applicable (a reason is required for NOT_APPLICABLE). */
+export const NONE_APPLY_REASON = "None apply to this step.";
+const NONE_APPLY_WORDS: Record<(typeof LIST_STEP_KEYS)[number], string> = { inputs: "inputs", outputs: "outputs", controls: "checks", exceptions: "exceptions" };
+/** "No outputs, checks or exceptions for this step". */
+export const noneApplyLabel = (keys: readonly (typeof LIST_STEP_KEYS)[number][]): string => {
+  const words = keys.map(key => NONE_APPLY_WORDS[key]);
+  return `No ${words.length < 2 ? words.join("") : `${words.slice(0, -1).join(", ")} or ${words.at(-1)}`} for this step`;
+};
+/** Plain words for the "Finish Step" sentence, in the order a person would say them. */
+const SENTENCE_WORDS: Record<StepKey, string> = { name: "name", actor: "who does it", system: "system", trigger: "trigger", description: "what happens",
+  inputs: "inputs", outputs: "outputs", controls: "controls", exceptions: "exceptions" };
+const SENTENCE_ORDER: readonly StepKey[] = ["name", "description", "actor", "system", "trigger", "inputs", "outputs", "controls", "exceptions"];
+const joinWords = (words: string[]) => words.length < 2 ? words.join("") : `${words.slice(0, -1).join(", ")} and ${words.at(-1)}`;
 export const REQUIREMENT_KIND_LABELS = { PAIN_POINT: "Pain point", TO_BE_REQUIREMENT: "Future requirement", CONTROL: "Control" } as const;
 
 type View = Pick<WorkspaceState, "steps" | "stepDrafts" | "requirements" | "requirementDrafts">;
@@ -119,11 +147,42 @@ export function describeBlocker(state: View, blocker: Blocker): string {
     case "FIELD_UNANSWERED": return `Answer: ${blocker.detail}`;
     case "CRITICAL_FIELD_UNRESOLVED": return `${blocker.detail} needs an answer. “I don’t know”, “Not applicable” or “Ask the process owner” cannot be confirmed yet.`;
     case "AS_IS_STEP_MISSING": return "Describe at least one current process step.";
-    case "AS_IS_STEP_INCOMPLETE": return `Finish ${stepLabel(state, id)}: name, who does it, system, trigger and what happens.`;
+    case "AS_IS_STEP_INCOMPLETE": {
+      const draft = state.stepDrafts.find(item => item.id === id);
+      const missing = draft ? missingStepKeys(draft) : [];
+      return missing.length ? `Finish ${stepLabel(state, id)}: ${joinWords(SENTENCE_ORDER.filter(key => missing.includes(key)).map(key => SENTENCE_WORDS[key]))}.`
+        : `Finish ${stepLabel(state, id)}.`;
+    }
     case "REQUIREMENT_MISSING": return "Record at least one pain point or desired requirement.";
     case "REQUIREMENT_INCOMPLETE": return `Finish ${requirementLabel(state, id)}.`;
     case "PROPOSALS_PENDING": return "Accept, edit or reject the proposed answers.";
     case "OBSERVATIONS_PENDING": return "Review the possible contradictions.";
     default: return blocker.detail;
   }
+}
+
+/** A message shorter than this (a "yes", one short sentence) is not worth a notice when nothing was read out of it. */
+export const NOTICE_MIN_CHARS = 120;
+/** True when the latest user message was long enough to carry content and its finished extraction recorded nothing. A message still
+ * being extracted is not yet in `emptyExtractionMessageIds`, so it never matches. */
+export function nothingRecordedFromLastMessage(state: { messages: readonly { id: string; role: string; text: string }[]; emptyExtractionMessageIds?: readonly string[] }): boolean {
+  const last = state.messages.findLast(message => message.role === "user");
+  return Boolean(last) && last!.text.trim().length >= NOTICE_MIN_CHARS && (state.emptyExtractionMessageIds ?? []).includes(last!.id);
+}
+
+/** The reason stored when a person closes a possibly settled point with one click (the server still requires a typed reason). */
+export const OBSERVATION_CLOSE_REASON = "The details this point asked about have since been answered.";
+
+type FieldView = Pick<WorkspaceState, "facts" | "stepDrafts" | "requirementDrafts">;
+const fieldStatus = (state: FieldView, fieldId: string): string | undefined =>
+  (state.facts.find(f => f.id === fieldId) ?? state.stepDrafts.flatMap(d => d.fields).find(f => f.id === fieldId)
+    ?? state.requirementDrafts.map(d => d.statement).find(f => f.id === fieldId))?.status;
+
+/** A pending follow-up whose every field now holds an answer (known or not applicable). A field id that resolves to nothing, and any
+ * possible contradiction, is never settled. Step drafts keep their `<draftId>_<key>` ids for good: nothing promotes them. */
+export function isPossiblySettled(state: FieldView, observation: { kind: string; status: string; fieldIds: readonly string[] }): boolean {
+  return observation.status === "PENDING" && observation.kind === "FOLLOW_UP_SUGGESTION" && observation.fieldIds.every(id => {
+    const status = fieldStatus(state, id);
+    return status === "KNOWN" || status === "NOT_APPLICABLE";
+  });
 }

@@ -51,6 +51,10 @@ point, future requirement or control. Preserve the full intent, not just the
 quoted fragment. Input open questions remain unresolved until a human decision;
 the server retains them separately even if you also raise related design questions.
 An open question stays open: no action, effect, decision or acceptance test may assume an answer to it.
+answeredQuestions (input.discovery.answeredQuestions: id ANS-n, question, answer) are answers a project lead or consultant recorded to questions an earlier design
+raised. Treat each answer as settled business input: design the behaviour it states. Do not raise the question again, and never list an ANS id in openQuestions or in
+questionIds. If an answer is itself unclear or conflicts with a source, raise a NEW open question (a new id, never the ANS id) that quotes the conflict. An answer is
+not an approved decision: it never justifies DEFERRED or REJECTED.
 An As-Is step value of "To confirm" is unknown: never invent it. Design around
 it and leave it to the open questions.
 When the outline lists scope or key design decisions, an item that an input open question asks (whether a plant or flow is in scope, which
@@ -118,6 +122,9 @@ constraints and timeline. It is design input, not background:
   hold explicit and link the open decision through decisionIds on the coverage
   item and on the steps (decisionIds is allowed on IMPLEMENTED); the decision
   stays open and gates the step, it does not make the coverage CONDITIONAL.
+- A step you add or change because of an answer lists that ANS id in its answerIds. Every answer is cited by at least one step or coverage row.
+- A coverage row whose disposition rests on an answer lists its ANS id in answerIds. A requirement that was CONDITIONAL only because of a now-answered question is
+  IMPLEMENTED when the steps design it.
 - Use disposition CONDITIONAL (never IMPLEMENTED) only when the behaviour itself
   is only partly designed, is a future capability not specified here (for example
   an optional scanner), or two materially different designs remain depending on
