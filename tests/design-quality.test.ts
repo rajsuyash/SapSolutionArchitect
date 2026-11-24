@@ -439,6 +439,7 @@ describe("scope-pending coverage (CONDITIONAL, no steps, held scope question)", 
     input.requirements.push({ id: "R-7", asIsStepId: "AS-3", sourceId: "SRC-3", quote: "The treatment of a partial final day", critical });
     draft.coverage.push({ requirementId: "R-7", disposition: "CONDITIONAL", stepIds: [], decisionId: null, questionIds: ["Q-1"],
       rationale: "Not designed here: scope is held on Q-1.", ...extra } as never);
+    draft.openQuestions[0] = { ...draft.openQuestions[0]!, scopeOfRequirementIds: ["R-7"] };
     return { input, draft };
   };
   const path = "draft.coverage.6";
@@ -464,6 +465,27 @@ describe("scope-pending coverage (CONDITIONAL, no steps, held scope question)", 
     expect(codes(decided.input, decided.draft)).toContain("UNEXPECTED_DECISION");
     draft.coverage[6] = { ...draft.coverage[6]!, disposition: "IMPLEMENTED" };
     expect(codes(input, draft)).toContain("COVERAGE_TRACE_MISMATCH");
+  });
+
+  it.each([true, false])("rejects a row whose linked question does not name the requirement in scopeOfRequirementIds (critical: %s)", critical => {
+    const { input, draft } = pending(critical);
+    draft.openQuestions[0] = { ...draft.openQuestions[0]!, scopeOfRequirementIds: undefined };
+    const found = codes(input, draft);
+    expect(found).toContain("COVERAGE_TRACE_MISMATCH");
+    if (critical) expect(found).toContain("CRITICAL_REQUIREMENT_UNTESTED");
+    expect(found).not.toContain("COVERAGE_SCOPE_PENDING");
+  });
+
+  it("rejects a question naming another requirement's scope, an unknown requirement id, or a duplicate id", () => {
+    const other = pending(true);
+    other.draft.openQuestions[0] = { ...other.draft.openQuestions[0]!, scopeOfRequirementIds: ["R-1"] };
+    expect(codes(other.input, other.draft)).toContain("COVERAGE_TRACE_MISMATCH");
+    const unknown = pending(true);
+    unknown.draft.openQuestions[0] = { ...unknown.draft.openQuestions[0]!, scopeOfRequirementIds: ["R-7", "R-NOPE"] };
+    expect(evaluateDesign(unknown.input, unknown.draft).errors).toContainEqual(expect.objectContaining({ code: "UNKNOWN_REQUIREMENT", path: "draft.openQuestions.0" }));
+    const dup = pending(true);
+    dup.draft.openQuestions[0] = { ...dup.draft.openQuestions[0]!, scopeOfRequirementIds: ["R-7", "R-7"] };
+    expect(evaluateDesign(dup.input, dup.draft).errors).toContainEqual(expect.objectContaining({ code: "DUPLICATE_TRACE", path: "draft.openQuestions.0" }));
   });
 
   it("still errors when a step traces the requirement but the row lists no steps", () => {

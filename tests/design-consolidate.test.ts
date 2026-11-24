@@ -62,6 +62,16 @@ describe("addOwnerRoles", () => {
     expect(out.warnings).toEqual([{ code: "ROLE_ADDED_FOR_OWNER", path: "draft.roles.3" }, { code: "ROLE_ADDED_FOR_OWNER", path: "draft.roles.4" }]);
     expect(draft.roles).toHaveLength(3); // the input is not mutated
   });
+  it("labels a fit-gap owner by its requirementId (the register has no row id), never as undefined", () => {
+    const out = addOwnerRoles(design(d => { d.fitGap = [{ ...at(d.fitGap), requirementId: "R-1", stepIds: ["TB-1"], owner: "Quality auditor" }] as never; }));
+    const role = out.design.roles!.find(item => item.name === "Quality auditor")!;
+    expect(role.responsibilities).toContain("fitGap R-1");
+    expect(role.responsibilities).not.toContain("undefined");
+  });
+  it("names a row with neither id nor requirementId by its register alone", () => {
+    const out = addOwnerRoles(design(d => { d.fitGap = [{ ...at(d.fitGap), requirementId: "", id: undefined, stepIds: ["TB-1"], owner: "Quality auditor" }] as never; }));
+    expect(out.design.roles!.find(item => item.name === "Quality auditor")!.responsibilities).toBe("Owner of fitGap.");
+  });
   it("removes every ROLE_OWNER_UNCATALOGUED finding the owners caused, and adds no error", () => {
     const draft = withOwners();
     expect(blockersOf(draft).filter(item => item.startsWith("ROLE_OWNER_UNCATALOGUED"))).not.toEqual([]);
